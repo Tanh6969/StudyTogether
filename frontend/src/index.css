@@ -1,0 +1,152 @@
+@import url('https://fonts.googleapis.com/css2?family=Inter:ital,opsz,wght@0,14..32,100..900;1,14..32,100..900&display=swap');
+
+:root {
+  font-family: 'Inter', system-ui, Avenir, Helvetica, Arial, sans-serif;
+  line-height: 1.5;
+  font-weight: 400;
+
+  color-scheme: light;
+  color: rgba(255, 255, 255, 0.87);
+  background-color: #f8fafc;
+
+  font-synthesis: none;
+  text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+/* ─── Hide Main Window Scrollbar ────────────────────────────────────────────── */
+
+html, body {
+  margin: 0;
+  padding: 0;
+  width: 100%;
+  min-width: 320px;
+  min-height: 100vh;
+  color: #0B1C30;
+  background-color: #f8fafc;
+  -ms-overflow-style: none;
+  scrollbar-width: none;
+}
+
+html::-webkit-scrollbar, body::-webkit-scrollbar {
+  display: none;
+}
+
+#root {
+  width: 100%;
+  min-height: 100vh;
+  display: flex;
+  flex-direction: column;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+h1, h2, h3, h4, h5, h6, p {
+  margin: 0;
+}
+
+/* ─── Hover-To-Show Scrollbars (Pure CSS Best Practice) ─────────────────────── */
+
+::-webkit-scrollbar {
+  width: 5px;
+  height: 5px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: transparent;
+  border-radius: 999px;
+  transition: background 0.25s ease;
+}
+
+*:hover::-webkit-scrollbar-thumb {
+  background: rgba(148, 163, 184, 0.45);
+}
+
+*:hover::-webkit-scrollbar-thumb:hover {
+  background: rgba(100, 116, 139, 0.85);
+}
+
+* {
+  scrollbar-width: thin;
+  scrollbar-color: transparent transparent;
+}
+
+*:hover {
+  scrollbar-color: rgba(148, 163, 184, 0.45) transparent;
+}
+
+/* ─── Skeleton Wave Shimmer Animation ────────────────────────────────────────── */
+
+@keyframes skeleton-wave {
+  0% {
+    background-position: -400px 0;
+  }
+  100% {
+    background-position: 400px 0;
+  }
+}
+
+.skeleton-pulse {
+  background: linear-gradient(
+    90deg,
+    #E2E8F0 25%,
+    #EEF2F7 50%,
+    #E2E8F0 75%
+  );
+  background-size: 800px 100%;
+  animation: skeleton-wave 1.6s ease-in-out infinite;
+}
+
+/* Spin animation cho icon loading */
+@keyframes spin {
+  from {
+    transform: rotate(0deg);
+  }
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+/* ─── TipTap Editor Focus Outline Reset ──────────────────────────────────────── */
+
+.ProseMirror {
+  outline: none !important;
+  border: none !important;
+  box-shadow: none !important;
+}
+
+.ProseMirror:focus,
+.ProseMirror:focus-visible,
+.ProseMirror-focused {
+  outline: none !important;
+  border: none !important;
+  box-shadow: none !important;
+}
+
+.forum-hashtag-pill {
+  display: inline-flex;
+  align-items: center;
+  padding: 3px 10px;
+  margin: 3px 2px;
+  background: #F1F5F9;
+  color: #3B82F6;
+  border-radius: 6px;
+  font-size: 13px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all 0.15s ease;
+  user-select: none;
+  vertical-align: baseline;
+}
+
+.forum-hashtag-pill:hover {
+  background: #DBEAFE;
+  color: #1D4ED8;
+}
