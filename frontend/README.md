@@ -7,8 +7,8 @@ npm install
 npm run dev
 ```
 
-When no backend or Supabase settings are configured, the frontend automatically uses local
-demo data. You can also enable it explicitly with `VITE_USE_MOCK=true` in `.env`.
+Unless all three real-service settings are configured, the frontend automatically uses local
+demo data. Set `VITE_USE_MOCK=true` in `.env` to force demo mode.
 
 Demo sign-in:
 

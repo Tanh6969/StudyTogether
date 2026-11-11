@@ -1,5 +1,6 @@
 import { getDb, newId, nowIso, saveDb } from './db';
 import { DEFAULT_MOCK_EMAIL } from './seed';
+import { MOCK_LATENCY_MS } from './config';
 import type { Group, GroupCreate, GroupMember } from '../lib/group.types';
 import type { Profile } from '../lib/profile.types';
 import type { Message, MessageListResponse } from '../lib/message.types';
@@ -54,7 +55,7 @@ function notFound(resource: string): never {
 
 /** Handles the API endpoints needed by the basic, local-only demo. */
 export async function mockApiRequest<T>(path: string, method: MockMethod, body?: unknown): Promise<T> {
-  await new Promise((resolve) => setTimeout(resolve, 80));
+  await new Promise((resolve) => setTimeout(resolve, MOCK_LATENCY_MS));
   const url = new URL(path, 'http://mock.local');
   const route = url.pathname.replace(/\/+$/, '') || '/';
   const db = getDb();
