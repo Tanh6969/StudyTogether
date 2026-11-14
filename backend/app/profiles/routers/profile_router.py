@@ -1,0 +1,140 @@
+import uuid
+from fastapi import APIRouter, Depends, HTTPException, status
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.auth.dependencies import get_current_user
+from app.auth.dto.auth_dto import CurrentUser
+from app.core.config import settings
+from app.db.session import get_db_session
+from app.profiles.dto.profile_dto import AvatarConfirm, ProfileCreate, ProfileResponse, ProfileUpdate
+from app.profiles.services.profile_service import ProfilesService
+
+router = APIRouter(prefix="/profiles", tags=["Profiles"])
+service = ProfilesService()
+
+
+@router.post("/me/avatar", response_model=ProfileResponse)
+async def confirm_avatar_upload(
+    data: AvatarConfirm,
+    current_user: CurrentUser = Depends(get_current_user),
+    session: AsyncSession = Depends(get_db_session),
+):
+    """Confirm an uploaded avatar file and set it as the authenticated user's profile avatar."""
+    prefix = f"users/{current_user.id}/"
+    if not data.path.startswith(prefix) or not data.path.endswith(".avatar"):
+        raise HTTPException(status.HTTP_403_FORBIDDEN, "Invalid avatar reference")
+    profile = await service.get_by_id(session, current_user.id)
+    if not profile:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Profile not found")
+    try:
+        profile.avatar_url = f"{settings.supabase_url.rstrip('/')}/storage/v1/object/public/profile-avatars/{data.path}"
+        await session.commit()
+        return profile
+    except HTTPException:
+        raise
+    except Exception as exc:
+        await session.rollback()
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "Could not save avatar") from exc
+
+
+@router.post("/", response_model=ProfileResponse, status_code=status.HTTP_201_CREATED)
+async def create_profile(
+    data: ProfileCreate,
+    current_user: CurrentUser = Depends(get_current_user),
+    session: AsyncSession = Depends(get_db_session),
+):
+    """Create a new profile. Users may only create a profile for themselves."""
+    if data.id != current_user.id:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="You can only create your own profile",
+        )
+    try:
+        profile = await service.create(session, data)
+        await session.commit()
+        return profile
+    except Exception as e:
+        await session.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Could not create profile: {str(e)}",
+        )
+
+
+@router.get("/{profile_id}", response_model=ProfileResponse)
+async def get_profile(
+    profile_id: uuid.UUID, session: AsyncSession = Depends(get_db_session)
+):
+    """Retrieve a single user profile by ID. Publicly accessible, no authentication required."""
+    profile = await service.get_by_id(session, profile_id)
+    if not profile:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Profile not found"
+        )
+    return profile
+
+
+@router.get("/", response_model=list[ProfileResponse])
+async def list_profiles(
+    skip: int = 0, limit: int = 50, session: AsyncSession = Depends(get_db_session)
+):
+    """List profiles with pagination. Publicly accessible, no authentication required."""
+    return await service.list_all(session, skip=skip, limit=limit)
+
+
+@router.put("/{profile_id}", response_model=ProfileResponse)
+async def update_profile(
+    profile_id: uuid.UUID,
+    data: ProfileUpdate,
+    current_user: CurrentUser = Depends(get_current_user),
+    session: AsyncSession = Depends(get_db_session),
+):
+    """Update a user profile. Users may only update their own profile."""
+    if profile_id != current_user.id:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="You can only update your own profile",
+        )
+    profile = await service.get_by_id(session, profile_id)
+    if not profile:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Profile not found"
+        )
+    try:
+        updated = await service.update(session, profile, data)
+        await session.commit()
+        return updated
+    except Exception as e:
+        await session.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Could not update profile: {str(e)}",
+        )
+
+
+@router.delete("/{profile_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_profile(
+    profile_id: uuid.UUID,
+    current_user: CurrentUser = Depends(get_current_user),
+    session: AsyncSession = Depends(get_db_session),
+):
+    """Delete a user profile. Users may only delete their own profile."""
+    if profile_id != current_user.id:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="You can only delete your own profile",
+        )
+    profile = await service.get_by_id(session, profile_id)
+    if not profile:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Profile not found"
+        )
+    try:
+        await service.delete(session, profile)
+        await session.commit()
+    except Exception as e:
+        await session.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Could not delete profile: {str(e)}",
+        )

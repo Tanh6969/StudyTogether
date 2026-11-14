@@ -9,6 +9,7 @@ import type { AuthError, Session } from '@supabase/supabase-js';
 import { USE_MOCK, MOCK_PASSWORD } from '../mocks/config';
 import { getDb } from '../mocks/db';
 import { DEFAULT_MOCK_EMAIL } from '../mocks/seed';
+import { DEMO_ACCOUNTS, DEMO_PASSWORD, SHOW_DEMO_ACCOUNTS, type DemoAccount } from '../lib/demoAccounts';
 
 // Only used when Supabase itself isn't configured for this environment (no URL/anon key
 // set -- see lib/supabase.ts's placeholder fallback). A REAL Supabase project rejecting a
@@ -77,8 +78,18 @@ export function LoginPage() {
     }
   }, []);
 
-  const handleLogin = async (e: React.FormEvent) => {
+  const handleLogin = (e: React.FormEvent) => {
     e.preventDefault();
+    void signIn(email, password);
+  };
+
+  const loginAsDemo = (account: DemoAccount) => {
+    setEmail(account.email);
+    setPassword(DEMO_PASSWORD);
+    void signIn(account.email, DEMO_PASSWORD);
+  };
+
+  const signIn = async (email: string, password: string) => {
     if (isSubmitting) return;
 
     setError(null);
@@ -228,6 +239,40 @@ export function LoginPage() {
               <ArrowRight size={18} />
             </button>
           </form>
+
+          {SHOW_DEMO_ACCOUNTS && (
+            <div style={{marginTop: 24}}>
+              <div style={{display: 'flex', alignItems: 'center', gap: 10, color: '#94A3B8', fontSize: 12, fontWeight: 600, textTransform: 'uppercase', letterSpacing: 0.4}}>
+                <span style={{flex: 1, height: 1, background: '#E2E8F0'}} />
+                Tài khoản test nhanh
+                <span style={{flex: 1, height: 1, background: '#E2E8F0'}} />
+              </div>
+              {/* minmax(0, 1fr): without it the nowrap email line sets the track's min width and overflows the card. */}
+              <div style={{display: 'grid', gridTemplateColumns: 'minmax(0, 1fr)', gap: 8, marginTop: 12}}>
+                {DEMO_ACCOUNTS.map(account => (
+                  <button
+                    key={account.email}
+                    type="button"
+                    onClick={() => loginAsDemo(account)}
+                    disabled={isSubmitting}
+                    style={{display: 'flex', alignItems: 'center', gap: 12, width: '100%', minWidth: 0, boxSizing: 'border-box', padding: '10px 12px', background: '#F8FAFC', border: '1px solid #E2E8F0', borderRadius: 12, cursor: isSubmitting ? 'default' : 'pointer', textAlign: 'left', opacity: isSubmitting ? 0.6 : 1}}
+                  >
+                    <span style={{width: 34, height: 34, flexShrink: 0, borderRadius: '50%', background: '#DBEAFE', color: '#1D4ED8', display: 'grid', placeItems: 'center', fontSize: 13, fontWeight: 700}}>
+                      {account.name.split(' ').map(part => part[0]).join('').slice(0, 2)}
+                    </span>
+                    <span style={{minWidth: 0, flex: 1}}>
+                      <span style={{display: 'block', color: '#0F172A', fontSize: 14, fontWeight: 600}}>{account.name}</span>
+                      <span style={{display: 'block', color: '#64748B', fontSize: 12, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap'}}>{account.email} · {account.hint}</span>
+                    </span>
+                    <ArrowRight size={16} color="#94A3B8" />
+                  </button>
+                ))}
+              </div>
+              <p style={{color: '#94A3B8', fontSize: 12, margin: '8px 0 0', textAlign: 'center'}}>
+                Mật khẩu chung: <strong style={{color: '#475569'}}>{DEMO_PASSWORD}</strong>
+              </p>
+            </div>
+          )}
 
           <div style={{marginTop: 32, textAlign: 'center'}}>
             <p style={{color: '#64748B', fontSize: 14, margin: 0}}>

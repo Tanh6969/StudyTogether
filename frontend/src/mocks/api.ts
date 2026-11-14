@@ -5,6 +5,75 @@ import type { Group, GroupCreate, GroupMember } from '../lib/group.types';
 import type { Profile } from '../lib/profile.types';
 import type { Message, MessageListResponse } from '../lib/message.types';
 import type { NotificationCategory, UnreadCounts } from '../types/notification';
+import type { GroupTask, GroupTaskCreate, GroupTaskUpdate } from '../lib/groupTask.api';
+import type { MockDb } from './seed';
+
+const GROUP_TASKS_ROUTE = /^\/groups\/([^/]+)\/tasks(?:\/([^/]+))?$/;
+
+/** Demo board shown the first time a group's task board is opened in mock mode. */
+function seedGroupTasks(db: MockDb, groupId: string, viewerId: string): GroupTask[] {
+  const timestamp = nowIso();
+  const ids = new Map<string, string>();
+  const idFor = (key: string) => { if (!ids.has(key)) ids.set(key, newId('gtask')); return ids.get(key)!; };
+  const demo: Array<[key: string, title: string, assignee: string, done: boolean, parent: string | null, notes: string[]]> = [
+    ['root', 'Xác định mục tiêu và tài liệu cần học', 'Minh Anh', false, null, ['Chốt phạm vi kiến thức', 'Tổng hợp nguồn tham khảo']],
+    ['plan', 'Lập kế hoạch học nhóm', 'Tuấn', false, 'root', ['Chia việc theo từng buổi']],
+    ['read', 'Ôn lý thuyết và ghi chú', 'Linh', false, 'root', ['Đọc chương 1–3']],
+    ['practice', 'Làm bài tập thực hành', 'Hoàng', false, 'plan', ['Mỗi người chọn 3 bài']],
+    ['review', 'Rà soát kết quả cùng nhóm', 'Cả nhóm', false, 'plan', []],
+    ['room', 'Tạo phòng học và chia sẻ tài liệu', 'Minh Anh', true, null, []],
+    ['kickoff', 'Thống nhất lịch học tuần này', 'Cả nhóm', true, null, []],
+  ];
+  const tasks = demo.map(([key, title, assignee, done, parent, notes]): GroupTask => ({
+    id: idFor(key), group_id: groupId, parent_id: parent ? idFor(parent) : null, title, assignee,
+    due_date: null, done, notes, position: null, created_by: viewerId, created_at: timestamp, updated_at: timestamp,
+  }));
+  db.groupTasks = [...(db.groupTasks ?? []), ...tasks];
+  return tasks;
+}
+
+function handleGroupTasks(db: MockDb, method: MockMethod, groupId: string, taskId: string | undefined, body: unknown, viewerId: string): unknown {
+  const all = db.groupTasks ?? [];
+  const inGroup = all.filter((task) => task.group_id === groupId);
+  if (!taskId && method === 'GET') {
+    if (inGroup.length > 0) return inGroup;
+    const seeded = seedGroupTasks(db, groupId, viewerId);
+    saveDb();
+    return seeded;
+  }
+  if (!taskId && method === 'POST') {
+    const input = body as GroupTaskCreate;
+    const timestamp = nowIso();
+    const task: GroupTask = {
+      id: newId('gtask'), group_id: groupId, parent_id: input.parent_id ?? null, title: input.title.trim(),
+      assignee: (input.assignee ?? '').trim(), due_date: input.due_date ?? null, done: false, notes: input.notes ?? [],
+      position: null, created_by: viewerId, created_at: timestamp, updated_at: timestamp,
+    };
+    db.groupTasks = [...all, task];
+    saveDb();
+    return task;
+  }
+  const task = inGroup.find((item) => item.id === taskId) ?? notFound('Nhiệm vụ');
+  if (method === 'PATCH') {
+    Object.assign(task, body as GroupTaskUpdate, { updated_at: nowIso() });
+    saveDb();
+    return task;
+  }
+  if (method === 'DELETE') {
+    const removed = new Set([task.id]);
+    let grew = true;
+    while (grew) {
+      grew = false;
+      for (const item of all) {
+        if (item.parent_id && removed.has(item.parent_id) && !removed.has(item.id)) { removed.add(item.id); grew = true; }
+      }
+    }
+    db.groupTasks = all.filter((item) => !removed.has(item.id));
+    saveDb();
+    return undefined;
+  }
+  return notFound(`API mẫu ${method} /groups/${groupId}/tasks`);
+}
 
 type MockMethod = 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE';
 
@@ -116,6 +185,10 @@ export async function mockApiRequest<T>(path: string, method: MockMethod, body?:
     });
     saveDb();
     result = group;
+  } else if (GROUP_TASKS_ROUTE.test(route)) {
+    // Must precede the generic '/groups/' branch below, which would otherwise claim it.
+    const [, groupId, taskId] = route.match(GROUP_TASKS_ROUTE)!;
+    result = handleGroupTasks(db, method, groupId, taskId, body, viewerId);
   } else if (route.startsWith('/groups/')) {
     const segments = route.slice('/groups/'.length).split('/');
     const groupId = segments[0];

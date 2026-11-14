@@ -10,6 +10,7 @@ import type { Note } from '../lib/note.types';
 import type { Resource } from '../lib/resource.types';
 import type { StudyTask } from '../lib/task.api';
 import type { Roadmap } from '../lib/roadmap.api';
+import type { GroupTask } from '../lib/groupTask.api';
 import type { NotificationItem } from '../types/notification';
 import type { NotificationSettings } from '../lib/notification.api';
 import type { Invitation } from '../lib/invitation.types';
@@ -51,6 +52,9 @@ export interface MockDb {
   resources: MockResource[];
   tasks: (StudyTask & { user_id: string })[];
   roadmaps: (Roadmap & { user_id: string })[];
+  /** Bảng nhiệm vụ nhóm. Optional so demo DBs saved before this field existed keep loading;
+   * mocks/api.ts seeds a group's demo board lazily on first read. */
+  groupTasks?: GroupTask[];
   notifications: NotificationItem[];
   notificationSettings: Record<string, NotificationSettings>;
   invitations: MockInvitation[];

@@ -1,0 +1,621 @@
+import logging
+import uuid
+from fastapi import APIRouter, Depends, HTTPException, status
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.attachments.dto.attachment_dto import DownloadUrlResponse, UploadUrlRequest, UploadUrlResponse
+from app.attachments.services.attachment_service import (
+    AttachmentServiceNotConfigured,
+    AttachmentStorageError,
+    AttachmentsService,
+)
+from app.auth.dependencies import get_current_user
+from app.auth.dto.auth_dto import CurrentUser
+from app.core.config import settings
+from app.core.permissions import (
+    can_access_room,
+    can_edit_whiteboard,
+    can_join_room,
+    can_join_room_meeting,
+    can_manage_room,
+    is_active_group_member,
+    is_group_manager,
+)
+from app.db.session import get_db_session
+from app.db.enums import ModerationAction, StudyRoomMemberRole
+from app.groups.services.group_service import GroupsService
+from app.meetings.dto.meeting_dto import MeetingTokenResponse
+from app.meetings.services.livekit_service import LiveKitService
+from app.profiles.services.profile_service import ProfilesService
+from app.study_rooms.dto.study_room_dto import (
+    RoomModerationActionCreate,
+    RoomModerationActionResponse,
+    StudyRoomCreate,
+    StudyRoomMemberResponse,
+    StudyRoomResponse,
+    StudyRoomUpdate,
+)
+from app.study_rooms.entities.study_room_entity import StudyRoom
+from app.study_rooms.services.study_room_service import StudyRoomsService
+
+logger = logging.getLogger(__name__)
+
+router = APIRouter(prefix="/study-rooms", tags=["Study Rooms"])
+service = StudyRoomsService()
+groups_service = GroupsService()
+profiles_service = ProfilesService()
+livekit_service = LiveKitService()
+attachments_service = AttachmentsService()
+
+_SELF_SERVICE_MODERATION_ACTIONS = {ModerationAction.RAISE_HAND, ModerationAction.LOWER_HAND}
+WHITEBOARD_ASSET_URL_EXPIRES_IN = 3600
+
+
+async def _get_active_room_or_404(session: AsyncSession, room_id: uuid.UUID) -> StudyRoom:
+    """Shared "not found or soft-deleted" gate: a deleted room must behave as if it no longer
+    exists for every normal read/write entry point (get, update, start, end, join, leave,
+    members, role changes, moderation, meeting token, and delete itself) -- see
+    STUDY_PLATFORM_DATABASE_SPEC.md §16. Deleting an already-deleted room therefore also 404s
+    here, same as deleting a missing one -- there is no distinct "already deleted" status, by
+    design (mirrors channel_router._get_active_channel_or_404)."""
+    room = await service.get_by_id(session, room_id)
+    if room is None or room.deleted_at is not None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Study room not found")
+    return room
+
+
+@router.post("/", response_model=StudyRoomResponse, status_code=status.HTTP_201_CREATED)
+async def create_room(
+    data: StudyRoomCreate,
+    current_user: CurrentUser = Depends(get_current_user),
+    session: AsyncSession = Depends(get_db_session),
+):
+    """Create a new study room under a group. Only an active group owner or moderator may create a study room; the authenticated caller becomes the room's host."""
+    group = await groups_service.get_by_id(session, data.group_id)
+    if not group:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Group not found")
+    # Product rule (2026-08-18): only an active group owner or moderator may create a
+    # Study Room -- a plain Member must not (supersedes the old STUDY_PLATFORM_DATABASE_SPEC.md
+    # §16 behavior, which let any active member create a room).
+    if not await is_group_manager(session, data.group_id, current_user.id):
+        raise HTTPException(
+            status.HTTP_403_FORBIDDEN, "Only an active group owner or moderator can create a study room here"
+        )
+    try:
+        # The authenticated caller always becomes the host; there is no client-supplied
+        # host_id to trust or ignore (see StudyRoomCreate).
+        room = await service.create(session, data, host_id=current_user.id)
+        await session.commit()
+        return room
+    except Exception as e:
+        await session.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Could not create study room: {str(e)}"
+        )
+
+
+@router.get("/", response_model=list[StudyRoomResponse])
+async def list_rooms(group_id: uuid.UUID, session: AsyncSession = Depends(get_db_session)):
+    """List all study rooms belonging to a given group."""
+    return await service.list_by_group(session, group_id)
+
+
+@router.get("/{room_id}", response_model=StudyRoomResponse)
+async def get_room(room_id: uuid.UUID, session: AsyncSession = Depends(get_db_session)):
+    """Get a single study room by its ID."""
+    room = await _get_active_room_or_404(session, room_id)
+    return room
+
+
+@router.put("/{room_id}", response_model=StudyRoomResponse)
+async def update_room(
+    room_id: uuid.UUID,
+    data: StudyRoomUpdate,
+    current_user: CurrentUser = Depends(get_current_user),
+    session: AsyncSession = Depends(get_db_session)
+):
+    """Update a study room's details. Only an active group owner or moderator of the room's group may update it."""
+    room = await _get_active_room_or_404(session, room_id)
+    # Management authority derives from the actor's CURRENT Group role, never from a stale
+    # room.host_id snapshot -- see can_manage_room's docstring.
+    if not await is_group_manager(session, room.group_id, current_user.id):
+        raise HTTPException(status.HTTP_403_FORBIDDEN, "Only an active group owner or moderator can update this study room")
+    try:
+        updated = await service.update(session, room, data)
+        await session.commit()
+        return updated
+    except Exception as e:
+        await session.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Could not update study room: {str(e)}"
+        )
+
+
+@router.put("/{room_id}/whiteboard", response_model=StudyRoomResponse)
+async def update_whiteboard_state(
+    room_id: uuid.UUID,
+    state: dict,
+    current_user: CurrentUser = Depends(get_current_user),
+    session: AsyncSession = Depends(get_db_session)
+):
+    """Update the persisted whiteboard state for a study room. Only the room's host or a moderator may edit the whiteboard."""
+    room = await _get_active_room_or_404(session, room_id)
+    # Only the host or a moderator may write the persisted board -- mirrors the
+    # can_publish_data LiveKit grant (see can_edit_whiteboard's docstring); a plain
+    # PARTICIPANT still reads the board live via LiveKit DataReceived/GET, just can't push
+    # state here.
+    if not await can_edit_whiteboard(session, room, current_user.id):
+        raise HTTPException(
+            status.HTTP_403_FORBIDDEN, "Only the host or a moderator can edit this study room's whiteboard"
+        )
+    try:
+        room.whiteboard_state = state
+        await session.commit()
+        await session.refresh(room)
+        return room
+    except Exception as e:
+        await session.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Could not update whiteboard state: {str(e)}"
+        )
+
+
+@router.post("/{room_id}/whiteboard/assets/upload-url", response_model=UploadUrlResponse)
+async def create_whiteboard_asset_upload_url(
+    room_id: uuid.UUID,
+    data: UploadUrlRequest,
+    current_user: CurrentUser = Depends(get_current_user),
+    session: AsyncSession = Depends(get_db_session),
+):
+    """Step 1 of sharing an image/document on the board, OR uploading a presentation deck (see
+    `update_presentation_state` below -- both reuse this single room-scoped upload endpoint
+    rather than duplicating it, since a deck is just another asset in the same storage
+    namespace): a signed upload URL into the same `message-attachments` bucket/namespace chat
+    attachments already use (`study-rooms/{room_id}/...`, see
+    AttachmentsService.build_room_object_path) -- no new bucket needed. Gated the same as the
+    whiteboard PUT above (host/moderator only), since adding an asset is a board edit."""
+    room = await _get_active_room_or_404(session, room_id)
+    if not await can_edit_whiteboard(session, room, current_user.id):
+        raise HTTPException(
+            status.HTTP_403_FORBIDDEN, "Only the host or a moderator can add files to this study room's whiteboard"
+        )
+    path = attachments_service.build_room_object_path(room.id, current_user.id, data.file_name)
+    try:
+        result = await attachments_service.create_signed_upload_url(path)
+    except AttachmentServiceNotConfigured as exc:
+        raise HTTPException(status.HTTP_500_INTERNAL_SERVER_ERROR, "Attachment storage is not configured") from exc
+    except AttachmentStorageError as exc:
+        raise HTTPException(status.HTTP_502_BAD_GATEWAY, str(exc)) from exc
+    return UploadUrlResponse(**result)
+
+
+@router.get("/{room_id}/whiteboard/assets/download-url", response_model=DownloadUrlResponse)
+async def get_whiteboard_asset_download_url(
+    room_id: uuid.UUID,
+    path: str,
+    current_user: CurrentUser = Depends(get_current_user),
+    session: AsyncSession = Depends(get_db_session),
+):
+    """Step 2 (and every subsequent view, including by new/reconnecting participants) for
+    either a whiteboard image/document or a presentation deck's PDF bytes: any active room
+    participant may resolve a short-lived signed URL for a board asset -- viewing is not
+    restricted to editors, only adding new assets is (see the upload-url endpoint above).
+    `path` is validated as a well-formed object under this room's own namespace
+    (`AttachmentsService.path_belongs_to_room`) before ever being sent to Storage, so a caller
+    can't probe an arbitrary path across rooms."""
+    room = await _get_active_room_or_404(session, room_id)
+    if not await can_access_room(session, room, current_user.id):
+        raise HTTPException(status.HTTP_403_FORBIDDEN, "You do not have access to this study room")
+    if not attachments_service.path_belongs_to_room(path, room.id):
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "Invalid whiteboard asset path")
+    try:
+        # Longer-lived than the chat-attachment default (attachment_download_url_expires_in,
+        # 300s): a board image is meant to stay visible for the whole session, not just a
+        # single message view. The frontend re-resolves on zoom/pan anyway (tldraw's
+        # useImageOrVideoAsset), so this is a ceiling on worst-case idle staleness, not the
+        # only refresh path.
+        result = await attachments_service.create_signed_download_url(path, expires_in=WHITEBOARD_ASSET_URL_EXPIRES_IN)
+    except AttachmentServiceNotConfigured as exc:
+        raise HTTPException(status.HTTP_500_INTERNAL_SERVER_ERROR, "Attachment storage is not configured") from exc
+    except AttachmentStorageError as exc:
+        raise HTTPException(status.HTTP_502_BAD_GATEWAY, str(exc)) from exc
+    return DownloadUrlResponse(**result)
+
+
+@router.put("/{room_id}/presentation", response_model=StudyRoomResponse)
+async def update_presentation_state(
+    room_id: uuid.UUID,
+    state: dict | None = None,
+    current_user: CurrentUser = Depends(get_current_user),
+    session: AsyncSession = Depends(get_db_session)
+):
+    """Persists the shared "Slide Bài giảng" deck's current state --
+    `{asset_path, file_name, page, page_count}` (the uploaded PDF's storage path from the
+    upload-url endpoint above, plus which page everyone should be looking at) or `None` to
+    clear the deck. Same authorization and persistence role as the whiteboard PUT: the live,
+    near-instant page-turn sync happens over the LiveKit data channel
+    (usePresentationSync.ts), this is the durable fallback new/reconnecting participants load
+    from. Reuses `can_edit_whiteboard` -- host/moderator authority over the board is the same
+    whether the content is freehand drawing or a presentation deck, not two separate roles."""
+    room = await _get_active_room_or_404(session, room_id)
+    if not await can_edit_whiteboard(session, room, current_user.id):
+        raise HTTPException(
+            status.HTTP_403_FORBIDDEN, "Only the host or a moderator can control this study room's presentation"
+        )
+    try:
+        room.presentation_state = state
+        await session.commit()
+        await session.refresh(room)
+        return room
+    except Exception as e:
+        await session.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Could not update presentation state: {str(e)}"
+        )
+
+
+@router.post("/{room_id}/start", response_model=StudyRoomResponse)
+async def start_room(
+    room_id: uuid.UUID,
+    current_user: CurrentUser = Depends(get_current_user),
+    session: AsyncSession = Depends(get_db_session),
+):
+    """Start a study room's live session. Only an active group owner or moderator may start it."""
+    room = await _get_active_room_or_404(session, room_id)
+    if not await is_group_manager(session, room.group_id, current_user.id):
+        raise HTTPException(status.HTTP_403_FORBIDDEN, "Only an active group owner or moderator can start this study room")
+    try:
+        updated = await service.start(session, room)
+        await session.commit()
+        return updated
+    except Exception as e:
+        await session.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Could not start study room: {str(e)}"
+        )
+
+
+@router.post("/{room_id}/end", response_model=StudyRoomResponse)
+async def end_room(
+    room_id: uuid.UUID,
+    current_user: CurrentUser = Depends(get_current_user),
+    session: AsyncSession = Depends(get_db_session),
+):
+    """End a study room's live session. Only an active group owner or moderator may end it."""
+    room = await _get_active_room_or_404(session, room_id)
+    if not await is_group_manager(session, room.group_id, current_user.id):
+        raise HTTPException(status.HTTP_403_FORBIDDEN, "Only an active group owner or moderator can end this study room")
+    try:
+        updated = await service.end(session, room)
+        await session.commit()
+    except Exception as e:
+        await session.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Could not end study room: {str(e)}"
+        )
+
+    # The ended status is already durably committed above -- LiveKit is a separate live
+    # system with no transactional relationship to the DB, so closing its meeting is a
+    # best-effort side effect afterward: an infra failure here must never undo (or be
+    # reported as a failure of) a room-end the DB has already recorded. close_room is
+    # idempotent for "already gone" -- see its docstring.
+    try:
+        await livekit_service.close_room(room.id)
+    except Exception:
+        logger.exception("Failed to close LiveKit room for ended study room %s", room.id)
+
+    return updated
+
+
+@router.delete("/{room_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_room(
+    room_id: uuid.UUID,
+    current_user: CurrentUser = Depends(get_current_user),
+    session: AsyncSession = Depends(get_db_session),
+):
+    """Soft delete: the StudyRoom row, its Conversation, all historical Messages,
+    StudyRoomMembers, and RoomModerationActions remain in the database (see
+    docs/db/migrations/010_soft_delete_study_rooms.sql). An already-deleted or missing room
+    both 404 via _get_active_room_or_404 -- a deleted room is not re-deletable/re-authorizable
+    through this endpoint. Authorized actors: an active group owner/moderator of the room's
+    group (mirrors ChannelsService's group-manager delete authority) -- an ordinary member, a
+    non-member, or a banned/left group manager (is_group_manager already requires
+    MemberStatus.ACTIVE) may not delete. Being the room's host_id is NOT sufficient on its own
+    (2026-08-18 policy change) -- see can_manage_room's docstring."""
+    room = await _get_active_room_or_404(session, room_id)
+    if not await is_group_manager(session, room.group_id, current_user.id):
+        raise HTTPException(
+            status.HTTP_403_FORBIDDEN, "Only an active group owner or moderator can delete this study room"
+        )
+    try:
+        # deleted_by always comes from the authenticated caller, never a client-supplied
+        # value -- there is no such field on this endpoint's request at all.
+        await service.soft_delete(session, room, deleted_by=current_user.id)
+        await session.commit()
+    except Exception as e:
+        await session.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Could not delete study room: {str(e)}"
+        )
+
+    # Same best-effort, post-commit ordering as end_room above: the soft delete is already
+    # durable, so a LiveKit close_room failure here is logged, never surfaced as a failure of
+    # the delete itself.
+    try:
+        await livekit_service.close_room(room.id)
+    except Exception:
+        logger.exception("Failed to close LiveKit room for deleted study room %s", room.id)
+
+
+# --- Memberships ---
+
+
+@router.post("/{room_id}/join", response_model=StudyRoomMemberResponse)
+async def join_room(
+    room_id: uuid.UUID,
+    current_user: CurrentUser = Depends(get_current_user),
+    session: AsyncSession = Depends(get_db_session)
+):
+    """Join a study room as a participant. Requires active membership in the room's group; blocked if the room has ended or the caller is banned from joining rooms."""
+    room = await _get_active_room_or_404(session, room_id)
+    if not can_join_room(room):
+        raise HTTPException(status.HTTP_403_FORBIDDEN, "This study room has ended")
+    # Deliberately NOT can_access_room() here -- that also requires an active Room membership,
+    # which a first-time joiner doesn't have yet (chicken-and-egg). Join's own prerequisite is
+    # just current active Group membership (2026-08-18 parity fix, mirrors the same check
+    # can_access_room applies for ongoing participation) -- a left/banned/inactive Group member
+    # must not be able to join or rejoin a room under that group.
+    if not await is_active_group_member(session, room.group_id, current_user.id):
+        raise HTTPException(status.HTTP_403_FORBIDDEN, "Only an active group member can join this study room")
+
+
+    # Check existing membership. The joining identity is always the caller --
+    # never a client-supplied user_id -- and the role is always PARTICIPANT;
+    # self-assigning HOST/MODERATOR via this endpoint is not permitted.
+    member = await service.get_member(session, room_id, current_user.id)
+    try:
+        if member:
+            updated = await service.rejoin(session, member)
+        else:
+            updated = await service.join(session, room_id, current_user.id)
+        await session.commit()
+        return updated
+    except Exception as e:
+        await session.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Could not join study room: {str(e)}"
+        )
+
+
+@router.post("/{room_id}/leave", response_model=StudyRoomMemberResponse)
+async def leave_room(
+    room_id: uuid.UUID,
+    current_user: CurrentUser = Depends(get_current_user),
+    session: AsyncSession = Depends(get_db_session)
+):
+    """Leave a study room, ending the caller's own membership in it."""
+    # A deleted room must behave as if it no longer exists here too -- the soft-delete
+    # invariant (deleted_at set -> normal operations stop) applies to leave just like every
+    # other mutation, even though leaving only touches the caller's own membership row.
+    # Ended-but-not-deleted rooms are deliberately unaffected: no lifecycle gate has ever
+    # applied to leave, only to join (can_join_room) and to messages
+    # (is_room_conversation_open_for_writes).
+    await _get_active_room_or_404(session, room_id)
+    member = await service.get_member(session, room_id, current_user.id)
+    if not member:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Membership not found"
+        )
+    try:
+        updated = await service.leave(session, member)
+        await session.commit()
+        return updated
+    except Exception as e:
+        await session.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Could not leave study room: {str(e)}"
+        )
+
+
+@router.get("/{room_id}/members", response_model=list[StudyRoomMemberResponse])
+async def list_members(
+    room_id: uuid.UUID,
+    active_only: bool = False,
+    current_user: CurrentUser = Depends(get_current_user),
+    session: AsyncSession = Depends(get_db_session)
+):
+    """List the members of a study room, optionally filtered to active members only. Requires access to the room."""
+    room = await _get_active_room_or_404(session, room_id)
+    if not await can_access_room(session, room, current_user.id):
+        raise HTTPException(status.HTTP_403_FORBIDDEN, "You do not have access to this study room")
+    if active_only:
+        return await service.list_active_members(session, room_id)
+    return await service.list_members(session, room_id)
+
+
+@router.put("/{room_id}/members/{user_id}/role", response_model=StudyRoomMemberResponse)
+async def update_member_role(
+    room_id: uuid.UUID,
+    user_id: uuid.UUID,
+    role: StudyRoomMemberRole,
+    current_user: CurrentUser = Depends(get_current_user),
+    session: AsyncSession = Depends(get_db_session)
+):
+    """Change a study room member's role. Only an active group owner or moderator may change member roles."""
+    room = await _get_active_room_or_404(session, room_id)
+    if not await is_group_manager(session, room.group_id, current_user.id):
+        raise HTTPException(
+            status.HTTP_403_FORBIDDEN, "Only an active group owner or moderator can change member roles"
+        )
+    member = await service.get_member(session, room_id, user_id)
+    if not member:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Membership not found"
+        )
+    try:
+        updated = await service.update_member_role(session, member, role)
+        await session.commit()
+        return updated
+    except Exception as e:
+        await session.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Could not update member role: {str(e)}"
+        )
+
+
+# --- Moderation ---
+
+
+@router.post("/{room_id}/moderation", response_model=RoomModerationActionResponse)
+async def log_moderation(
+    room_id: uuid.UUID,
+    data: RoomModerationActionCreate,
+    current_user: CurrentUser = Depends(get_current_user),
+    session: AsyncSession = Depends(get_db_session)
+):
+    """Log a moderation action in a study room (e.g. kick, mute, unmute, raise/lower hand). Self-service hand actions require room access; kick/mute/unmute require an active group owner or moderator."""
+    room = await _get_active_room_or_404(session, room_id)
+
+    # The acting moderator is always the authenticated caller -- data.moderator_id
+    # is client-supplied and never trusted, even though it stays in the DTO for
+    # compatibility.
+    data = data.model_copy(update={"moderator_id": current_user.id, "room_id": room_id})
+
+    if data.action in _SELF_SERVICE_MODERATION_ACTIONS:
+        # RAISE_HAND/LOWER_HAND are self-service only: a member may not raise or
+        # lower another participant's hand.
+        if data.target_user_id != current_user.id:
+            raise HTTPException(status.HTTP_403_FORBIDDEN, "You can only raise or lower your own hand")
+        if not await can_access_room(session, room, current_user.id):
+            raise HTTPException(status.HTTP_403_FORBIDDEN, "You do not have access to this study room")
+    else:
+        # KICK/MUTE/UNMUTE require the actor to be an active group owner/moderator of this
+        # room's group (can_manage_room) -- no separate "host protection" carve-out for the
+        # target: once the actor is confirmed to be a current group manager, they have full
+        # authority over every member of the room, including whoever holds the HOST role
+        # (2026-08-18 policy change -- the old carve-out only made sense when room-scoped
+        # moderators, not just group managers, could reach this branch).
+        if not await can_manage_room(session, room, current_user.id):
+            raise HTTPException(status.HTTP_403_FORBIDDEN, "You do not have permission to moderate this study room")
+        target_member = await service.get_member(session, room_id, data.target_user_id)
+        if target_member is None:
+            raise HTTPException(status.HTTP_404_NOT_FOUND, "Target is not a member of this study room")
+
+    try:
+        action = await service.log_moderation_action(session, data)
+        await session.commit()
+    except Exception as e:
+        await session.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Could not log moderation action: {str(e)}"
+        )
+
+    # The audit record (and, for KICK, the membership's left_at) is already durably
+    # committed above -- LiveKit is a separate live system with no transactional
+    # relationship to the DB, so the real-time enforcement side effect happens after, on a
+    # best-effort basis: an infra failure here must never undo (or be reported as a failure
+    # of) a moderation action the DB has already recorded. All three LiveKitService methods
+    # below are idempotent for "already disconnected" / "no such track" -- see their
+    # docstrings. UNMUTE's LiveKit call in particular is gated by LiveKit's own
+    # "Admins can remotely unmute tracks" project setting (off by default) -- its return
+    # value is checked below (not just whether it raised) so a silently-rejected remote
+    # unmute is diagnosable, not indistinguishable from a real success.
+    if data.action == ModerationAction.KICK:
+        try:
+            await livekit_service.remove_participant(room_id, data.target_user_id)
+        except Exception:
+            logger.exception(
+                "Failed to remove kicked participant %s from LiveKit room %s", data.target_user_id, room_id
+            )
+    elif data.action == ModerationAction.MUTE:
+        try:
+            await livekit_service.mute_microphone(room_id, data.target_user_id)
+        except Exception:
+            logger.exception(
+                "Failed to mute participant %s in LiveKit room %s", data.target_user_id, room_id
+            )
+    elif data.action == ModerationAction.UNMUTE:
+        try:
+            # unmute_microphone's return, not just "did it raise", is the truthful signal --
+            # see its docstring: LiveKit can accept this RPC while leaving the track muted
+            # (typically the "Admins can remotely unmute tracks" project setting is off). The
+            # already-committed audit record is deliberately left as-is either way (it's a
+            # factual log of the requested action, not a claim about live LiveKit state) --
+            # this warning exists purely so the gap is diagnosable in production instead of
+            # silently indistinguishable from a real success.
+            confirmed = await livekit_service.unmute_microphone(room_id, data.target_user_id)
+            if not confirmed:
+                logger.warning(
+                    "LiveKit did not confirm microphone unmute for participant %s in room %s -- "
+                    "likely 'Admins can remotely unmute tracks' is disabled for this LiveKit "
+                    "project; the moderation record was saved, but the participant's track "
+                    "remains server-muted until they unmute themselves.",
+                    data.target_user_id, room_id,
+                )
+        except Exception:
+            logger.exception(
+                "Failed to unmute participant %s in LiveKit room %s", data.target_user_id, room_id
+            )
+
+    return action
+
+
+@router.get("/{room_id}/moderation", response_model=list[RoomModerationActionResponse])
+async def list_moderation(
+    room_id: uuid.UUID,
+    current_user: CurrentUser = Depends(get_current_user),
+    session: AsyncSession = Depends(get_db_session),
+):
+    """List the moderation action history for a study room. Requires access to the room."""
+    room = await _get_active_room_or_404(session, room_id)
+    if not await can_access_room(session, room, current_user.id):
+        raise HTTPException(status.HTTP_403_FORBIDDEN, "You do not have access to this study room")
+    return await service.list_moderation_actions(session, room_id)
+
+
+# --- Meeting (LiveKit) ---
+
+
+@router.post("/{room_id}/meeting/token", response_model=MeetingTokenResponse)
+async def create_meeting_token(
+    room_id: uuid.UUID,
+    current_user: CurrentUser = Depends(get_current_user),
+    session: AsyncSession = Depends(get_db_session),
+):
+    """Issue a LiveKit access token for joining this study room's live meeting. Requires permission to join the room's meeting; only the host or a moderator is granted data-publish rights (e.g. for the whiteboard)."""
+    room = await _get_active_room_or_404(session, room_id)
+    if not await can_join_room_meeting(session, room, current_user.id):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="You do not have access to this study room"
+        )
+
+    # Canonical display-name fallback hierarchy (display_name -> username -> None, never a
+    # raw id/email) -- LiveKit's own SDK-level fallback (bare `identity`, a UUID) only
+    # applies if this is None too; see MeetingVideoGrid.tsx for the final generic-label step.
+    profile = await profiles_service.get_by_id(session, current_user.id)
+    participant_name = (profile.display_name or profile.username) if profile else None
+
+    # Whiteboard live-sync (useWhiteboardSync.ts) broadcasts over this same LiveKit
+    # connection's data channel -- can_publish_data must match can_edit_whiteboard's
+    # host/moderator gate, or a PARTICIPANT could bypass the read-only board by publishing
+    # data directly, even though the REST /whiteboard PUT above is separately gated too.
+    can_publish_data = await can_edit_whiteboard(session, room, current_user.id)
+
+    token = livekit_service.create_participant_token(
+        room_id=room.id, identity=current_user.id, name=participant_name, can_publish_data=can_publish_data
+    )
+    return MeetingTokenResponse(server_url=settings.livekit_url, participant_token=token)

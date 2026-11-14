@@ -150,3 +150,21 @@ h1, h2, h3, h4, h5, h6, p {
   background: #DBEAFE;
   color: #1D4ED8;
 }
+
+/* Group workspace: sidebar nav + section tabs (StudyGroupDetail, WorkspaceTabs). */
+.workspace-tabs-strip::-webkit-scrollbar { display: none; }
+.workspace-tab { transition: color 0.15s ease, background-color 0.15s ease; }
+.workspace-tab:hover { color: #0F172A !important; background: #F8FAFC !important; }
+.workspace-tab:focus-visible,
+.workspace-icon-button:focus-visible,
+.workspace-nav-item:focus-visible {
+  outline: 2px solid #3B82F6;
+  outline-offset: -2px;
+}
+.workspace-icon-button { transition: background-color 0.15s ease, color 0.15s ease; }
+.workspace-icon-button:not(:disabled):hover { background: #F1F5F9 !important; color: #0F172A !important; }
+.workspace-nav-item { transition: background-color 0.15s ease, color 0.15s ease; }
+.workspace-nav-item:not([aria-current="page"]):hover { background: #EEF2F7 !important; color: #0F172A !important; }
+@keyframes workspace-live-pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.35; } }
+.workspace-live-dot { animation: workspace-live-pulse 1.6s ease-in-out infinite; }
+@media (prefers-reduced-motion: reduce) { .workspace-live-dot { animation: none; } }

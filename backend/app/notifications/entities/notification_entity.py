@@ -1,0 +1,57 @@
+import uuid
+from datetime import datetime
+from typing import TYPE_CHECKING
+
+from sqlalchemy import Boolean, DateTime, ForeignKey, text
+from sqlalchemy.dialects.postgresql import JSONB, UUID
+from sqlalchemy.orm import Mapped, mapped_column, relationship
+
+from app.db.base import Base
+from app.db.enums import NotificationType, pg_enum
+
+if TYPE_CHECKING:
+    from app.groups.entities.group_entity import Group
+    from app.invitations.entities.invitation_entity import Invitation
+    from app.profiles.entities.profile_entity import Profile
+
+
+class Notification(Base):
+    __tablename__ = "notifications"
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), primary_key=True, server_default=text("gen_random_uuid()")
+    )
+    user_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("profiles.id", ondelete="CASCADE")
+    )
+    type: Mapped[NotificationType] = mapped_column(pg_enum(NotificationType, "notification_type"))
+    actor_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("profiles.id", ondelete="SET NULL")
+    )
+    # Legacy forum columns kept (no FK) so the notification DTO shape stays unchanged.
+    post_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True)
+    )
+    comment_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True)
+    )
+    group_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("groups.id", ondelete="CASCADE")
+    )
+    # Set only for GROUP_INVITE / STUDY_ROOM_INVITATION / PRIVATE_CHANNEL_INVITATION
+    # notifications -- the notification references the invitation rather than duplicating
+    # its target/status; Accept/Decline in the UI call the invitation redemption endpoints,
+    # never write membership directly (see docs/db/migrations/013_create_invitations.sql).
+    invitation_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("invitations.id", ondelete="CASCADE")
+    )
+    # Flexible per-type metadata: task_count, resource_name, room_name, message_preview,
+    # other_count (like aggregation), hours_left, etc.  Varies by NotificationType.
+    data: Mapped[dict | None] = mapped_column(JSONB, server_default=text("'{}'::jsonb"))
+    is_read: Mapped[bool] = mapped_column(Boolean, server_default=text("false"))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=text("now()"))
+
+    user: Mapped["Profile"] = relationship(back_populates="notifications", foreign_keys=[user_id])
+    actor: Mapped["Profile | None"] = relationship(back_populates="triggered_notifications", foreign_keys=[actor_id])
+    group: Mapped["Group | None"] = relationship(back_populates="notifications")
+    invitation: Mapped["Invitation | None"] = relationship(back_populates="notifications")

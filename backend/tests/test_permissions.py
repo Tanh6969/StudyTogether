@@ -1,0 +1,926 @@
+import uuid
+from datetime import datetime, timezone
+from unittest.mock import AsyncMock
+
+from app.channels.entities.channel_entity import Channel, ChannelMember
+from app.conversations.entities.conversation_entity import Conversation
+from app.core import permissions
+from app.db.enums import ConversationType, GroupMemberRole, MemberStatus, StudyRoomMemberRole, StudyRoomStatus
+from app.groups.entities.group_entity import Group, GroupMember
+from app.study_rooms.entities.study_room_entity import StudyRoom, StudyRoomMember
+
+
+def _group_member(role: GroupMemberRole, status: MemberStatus) -> GroupMember:
+    return GroupMember(group_id=uuid.uuid4(), user_id=uuid.uuid4(), role=role, status=status)
+
+
+def _group(owner_id: uuid.UUID | None = None) -> Group:
+    return Group(id=uuid.uuid4(), name="Group", owner_id=owner_id or uuid.uuid4(), is_public=True)
+
+
+def _channel(is_private: bool, deleted_at: datetime | None = None) -> Channel:
+    return Channel(id=uuid.uuid4(), group_id=uuid.uuid4(), name="general", is_private=is_private, deleted_at=deleted_at)
+
+
+def _room(
+    status: StudyRoomStatus = StudyRoomStatus.ACTIVE,
+    host_id: uuid.UUID | None = None,
+    deleted_at: datetime | None = None,
+) -> StudyRoom:
+    return StudyRoom(
+        id=uuid.uuid4(),
+        group_id=uuid.uuid4(),
+        name="Room",
+        host_id=host_id or uuid.uuid4(),
+        status=status,
+        max_participants=50,
+        deleted_at=deleted_at,
+    )
+
+
+def _room_member(
+    room_id: uuid.UUID,
+    user_id: uuid.UUID,
+    role: StudyRoomMemberRole = StudyRoomMemberRole.PARTICIPANT,
+    left_at: datetime | None = None,
+) -> StudyRoomMember:
+    return StudyRoomMember(room_id=room_id, user_id=user_id, role=role, left_at=left_at)
+
+
+async def test_is_active_group_member_true_for_active_member(monkeypatch):
+    member = _group_member(GroupMemberRole.MEMBER, MemberStatus.ACTIVE)
+    monkeypatch.setattr(permissions.groups_service, "get_member", AsyncMock(return_value=member))
+
+    assert await permissions.is_active_group_member(session=None, group_id=uuid.uuid4(), user_id=uuid.uuid4())
+
+
+async def test_is_active_group_member_false_when_banned(monkeypatch):
+    member = _group_member(GroupMemberRole.MEMBER, MemberStatus.BANNED)
+    monkeypatch.setattr(permissions.groups_service, "get_member", AsyncMock(return_value=member))
+
+    assert not await permissions.is_active_group_member(session=None, group_id=uuid.uuid4(), user_id=uuid.uuid4())
+
+
+async def test_is_active_group_member_false_when_no_membership(monkeypatch):
+    monkeypatch.setattr(permissions.groups_service, "get_member", AsyncMock(return_value=None))
+
+    assert not await permissions.is_active_group_member(session=None, group_id=uuid.uuid4(), user_id=uuid.uuid4())
+
+
+async def test_is_group_manager_true_for_owner(monkeypatch):
+    member = _group_member(GroupMemberRole.OWNER, MemberStatus.ACTIVE)
+    monkeypatch.setattr(permissions.groups_service, "get_member", AsyncMock(return_value=member))
+
+    assert await permissions.is_group_manager(session=None, group_id=uuid.uuid4(), user_id=uuid.uuid4())
+
+
+async def test_is_group_manager_false_for_plain_member(monkeypatch):
+    member = _group_member(GroupMemberRole.MEMBER, MemberStatus.ACTIVE)
+    monkeypatch.setattr(permissions.groups_service, "get_member", AsyncMock(return_value=member))
+
+    assert not await permissions.is_group_manager(session=None, group_id=uuid.uuid4(), user_id=uuid.uuid4())
+
+
+def test_is_group_owner_true_for_owner():
+    owner_id = uuid.uuid4()
+    group = _group(owner_id=owner_id)
+
+    assert permissions.is_group_owner(group, owner_id)
+
+
+def test_is_group_owner_false_for_non_owner():
+    group = _group(owner_id=uuid.uuid4())
+
+    assert not permissions.is_group_owner(group, uuid.uuid4())
+
+
+async def test_can_access_channel_public_requires_only_group_membership(monkeypatch):
+    channel = _channel(is_private=False)
+    member = _group_member(GroupMemberRole.MEMBER, MemberStatus.ACTIVE)
+    monkeypatch.setattr(permissions.groups_service, "get_member", AsyncMock(return_value=member))
+
+    assert await permissions.can_access_channel(session=None, channel=channel, user_id=uuid.uuid4())
+
+
+async def test_can_access_channel_false_when_not_group_member(monkeypatch):
+    channel = _channel(is_private=False)
+    monkeypatch.setattr(permissions.groups_service, "get_member", AsyncMock(return_value=None))
+
+    assert not await permissions.can_access_channel(session=None, channel=channel, user_id=uuid.uuid4())
+
+
+async def test_can_access_channel_private_requires_channel_membership(monkeypatch):
+    channel = _channel(is_private=True)
+    group_member = _group_member(GroupMemberRole.MEMBER, MemberStatus.ACTIVE)
+    monkeypatch.setattr(permissions.groups_service, "get_member", AsyncMock(return_value=group_member))
+    monkeypatch.setattr(permissions.channels_service, "get_member", AsyncMock(return_value=None))
+
+    assert not await permissions.can_access_channel(session=None, channel=channel, user_id=uuid.uuid4())
+
+    channel_member = ChannelMember(channel_id=channel.id, user_id=uuid.uuid4())
+    monkeypatch.setattr(permissions.channels_service, "get_member", AsyncMock(return_value=channel_member))
+
+    assert await permissions.can_access_channel(session=None, channel=channel, user_id=uuid.uuid4())
+
+
+async def test_can_access_channel_private_grants_implicit_access_to_owner_without_membership_row(monkeypatch):
+    """Mirrors the SQL `can_access_channel()` RLS helper (docs/db/migrations/
+    004_refactor_chat_to_conversations.sql § 8), which ORs in `is_group_manager` alongside
+    the channel_members check. Channel creation never inserts the creator into
+    channel_members, so without this branch the creator would be locked out of their own
+    private channel."""
+    channel = _channel(is_private=True)
+    owner = _group_member(GroupMemberRole.OWNER, MemberStatus.ACTIVE)
+    monkeypatch.setattr(permissions.groups_service, "get_member", AsyncMock(return_value=owner))
+    get_channel_member_mock = AsyncMock(return_value=None)
+    monkeypatch.setattr(permissions.channels_service, "get_member", get_channel_member_mock)
+
+    assert await permissions.can_access_channel(session=None, channel=channel, user_id=uuid.uuid4())
+    get_channel_member_mock.assert_not_awaited()
+
+
+async def test_can_access_channel_private_grants_implicit_access_to_moderator_without_membership_row(monkeypatch):
+    channel = _channel(is_private=True)
+    moderator = _group_member(GroupMemberRole.MODERATOR, MemberStatus.ACTIVE)
+    monkeypatch.setattr(permissions.groups_service, "get_member", AsyncMock(return_value=moderator))
+    monkeypatch.setattr(permissions.channels_service, "get_member", AsyncMock(return_value=None))
+
+    assert await permissions.can_access_channel(session=None, channel=channel, user_id=uuid.uuid4())
+
+
+async def test_can_access_channel_private_denies_plain_member_without_membership_row(monkeypatch):
+    """Contrast with the manager tests above: an ordinary active member (not owner/moderator)
+    must NOT get implicit private-channel access -- they still need an explicit
+    channel_members row."""
+    channel = _channel(is_private=True)
+    plain_member = _group_member(GroupMemberRole.MEMBER, MemberStatus.ACTIVE)
+    monkeypatch.setattr(permissions.groups_service, "get_member", AsyncMock(return_value=plain_member))
+    monkeypatch.setattr(permissions.channels_service, "get_member", AsyncMock(return_value=None))
+
+    assert not await permissions.can_access_channel(session=None, channel=channel, user_id=uuid.uuid4())
+
+
+async def test_can_access_channel_private_denies_banned_owner_even_with_stale_membership_row(monkeypatch):
+    """A banned/inactive group_members row must deny access outright, regardless of role or
+    of a leftover channel_members row -- is_active_group_member is checked first and gates
+    both the manager branch and the explicit-membership branch."""
+    channel = _channel(is_private=True)
+    banned_owner = _group_member(GroupMemberRole.OWNER, MemberStatus.BANNED)
+    monkeypatch.setattr(permissions.groups_service, "get_member", AsyncMock(return_value=banned_owner))
+    stale_channel_member = ChannelMember(channel_id=channel.id, user_id=uuid.uuid4())
+    get_channel_member_mock = AsyncMock(return_value=stale_channel_member)
+    monkeypatch.setattr(permissions.channels_service, "get_member", get_channel_member_mock)
+
+    assert not await permissions.can_access_channel(session=None, channel=channel, user_id=uuid.uuid4())
+    get_channel_member_mock.assert_not_awaited()
+
+
+# --- can_access_channel: soft-deleted channel (migration 009) ---
+
+
+async def test_can_access_channel_false_when_deleted_even_for_active_member(monkeypatch):
+    channel = _channel(is_private=False, deleted_at=datetime.now(timezone.utc))
+    get_member_mock = AsyncMock(return_value=_group_member(GroupMemberRole.MEMBER, MemberStatus.ACTIVE))
+    monkeypatch.setattr(permissions.groups_service, "get_member", get_member_mock)
+
+    assert not await permissions.can_access_channel(session=None, channel=channel, user_id=uuid.uuid4())
+    # Deletion is checked before any group-membership lookup -- deny fast, no wasted query.
+    get_member_mock.assert_not_awaited()
+
+
+async def test_can_access_channel_false_when_deleted_even_for_group_owner(monkeypatch):
+    """A deleted channel must deny everyone through normal access paths, including the
+    group owner/moderator who could otherwise use the implicit-manager-access branch."""
+    channel = _channel(is_private=True, deleted_at=datetime.now(timezone.utc))
+    get_member_mock = AsyncMock(return_value=_group_member(GroupMemberRole.OWNER, MemberStatus.ACTIVE))
+    monkeypatch.setattr(permissions.groups_service, "get_member", get_member_mock)
+
+    assert not await permissions.can_access_channel(session=None, channel=channel, user_id=uuid.uuid4())
+    get_member_mock.assert_not_awaited()
+
+
+async def test_can_access_channel_false_when_deleted_even_for_explicit_channel_member(monkeypatch):
+    channel = _channel(is_private=True, deleted_at=datetime.now(timezone.utc))
+    monkeypatch.setattr(permissions.groups_service, "get_member", AsyncMock())
+    get_channel_member_mock = AsyncMock()
+    monkeypatch.setattr(permissions.channels_service, "get_member", get_channel_member_mock)
+
+    assert not await permissions.can_access_channel(session=None, channel=channel, user_id=uuid.uuid4())
+    get_channel_member_mock.assert_not_awaited()
+
+
+async def test_can_access_channel_true_when_deleted_at_is_none(monkeypatch):
+    """Contrast case: an explicit deleted_at=None (the default/not-deleted state) must not
+    itself deny access -- only an actually-set deleted_at does."""
+    channel = _channel(is_private=False, deleted_at=None)
+    monkeypatch.setattr(
+        permissions.groups_service, "get_member", AsyncMock(return_value=_group_member(GroupMemberRole.MEMBER, MemberStatus.ACTIVE))
+    )
+
+    assert await permissions.can_access_channel(session=None, channel=channel, user_id=uuid.uuid4())
+
+
+async def test_can_access_conversation_channel_type_false_when_channel_deleted(monkeypatch):
+    """End-to-end through the dispatch entry point: can_access_conversation for a channel-type
+    conversation must deny once the underlying channel is soft-deleted."""
+    channel = _channel(is_private=False, deleted_at=datetime.now(timezone.utc))
+    conversation = Conversation(id=uuid.uuid4(), type=ConversationType.CHANNEL, channel_id=channel.id, created_by=uuid.uuid4())
+    monkeypatch.setattr(permissions.channels_service, "get_by_id", AsyncMock(return_value=channel))
+    monkeypatch.setattr(permissions.groups_service, "get_member", AsyncMock(return_value=_group_member(GroupMemberRole.OWNER, MemberStatus.ACTIVE)))
+
+    assert not await permissions.can_access_conversation(session=None, conversation=conversation, user_id=uuid.uuid4())
+
+
+# --- can_access_conversation ---
+
+
+async def test_can_access_conversation_channel_type_delegates_to_can_access_channel(monkeypatch):
+    channel = _channel(is_private=False)
+    conversation = Conversation(id=uuid.uuid4(), type=ConversationType.CHANNEL, channel_id=channel.id, created_by=uuid.uuid4())
+    member = _group_member(GroupMemberRole.MEMBER, MemberStatus.ACTIVE)
+    monkeypatch.setattr(permissions.channels_service, "get_by_id", AsyncMock(return_value=channel))
+    monkeypatch.setattr(permissions.groups_service, "get_member", AsyncMock(return_value=member))
+
+    assert await permissions.can_access_conversation(session=None, conversation=conversation, user_id=uuid.uuid4())
+
+
+async def test_can_access_conversation_channel_type_false_when_channel_missing(monkeypatch):
+    conversation = Conversation(id=uuid.uuid4(), type=ConversationType.CHANNEL, channel_id=uuid.uuid4(), created_by=uuid.uuid4())
+    monkeypatch.setattr(permissions.channels_service, "get_by_id", AsyncMock(return_value=None))
+
+    assert not await permissions.can_access_conversation(session=None, conversation=conversation, user_id=uuid.uuid4())
+
+
+async def test_can_access_conversation_direct_type_true_for_member(monkeypatch):
+    user_a, user_b = uuid.uuid4(), uuid.uuid4()
+    conversation = Conversation(id=uuid.uuid4(), type=ConversationType.DIRECT, created_by=user_a)
+    monkeypatch.setattr(permissions.conversations_service, "is_member", AsyncMock(return_value=True))
+
+    assert await permissions.can_access_conversation(session=None, conversation=conversation, user_id=user_a)
+
+
+async def test_can_access_conversation_direct_type_false_for_non_member(monkeypatch):
+    conversation = Conversation(id=uuid.uuid4(), type=ConversationType.DIRECT, created_by=uuid.uuid4())
+    monkeypatch.setattr(permissions.conversations_service, "is_member", AsyncMock(return_value=False))
+
+    assert not await permissions.can_access_conversation(session=None, conversation=conversation, user_id=uuid.uuid4())
+
+
+async def test_can_access_conversation_direct_type_denied_even_with_room_id_set(monkeypatch):
+    """Type must gate dispatch, not the presence of a (contradictory) room_id/channel_id --
+    a DIRECT conversation with a stray room_id must still resolve via conversation_members,
+    never fall through to room logic."""
+    conversation = Conversation(
+        id=uuid.uuid4(), type=ConversationType.DIRECT, room_id=uuid.uuid4(), created_by=uuid.uuid4()
+    )
+    get_room_mock = AsyncMock()
+    monkeypatch.setattr(permissions.study_rooms_service, "get_by_id", get_room_mock)
+    monkeypatch.setattr(permissions.conversations_service, "is_member", AsyncMock(return_value=False))
+
+    assert not await permissions.can_access_conversation(session=None, conversation=conversation, user_id=uuid.uuid4())
+    get_room_mock.assert_not_awaited()
+
+
+# --- can_access_room / can_access_conversation (room) ---
+
+
+def _mock_active_group_member(monkeypatch, role: GroupMemberRole = GroupMemberRole.MEMBER):
+    monkeypatch.setattr(
+        permissions.groups_service, "get_member", AsyncMock(return_value=_group_member(role, MemberStatus.ACTIVE))
+    )
+
+
+def _mock_inactive_group_member(monkeypatch, status: MemberStatus):
+    monkeypatch.setattr(
+        permissions.groups_service,
+        "get_member",
+        AsyncMock(return_value=_group_member(GroupMemberRole.MEMBER, status)),
+    )
+
+
+def _mock_no_group_membership(monkeypatch):
+    monkeypatch.setattr(permissions.groups_service, "get_member", AsyncMock(return_value=None))
+
+
+async def test_can_access_room_false_for_host_without_active_room_membership(monkeypatch):
+    """2026-08-18 policy: `host_id` is creator metadata, not an independent access grant -- a
+    host needs the same active study_room_members row as anyone else. A host with no
+    membership row at all is a data anomaly for any room created through the normal app path
+    (StudyRoomsService.create() always inserts one atomically), but can_access_room itself
+    must not special-case host_id to paper over it."""
+    host_id = uuid.uuid4()
+    room = _room(host_id=host_id)
+    _mock_active_group_member(monkeypatch)
+    monkeypatch.setattr(permissions.study_rooms_service, "get_member", AsyncMock(return_value=None))
+
+    assert not await permissions.can_access_room(session=None, room=room, user_id=host_id)
+
+
+async def test_can_access_room_true_for_host_with_active_room_membership(monkeypatch):
+    """The realistic case: StudyRoomsService.create() always gives the host an active
+    (role=HOST, left_at=None) study_room_members row atomically with the room, so a
+    still-participating host passes the exact same check as any other active member."""
+    host_id = uuid.uuid4()
+    room = _room(host_id=host_id)
+    _mock_active_group_member(monkeypatch)
+    monkeypatch.setattr(
+        permissions.study_rooms_service,
+        "get_member",
+        AsyncMock(return_value=_room_member(room.id, host_id, role=StudyRoomMemberRole.HOST)),
+    )
+
+    assert await permissions.can_access_room(session=None, room=room, user_id=host_id)
+
+
+async def test_can_access_room_false_for_host_who_left_the_room(monkeypatch):
+    """A host who has since left their own room (left_at set) must not retain access purely
+    because host_id still points at them."""
+    host_id = uuid.uuid4()
+    room = _room(host_id=host_id)
+    left_membership = _room_member(
+        room.id, host_id, role=StudyRoomMemberRole.HOST, left_at=datetime.now(timezone.utc)
+    )
+    _mock_active_group_member(monkeypatch)
+    monkeypatch.setattr(permissions.study_rooms_service, "get_member", AsyncMock(return_value=left_membership))
+
+    assert not await permissions.can_access_room(session=None, room=room, user_id=host_id)
+
+
+async def test_can_access_room_true_for_active_member(monkeypatch):
+    room = _room()
+    user_id = uuid.uuid4()
+    _mock_active_group_member(monkeypatch)
+    monkeypatch.setattr(
+        permissions.study_rooms_service, "get_member", AsyncMock(return_value=_room_member(room.id, user_id))
+    )
+
+    assert await permissions.can_access_room(session=None, room=room, user_id=user_id)
+
+
+async def test_can_access_room_false_for_non_member(monkeypatch):
+    room = _room()
+    _mock_active_group_member(monkeypatch)
+    monkeypatch.setattr(permissions.study_rooms_service, "get_member", AsyncMock(return_value=None))
+
+    assert not await permissions.can_access_room(session=None, room=room, user_id=uuid.uuid4())
+
+
+async def test_can_access_room_false_for_left_member(monkeypatch):
+    room = _room()
+    user_id = uuid.uuid4()
+    left_member = _room_member(room.id, user_id, left_at=datetime.now(timezone.utc))
+    _mock_active_group_member(monkeypatch)
+    monkeypatch.setattr(permissions.study_rooms_service, "get_member", AsyncMock(return_value=left_member))
+
+    assert not await permissions.can_access_room(session=None, room=room, user_id=user_id)
+
+
+async def test_can_access_room_false_for_kicked_member(monkeypatch):
+    """Study rooms have no separate 'banned'/'kicked' status column -- RoomModerationAction.KICK
+    is only an audit log entry, not wired to membership. A kicked member is represented the
+    same way as one who left: their study_room_members row has left_at set."""
+    room = _room()
+    user_id = uuid.uuid4()
+    kicked_member = _room_member(room.id, user_id, left_at=datetime.now(timezone.utc))
+    _mock_active_group_member(monkeypatch)
+    monkeypatch.setattr(permissions.study_rooms_service, "get_member", AsyncMock(return_value=kicked_member))
+
+    assert not await permissions.can_access_room(session=None, room=room, user_id=user_id)
+
+
+async def test_can_access_room_false_for_deleted_room_even_for_host(monkeypatch):
+    """A soft-deleted room denies access outright, before the host branch -- mirrors
+    can_access_channel's deleted_at guard."""
+    host_id = uuid.uuid4()
+    room = _room(host_id=host_id, deleted_at=datetime.now(timezone.utc))
+    get_group_member_mock = AsyncMock()
+    monkeypatch.setattr(permissions.groups_service, "get_member", get_group_member_mock)
+    get_member_mock = AsyncMock()
+    monkeypatch.setattr(permissions.study_rooms_service, "get_member", get_member_mock)
+
+    assert not await permissions.can_access_room(session=None, room=room, user_id=host_id)
+    get_group_member_mock.assert_not_awaited()
+    get_member_mock.assert_not_awaited()
+
+
+async def test_can_access_room_true_when_deleted_at_is_none(monkeypatch):
+    """Contrast case: an explicit deleted_at=None (the default/not-deleted state) must not
+    itself deny access -- only an actually-set deleted_at does."""
+    host_id = uuid.uuid4()
+    room = _room(host_id=host_id, deleted_at=None)
+    _mock_active_group_member(monkeypatch)
+    monkeypatch.setattr(
+        permissions.study_rooms_service,
+        "get_member",
+        AsyncMock(return_value=_room_member(room.id, host_id, role=StudyRoomMemberRole.HOST)),
+    )
+
+    assert await permissions.can_access_room(session=None, room=room, user_id=host_id)
+
+
+# --- can_access_room: Python/SQL parity fix (2026-08-18) -- active Group membership is now
+# required, not just an active study_room_members row. Before this fix, can_access_room only
+# checked is_active_room_member, so a user who left/was banned from the Group could keep
+# reading/writing a room's chat via FastAPI forever on a stale active study_room_members row,
+# even though can_access_room_conversation() (SQL/RLS, migration 011, live) already denied the
+# exact same request via Realtime/PostgREST. These tests exercise the real can_access_room()
+# logic (not a mock of it) to close that gap. ---
+
+
+async def test_can_access_room_false_for_left_group_member_with_stale_active_room_membership(monkeypatch):
+    """The core parity-bug regression: an active (non-left) study_room_members row must not
+    grant access once the user has left the Group -- study_room_members has no cascade from
+    Group membership changes, so this stale-row scenario is realistic, not hypothetical."""
+    room = _room()
+    user_id = uuid.uuid4()
+    _mock_inactive_group_member(monkeypatch, MemberStatus.LEFT)
+    get_room_member_mock = AsyncMock(return_value=_room_member(room.id, user_id))
+    monkeypatch.setattr(permissions.study_rooms_service, "get_member", get_room_member_mock)
+
+    assert not await permissions.can_access_room(session=None, room=room, user_id=user_id)
+    # The Group check short-circuits before the (now irrelevant) room-membership lookup --
+    # denied-by-Group is denied regardless of what study_room_members says.
+    get_room_member_mock.assert_not_awaited()
+
+
+async def test_can_access_room_false_for_banned_group_member_with_stale_active_room_membership(monkeypatch):
+    room = _room()
+    user_id = uuid.uuid4()
+    _mock_inactive_group_member(monkeypatch, MemberStatus.BANNED)
+    monkeypatch.setattr(
+        permissions.study_rooms_service, "get_member", AsyncMock(return_value=_room_member(room.id, user_id))
+    )
+
+    assert not await permissions.can_access_room(session=None, room=room, user_id=user_id)
+
+
+async def test_can_access_room_false_for_non_group_member_with_stale_active_room_membership(monkeypatch):
+    """A user with an active study_room_members row but no group_members row at all (e.g. fully
+    removed from the Group) must also be denied."""
+    room = _room()
+    user_id = uuid.uuid4()
+    _mock_no_group_membership(monkeypatch)
+    monkeypatch.setattr(
+        permissions.study_rooms_service, "get_member", AsyncMock(return_value=_room_member(room.id, user_id))
+    )
+
+    assert not await permissions.can_access_room(session=None, room=room, user_id=user_id)
+
+
+async def test_can_access_room_false_for_left_group_host_with_stale_active_room_membership(monkeypatch):
+    """Same as the plain-member case, but for the room's own host -- host_id must not bypass
+    the Group-membership requirement either."""
+    host_id = uuid.uuid4()
+    room = _room(host_id=host_id)
+    _mock_inactive_group_member(monkeypatch, MemberStatus.LEFT)
+    monkeypatch.setattr(
+        permissions.study_rooms_service,
+        "get_member",
+        AsyncMock(return_value=_room_member(room.id, host_id, role=StudyRoomMemberRole.HOST)),
+    )
+
+    assert not await permissions.can_access_room(session=None, room=room, user_id=host_id)
+
+
+async def test_can_access_room_group_check_runs_before_room_membership_check(monkeypatch):
+    """Group membership is checked before the (possibly more expensive/irrelevant) room
+    membership lookup -- a denied Group check short-circuits without needing to consult
+    study_room_members at all."""
+    room = _room()
+    _mock_no_group_membership(monkeypatch)
+    get_room_member_mock = AsyncMock()
+    monkeypatch.setattr(permissions.study_rooms_service, "get_member", get_room_member_mock)
+
+    assert not await permissions.can_access_room(session=None, room=room, user_id=uuid.uuid4())
+    get_room_member_mock.assert_not_awaited()
+
+
+async def test_can_access_conversation_room_type_false_when_room_deleted(monkeypatch):
+    """End-to-end through the dispatch entry point, mirroring
+    test_can_access_conversation_channel_type_false_when_channel_deleted."""
+    host_id = uuid.uuid4()
+    room = _room(host_id=host_id, deleted_at=datetime.now(timezone.utc))
+    conversation = Conversation(id=uuid.uuid4(), type=ConversationType.ROOM, room_id=room.id, created_by=host_id)
+    monkeypatch.setattr(permissions.study_rooms_service, "get_by_id", AsyncMock(return_value=room))
+
+    assert not await permissions.can_access_conversation(session=None, conversation=conversation, user_id=host_id)
+
+
+# --- can_manage_room ---
+
+
+async def test_can_manage_room_false_for_deleted_room_even_for_host(monkeypatch):
+    """can_manage_room does not go through can_access_room -- it needs its own guard. Deleted
+    short-circuits before any Group-role lookup at all."""
+    host_id = uuid.uuid4()
+    room = _room(host_id=host_id, deleted_at=datetime.now(timezone.utc))
+    get_group_member_mock = AsyncMock()
+    monkeypatch.setattr(permissions.groups_service, "get_member", get_group_member_mock)
+
+    assert not await permissions.can_manage_room(session=None, room=room, user_id=host_id)
+    get_group_member_mock.assert_not_awaited()
+
+
+async def test_can_manage_room_true_for_active_group_owner(monkeypatch):
+    """Canonical manager rule: an active Group owner may manage ANY room in their group,
+    whether or not they created it -- authority comes from is_group_manager, not host_id."""
+    room = _room()
+    user_id = uuid.uuid4()
+    monkeypatch.setattr(
+        permissions.groups_service,
+        "get_member",
+        AsyncMock(return_value=_group_member(GroupMemberRole.OWNER, MemberStatus.ACTIVE)),
+    )
+
+    assert await permissions.can_manage_room(session=None, room=room, user_id=user_id)
+
+
+async def test_can_manage_room_true_for_active_group_moderator(monkeypatch):
+    room = _room()
+    user_id = uuid.uuid4()
+    monkeypatch.setattr(
+        permissions.groups_service,
+        "get_member",
+        AsyncMock(return_value=_group_member(GroupMemberRole.MODERATOR, MemberStatus.ACTIVE)),
+    )
+
+    assert await permissions.can_manage_room(session=None, room=room, user_id=user_id)
+
+
+async def test_can_manage_room_false_for_plain_active_group_member(monkeypatch):
+    room = _room()
+    user_id = uuid.uuid4()
+    monkeypatch.setattr(
+        permissions.groups_service,
+        "get_member",
+        AsyncMock(return_value=_group_member(GroupMemberRole.MEMBER, MemberStatus.ACTIVE)),
+    )
+
+    assert not await permissions.can_manage_room(session=None, room=room, user_id=user_id)
+
+
+async def test_can_manage_room_false_for_non_group_member(monkeypatch):
+    room = _room()
+    monkeypatch.setattr(permissions.groups_service, "get_member", AsyncMock(return_value=None))
+
+    assert not await permissions.can_manage_room(session=None, room=room, user_id=uuid.uuid4())
+
+
+async def test_can_manage_room_false_for_room_scoped_moderator_role_without_group_authority(monkeypatch):
+    """Regression guard: study_room_members.role == MODERATOR (a room-scoped delegation, see
+    STUDY_PLATFORM_DATABASE_SPEC.md §22, superseded 2026-08-18) must NOT independently grant
+    management authority any more -- only a CURRENT active Group owner/moderator can. This
+    also proves can_manage_room no longer consults study_room_members at all -- it must not
+    even be queried."""
+    room = _room()
+    user_id = uuid.uuid4()
+    get_room_member_mock = AsyncMock()
+    monkeypatch.setattr(permissions.study_rooms_service, "get_member", get_room_member_mock)
+    monkeypatch.setattr(
+        permissions.groups_service,
+        "get_member",
+        AsyncMock(return_value=_group_member(GroupMemberRole.MEMBER, MemberStatus.ACTIVE)),
+    )
+
+    assert not await permissions.can_manage_room(session=None, room=room, user_id=user_id)
+    get_room_member_mock.assert_not_awaited()
+
+
+async def test_can_manage_room_false_for_demoted_former_host(monkeypatch):
+    """The core stale-host regression: a Moderator creates a room (room.host_id == them) and
+    is later demoted to a plain Member -- host_id is unchanged, but management authority must
+    now be denied."""
+    host_id = uuid.uuid4()
+    room = _room(host_id=host_id)
+    monkeypatch.setattr(
+        permissions.groups_service,
+        "get_member",
+        AsyncMock(return_value=_group_member(GroupMemberRole.MEMBER, MemberStatus.ACTIVE)),
+    )
+
+    assert not await permissions.can_manage_room(session=None, room=room, user_id=host_id)
+
+
+async def test_can_manage_room_false_for_host_who_left_group(monkeypatch):
+    """A host who has left the Group entirely must not retain management authority via
+    host_id, even though the room's host_id field never changes."""
+    host_id = uuid.uuid4()
+    room = _room(host_id=host_id)
+    monkeypatch.setattr(
+        permissions.groups_service,
+        "get_member",
+        AsyncMock(return_value=_group_member(GroupMemberRole.MODERATOR, MemberStatus.LEFT)),
+    )
+
+    assert not await permissions.can_manage_room(session=None, room=room, user_id=host_id)
+
+
+async def test_can_manage_room_false_for_banned_host(monkeypatch):
+    """Same as above for a banned former Owner -- MemberStatus.BANNED must deny, matching
+    is_group_manager's existing ACTIVE requirement."""
+    host_id = uuid.uuid4()
+    room = _room(host_id=host_id)
+    monkeypatch.setattr(
+        permissions.groups_service,
+        "get_member",
+        AsyncMock(return_value=_group_member(GroupMemberRole.OWNER, MemberStatus.BANNED)),
+    )
+
+    assert not await permissions.can_manage_room(session=None, room=room, user_id=host_id)
+
+
+# --- can_join_room ---
+
+
+def test_can_join_room_false_for_deleted_room():
+    room = _room(status=StudyRoomStatus.ACTIVE, deleted_at=datetime.now(timezone.utc))
+
+    assert not permissions.can_join_room(room)
+
+
+def test_can_join_room_true_for_active_non_deleted_room():
+    room = _room(status=StudyRoomStatus.ACTIVE)
+
+    assert permissions.can_join_room(room)
+
+
+def test_can_join_room_false_for_ended_room():
+    """Regression guard: the deleted_at addition must not affect the pre-existing ended-room
+    lifecycle gate."""
+    room = _room(status=StudyRoomStatus.ENDED)
+
+    assert not permissions.can_join_room(room)
+
+
+# --- can_join_room_meeting ---
+
+
+async def test_can_join_room_meeting_true_for_waiting_room_host_with_active_membership(monkeypatch):
+    host_id = uuid.uuid4()
+    room = _room(status=StudyRoomStatus.WAITING, host_id=host_id)
+    _mock_active_group_member(monkeypatch)
+    monkeypatch.setattr(
+        permissions.study_rooms_service,
+        "get_member",
+        AsyncMock(return_value=_room_member(room.id, host_id, role=StudyRoomMemberRole.HOST)),
+    )
+
+    assert await permissions.can_join_room_meeting(session=None, room=room, user_id=host_id)
+
+
+async def test_can_join_room_meeting_false_for_host_without_active_membership(monkeypatch):
+    """2026-08-18 policy: a meeting token must never be issued solely because host_id matches
+    the caller -- host_id alone (no active study_room_members row) must not bypass the
+    normal participation check."""
+    host_id = uuid.uuid4()
+    room = _room(status=StudyRoomStatus.WAITING, host_id=host_id)
+    _mock_active_group_member(monkeypatch)
+    monkeypatch.setattr(permissions.study_rooms_service, "get_member", AsyncMock(return_value=None))
+
+    assert not await permissions.can_join_room_meeting(session=None, room=room, user_id=host_id)
+
+
+async def test_can_join_room_meeting_true_for_active_room_member(monkeypatch):
+    room = _room(status=StudyRoomStatus.ACTIVE)
+    user_id = uuid.uuid4()
+    _mock_active_group_member(monkeypatch)
+    monkeypatch.setattr(
+        permissions.study_rooms_service, "get_member", AsyncMock(return_value=_room_member(room.id, user_id))
+    )
+
+    assert await permissions.can_join_room_meeting(session=None, room=room, user_id=user_id)
+
+
+async def test_can_join_room_meeting_false_when_room_ended_even_for_member(monkeypatch):
+    room = _room(status=StudyRoomStatus.ENDED)
+    user_id = uuid.uuid4()
+    _mock_active_group_member(monkeypatch)
+    monkeypatch.setattr(
+        permissions.study_rooms_service, "get_member", AsyncMock(return_value=_room_member(room.id, user_id))
+    )
+
+    assert not await permissions.can_join_room_meeting(session=None, room=room, user_id=user_id)
+
+
+async def test_can_join_room_meeting_false_when_room_ended_even_for_host(monkeypatch):
+    """Even a host with a valid active membership row must be denied once the room has
+    ended -- the lifecycle gate applies uniformly, on top of (not instead of) the
+    membership check."""
+    host_id = uuid.uuid4()
+    room = _room(status=StudyRoomStatus.ENDED, host_id=host_id)
+    _mock_active_group_member(monkeypatch)
+    monkeypatch.setattr(
+        permissions.study_rooms_service,
+        "get_member",
+        AsyncMock(return_value=_room_member(room.id, host_id, role=StudyRoomMemberRole.HOST)),
+    )
+
+    assert not await permissions.can_join_room_meeting(session=None, room=room, user_id=host_id)
+
+
+async def test_can_join_room_meeting_false_for_non_member(monkeypatch):
+    room = _room(status=StudyRoomStatus.ACTIVE)
+    _mock_active_group_member(monkeypatch)
+    monkeypatch.setattr(permissions.study_rooms_service, "get_member", AsyncMock(return_value=None))
+
+    assert not await permissions.can_join_room_meeting(session=None, room=room, user_id=uuid.uuid4())
+
+
+async def test_can_join_room_meeting_false_for_left_member(monkeypatch):
+    room = _room(status=StudyRoomStatus.ACTIVE)
+    user_id = uuid.uuid4()
+    left_member = _room_member(room.id, user_id, left_at=datetime.now(timezone.utc))
+    _mock_active_group_member(monkeypatch)
+    monkeypatch.setattr(permissions.study_rooms_service, "get_member", AsyncMock(return_value=left_member))
+
+    assert not await permissions.can_join_room_meeting(session=None, room=room, user_id=user_id)
+
+
+async def test_can_join_room_meeting_false_for_left_group_member_with_stale_active_room_membership(monkeypatch):
+    """Meeting token issuance must also respect the Python/SQL parity fix: an active
+    study_room_members row does not bypass a lapsed Group membership."""
+    room = _room(status=StudyRoomStatus.ACTIVE)
+    user_id = uuid.uuid4()
+    _mock_inactive_group_member(monkeypatch, MemberStatus.LEFT)
+    monkeypatch.setattr(
+        permissions.study_rooms_service, "get_member", AsyncMock(return_value=_room_member(room.id, user_id))
+    )
+
+    assert not await permissions.can_join_room_meeting(session=None, room=room, user_id=user_id)
+
+
+async def test_can_access_conversation_room_type_true_for_host(monkeypatch):
+    host_id = uuid.uuid4()
+    room = _room(host_id=host_id)
+    conversation = Conversation(id=uuid.uuid4(), type=ConversationType.ROOM, room_id=room.id, created_by=host_id)
+    monkeypatch.setattr(permissions.study_rooms_service, "get_by_id", AsyncMock(return_value=room))
+    _mock_active_group_member(monkeypatch)
+    monkeypatch.setattr(
+        permissions.study_rooms_service,
+        "get_member",
+        AsyncMock(return_value=_room_member(room.id, host_id, role=StudyRoomMemberRole.HOST)),
+    )
+
+    assert await permissions.can_access_conversation(session=None, conversation=conversation, user_id=host_id)
+
+
+async def test_can_access_conversation_room_type_true_for_active_member(monkeypatch):
+    room = _room()
+    user_id = uuid.uuid4()
+    conversation = Conversation(id=uuid.uuid4(), type=ConversationType.ROOM, room_id=room.id, created_by=room.host_id)
+    monkeypatch.setattr(permissions.study_rooms_service, "get_by_id", AsyncMock(return_value=room))
+    _mock_active_group_member(monkeypatch)
+    monkeypatch.setattr(
+        permissions.study_rooms_service, "get_member", AsyncMock(return_value=_room_member(room.id, user_id))
+    )
+
+    assert await permissions.can_access_conversation(session=None, conversation=conversation, user_id=user_id)
+
+
+async def test_can_access_conversation_room_type_false_for_left_group_member_with_stale_active_room_membership(
+    monkeypatch,
+):
+    """End-to-end through the dispatch entry point for the Python/SQL parity fix (2026-08-18):
+    an active study_room_members row must not grant conversation access once the user has left
+    the Group."""
+    room = _room()
+    user_id = uuid.uuid4()
+    conversation = Conversation(id=uuid.uuid4(), type=ConversationType.ROOM, room_id=room.id, created_by=room.host_id)
+    monkeypatch.setattr(permissions.study_rooms_service, "get_by_id", AsyncMock(return_value=room))
+    _mock_inactive_group_member(monkeypatch, MemberStatus.LEFT)
+    monkeypatch.setattr(
+        permissions.study_rooms_service, "get_member", AsyncMock(return_value=_room_member(room.id, user_id))
+    )
+
+    assert not await permissions.can_access_conversation(session=None, conversation=conversation, user_id=user_id)
+
+
+async def test_can_access_conversation_room_type_false_for_non_member(monkeypatch):
+    room = _room()
+    conversation = Conversation(id=uuid.uuid4(), type=ConversationType.ROOM, room_id=room.id, created_by=room.host_id)
+    monkeypatch.setattr(permissions.study_rooms_service, "get_by_id", AsyncMock(return_value=room))
+    _mock_active_group_member(monkeypatch)
+    monkeypatch.setattr(permissions.study_rooms_service, "get_member", AsyncMock(return_value=None))
+
+    assert not await permissions.can_access_conversation(session=None, conversation=conversation, user_id=uuid.uuid4())
+
+
+async def test_can_access_conversation_room_type_false_for_left_member(monkeypatch):
+    room = _room()
+    user_id = uuid.uuid4()
+    conversation = Conversation(id=uuid.uuid4(), type=ConversationType.ROOM, room_id=room.id, created_by=room.host_id)
+    monkeypatch.setattr(permissions.study_rooms_service, "get_by_id", AsyncMock(return_value=room))
+    _mock_active_group_member(monkeypatch)
+    left_member = _room_member(room.id, user_id, left_at=datetime.now(timezone.utc))
+    monkeypatch.setattr(permissions.study_rooms_service, "get_member", AsyncMock(return_value=left_member))
+
+    assert not await permissions.can_access_conversation(session=None, conversation=conversation, user_id=user_id)
+
+
+async def test_can_access_conversation_room_type_false_when_room_id_missing():
+    conversation = Conversation(id=uuid.uuid4(), type=ConversationType.ROOM, room_id=None, created_by=uuid.uuid4())
+
+    assert not await permissions.can_access_conversation(session=None, conversation=conversation, user_id=uuid.uuid4())
+
+
+async def test_can_access_conversation_room_type_false_when_room_missing(monkeypatch):
+    conversation = Conversation(id=uuid.uuid4(), type=ConversationType.ROOM, room_id=uuid.uuid4(), created_by=uuid.uuid4())
+    monkeypatch.setattr(permissions.study_rooms_service, "get_by_id", AsyncMock(return_value=None))
+
+    assert not await permissions.can_access_conversation(session=None, conversation=conversation, user_id=uuid.uuid4())
+
+
+async def test_can_access_conversation_channel_type_denied_even_with_room_id_set(monkeypatch):
+    """Type must gate dispatch: a CHANNEL conversation with a (contradictory) room_id set
+    must not fall through to room logic, and must still require channel_id/membership."""
+    conversation = Conversation(
+        id=uuid.uuid4(), type=ConversationType.CHANNEL, channel_id=None, room_id=uuid.uuid4(), created_by=uuid.uuid4()
+    )
+    get_room_mock = AsyncMock()
+    monkeypatch.setattr(permissions.study_rooms_service, "get_by_id", get_room_mock)
+
+    assert not await permissions.can_access_conversation(session=None, conversation=conversation, user_id=uuid.uuid4())
+    get_room_mock.assert_not_awaited()
+
+
+# --- can_send_to_conversation (room lifecycle) ---
+
+
+async def test_can_send_to_conversation_room_active_allows_send(monkeypatch):
+    room = _room(status=StudyRoomStatus.ACTIVE)
+    user_id = uuid.uuid4()
+    conversation = Conversation(id=uuid.uuid4(), type=ConversationType.ROOM, room_id=room.id, created_by=room.host_id)
+    monkeypatch.setattr(permissions.study_rooms_service, "get_by_id", AsyncMock(return_value=room))
+    _mock_active_group_member(monkeypatch)
+    monkeypatch.setattr(
+        permissions.study_rooms_service, "get_member", AsyncMock(return_value=_room_member(room.id, user_id))
+    )
+
+    assert await permissions.can_send_to_conversation(session=None, conversation=conversation, user_id=user_id)
+
+
+async def test_can_send_to_conversation_room_ended_denies_send_but_allows_read(monkeypatch):
+    room = _room(status=StudyRoomStatus.ENDED)
+    user_id = uuid.uuid4()
+    conversation = Conversation(id=uuid.uuid4(), type=ConversationType.ROOM, room_id=room.id, created_by=room.host_id)
+    monkeypatch.setattr(permissions.study_rooms_service, "get_by_id", AsyncMock(return_value=room))
+    _mock_active_group_member(monkeypatch)
+    monkeypatch.setattr(
+        permissions.study_rooms_service, "get_member", AsyncMock(return_value=_room_member(room.id, user_id))
+    )
+
+    assert await permissions.can_access_conversation(session=None, conversation=conversation, user_id=user_id)
+    assert not await permissions.can_send_to_conversation(session=None, conversation=conversation, user_id=user_id)
+
+
+async def test_can_send_to_conversation_room_non_member_still_denied(monkeypatch):
+    room = _room(status=StudyRoomStatus.ACTIVE)
+    conversation = Conversation(id=uuid.uuid4(), type=ConversationType.ROOM, room_id=room.id, created_by=room.host_id)
+    monkeypatch.setattr(permissions.study_rooms_service, "get_by_id", AsyncMock(return_value=room))
+    _mock_active_group_member(monkeypatch)
+    monkeypatch.setattr(permissions.study_rooms_service, "get_member", AsyncMock(return_value=None))
+
+    assert not await permissions.can_send_to_conversation(session=None, conversation=conversation, user_id=uuid.uuid4())
+
+
+async def test_can_send_to_conversation_room_left_group_member_with_stale_active_room_membership_denied(monkeypatch):
+    """Write-time authorization must also respect the Python/SQL parity fix."""
+    room = _room(status=StudyRoomStatus.ACTIVE)
+    user_id = uuid.uuid4()
+    conversation = Conversation(id=uuid.uuid4(), type=ConversationType.ROOM, room_id=room.id, created_by=room.host_id)
+    monkeypatch.setattr(permissions.study_rooms_service, "get_by_id", AsyncMock(return_value=room))
+    _mock_inactive_group_member(monkeypatch, MemberStatus.LEFT)
+    monkeypatch.setattr(
+        permissions.study_rooms_service, "get_member", AsyncMock(return_value=_room_member(room.id, user_id))
+    )
+
+    assert not await permissions.can_send_to_conversation(session=None, conversation=conversation, user_id=user_id)
+
+
+async def test_can_send_to_conversation_channel_type_unaffected_by_room_logic(monkeypatch):
+    channel = _channel(is_private=False)
+    conversation = Conversation(id=uuid.uuid4(), type=ConversationType.CHANNEL, channel_id=channel.id, created_by=uuid.uuid4())
+    member = _group_member(GroupMemberRole.MEMBER, MemberStatus.ACTIVE)
+    monkeypatch.setattr(permissions.channels_service, "get_by_id", AsyncMock(return_value=channel))
+    monkeypatch.setattr(permissions.groups_service, "get_member", AsyncMock(return_value=member))
+
+    assert await permissions.can_send_to_conversation(session=None, conversation=conversation, user_id=uuid.uuid4())
+
+
+# --- can_send_to_conversation (direct) ---
+
+
+async def test_can_send_to_conversation_direct_member_allowed(monkeypatch):
+    conversation = Conversation(id=uuid.uuid4(), type=ConversationType.DIRECT, created_by=uuid.uuid4())
+    monkeypatch.setattr(permissions.conversations_service, "is_member", AsyncMock(return_value=True))
+
+    assert await permissions.can_send_to_conversation(session=None, conversation=conversation, user_id=uuid.uuid4())
+
+
+async def test_can_send_to_conversation_direct_non_member_denied(monkeypatch):
+    """Covers both 'never a member' and 'malformed/dangling direct conversation' cases --
+    is_member() returning False is the single safe-deny path for either."""
+    conversation = Conversation(id=uuid.uuid4(), type=ConversationType.DIRECT, created_by=uuid.uuid4())
+    monkeypatch.setattr(permissions.conversations_service, "is_member", AsyncMock(return_value=False))
+
+    assert not await permissions.can_send_to_conversation(session=None, conversation=conversation, user_id=uuid.uuid4())

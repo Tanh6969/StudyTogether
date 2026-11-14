@@ -1,29 +1,26 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { ListChecks, Maximize2, Plus } from 'lucide-react';
+import {
+  createGroupTask,
+  deleteGroupTask,
+  listGroupTasks,
+  updateGroupTask,
+  type GroupTask,
+  type GroupTaskUpdate,
+} from '../../lib/groupTask.api';
 
-export interface StudyGroupTask {
-  id: string;
-  title: string;
-  assignee: string;
-  dueDate: string;
-  done: boolean;
-  parentId?: string;
-  notes?: string[];
-  position?: { x: number; y: number };
-}
+interface NodePosition { task: GroupTask; x: number; y: number; parentId?: string; }
 
-interface NodePosition { task: StudyGroupTask; x: number; y: number; parentId?: string; }
-
-function arrangeTasks(tasks: StudyGroupTask[]): NodePosition[] {
+function arrangeTasks(tasks: GroupTask[]): NodePosition[] {
   const active = tasks.filter(task => !task.done);
   const activeIds = new Set(active.map(task => task.id));
-  const children = new Map<string | undefined, StudyGroupTask[]>();
+  const children = new Map<string | undefined, GroupTask[]>();
   for (const task of active) {
-    const parentId = task.parentId && activeIds.has(task.parentId) ? task.parentId : undefined;
+    const parentId = task.parent_id && activeIds.has(task.parent_id) ? task.parent_id : undefined;
     children.set(parentId, [...(children.get(parentId) ?? []), task]);
   }
   const heights = new Map<string, number>();
-  const measure = (task: StudyGroupTask): number => {
+  const measure = (task: GroupTask): number => {
     const kids = children.get(task.id) ?? [];
     const height = Math.max(142, kids.reduce((total, child) => total + measure(child), 0) + Math.max(0, kids.length - 1) * 40);
     heights.set(task.id, height);
@@ -32,7 +29,7 @@ function arrangeTasks(tasks: StudyGroupTask[]): NodePosition[] {
   const roots = children.get(undefined) ?? [];
   const total = roots.reduce((sum, root) => sum + measure(root), 0) + Math.max(0, roots.length - 1) * 54;
   const positions: NodePosition[] = [];
-  const place = (task: StudyGroupTask, x: number, y: number, parentId?: string) => {
+  const place = (task: GroupTask, x: number, y: number, parentId?: string) => {
     const height = heights.get(task.id) ?? 142;
     positions.push({ task, x: task.position?.x ?? x, y: task.position?.y ?? y + (height - 142) / 2, parentId });
     const kids = children.get(task.id) ?? [];
@@ -51,9 +48,23 @@ function arrangeTasks(tasks: StudyGroupTask[]): NodePosition[] {
   return positions;
 }
 
+/** Ids of `rootId` and every task below it -- the server deletes the same subtree (ON DELETE CASCADE). */
+function subtreeIds(tasks: GroupTask[], rootId: string): Set<string> {
+  const ids = new Set([rootId]);
+  let grew = true;
+  while (grew) {
+    grew = false;
+    for (const task of tasks) {
+      if (task.parent_id && ids.has(task.parent_id) && !ids.has(task.id)) { ids.add(task.id); grew = true; }
+    }
+  }
+  return ids;
+}
+
 export function TaskFlowBoard({ groupId }: { groupId: string }) {
-  const [tasks, setTasks] = useState<StudyGroupTask[]>([]);
-  const [loaded, setLoaded] = useState(false);
+  const [tasks, setTasks] = useState<GroupTask[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
   const [zoom, setZoom] = useState(1);
   const [offset, setOffset] = useState({ x: 30, y: 28 });
   const [pan, setPan] = useState<{ x: number; y: number } | null>(null);
@@ -69,42 +80,69 @@ export function TaskFlowBoard({ groupId }: { groupId: string }) {
   const completed = tasks.filter(task => task.done);
   const button: React.CSSProperties = { height: 30, minWidth: 30, display: 'grid', placeItems: 'center', border: '1px solid #CBD5E1', borderRadius: 7, background: 'white', color: '#334155', cursor: 'pointer' };
 
-  useEffect(() => {
+  const reload = useCallback(async () => {
+    if (!groupId) return;
     try {
-      const raw = localStorage.getItem(`study-together:group-tasks:${groupId}`);
-      const stored = raw ? JSON.parse(raw) as { tasks?: StudyGroupTask[] } : null;
-      const demoTasks: StudyGroupTask[] = [
-        { id: 'demo-root', title: 'Xác định mục tiêu và tài liệu cần học', assignee: 'Minh Anh', dueDate: '', done: false, notes: ['Chốt phạm vi kiến thức', 'Tổng hợp nguồn tham khảo'] },
-        { id: 'demo-plan', title: 'Lập kế hoạch học nhóm', assignee: 'Tuấn', dueDate: '', done: false, parentId: 'demo-root', notes: ['Chia việc theo từng buổi'] },
-        { id: 'demo-read', title: 'Ôn lý thuyết và ghi chú', assignee: 'Linh', dueDate: '', done: false, parentId: 'demo-root', notes: ['Đọc chương 1–3'] },
-        { id: 'demo-practice', title: 'Làm bài tập thực hành', assignee: 'Hoàng', dueDate: '', done: false, parentId: 'demo-plan', notes: ['Mỗi người chọn 3 bài'] },
-        { id: 'demo-review', title: 'Rà soát kết quả cùng nhóm', assignee: 'Cả nhóm', dueDate: '', done: false, parentId: 'demo-plan', notes: [] },
-        { id: 'demo-room', title: 'Tạo phòng học và chia sẻ tài liệu', assignee: 'Minh Anh', dueDate: '', done: true, notes: [] },
-        { id: 'demo-kickoff', title: 'Thống nhất lịch học tuần này', assignee: 'Cả nhóm', dueDate: '', done: true, notes: [] },
-      ];
-      const initial = stored?.tasks?.length ? stored.tasks : demoTasks;
-      setTasks(initial);
-      if (!stored?.tasks?.length) localStorage.setItem(`study-together:group-tasks:${groupId}`, JSON.stringify({ tasks: initial, milestones: [] }));
-    } catch {
-      setTasks([]);
+      setTasks(await listGroupTasks(groupId));
+      setError(null);
+    } catch (err) {
+      console.error('Failed to load group tasks', err);
+      setError('Không tải được bảng nhiệm vụ nhóm.');
     } finally {
-      setLoaded(true);
+      setLoading(false);
     }
   }, [groupId]);
-  const saveTasks = (next: StudyGroupTask[]) => {
-    setTasks(next);
-    if (loaded) localStorage.setItem(`study-together:group-tasks:${groupId}`, JSON.stringify({ tasks: next, milestones: [] }));
+
+  useEffect(() => {
+    setLoading(true);
+    setTasks([]);
+    void reload();
+  }, [reload]);
+
+  /** Optimistic local update; on failure re-sync from the server so the board never drifts. */
+  const patchTask = (taskId: string, changes: GroupTaskUpdate) => {
+    setTasks(current => current.map(task => task.id === taskId ? { ...task, ...changes } : task));
+    updateGroupTask(groupId, taskId, changes)
+      .then(saved => setTasks(current => current.map(task => task.id === saved.id ? saved : task)))
+      .catch(err => {
+        console.error('Failed to update group task', err);
+        setError('Không lưu được thay đổi, đã tải lại bảng.');
+        void reload();
+      });
   };
 
-  const addTask = () => {
-    if (!title.trim()) return;
-    saveTasks([...tasks, { id: crypto.randomUUID(), title: title.trim(), assignee: assignee.trim(), dueDate, done: false, parentId, notes: [] }]);
+  const addTask = async () => {
+    const trimmed = title.trim();
+    if (!trimmed) return;
+    const draft = { title: trimmed, assignee: assignee.trim(), due_date: dueDate || null, parent_id: parentId ?? null };
     setTitle(''); setAssignee(''); setDueDate(''); setParentId(undefined);
+    try {
+      const created = await createGroupTask(groupId, draft);
+      setTasks(current => [...current, created]);
+      setError(null);
+    } catch (err) {
+      console.error('Failed to create group task', err);
+      setError('Không thêm được nhiệm vụ.');
+      setTitle(trimmed);
+    }
   };
-  const toggleDone = (taskId: string, done: boolean) => saveTasks(tasks.map(task => task.id === taskId ? { ...task, done } : task));
+  const toggleDone = (taskId: string, done: boolean) => patchTask(taskId, { done });
+  const renameTask = (taskId: string, nextTitle: string) => patchTask(taskId, { title: nextTitle });
+  const moveTask = (taskId: string, position: { x: number; y: number }) => patchTask(taskId, { position });
+  const removeTask = (taskId: string) => {
+    const removed = subtreeIds(tasks, taskId);
+    setTasks(current => current.filter(task => !removed.has(task.id)));
+    deleteGroupTask(groupId, taskId).catch(err => {
+      console.error('Failed to delete group task', err);
+      setError('Không xóa được nhiệm vụ, đã tải lại bảng.');
+      void reload();
+    });
+  };
   const addNote = (taskId: string) => {
-    if (!noteDraft.trim()) return;
-    saveTasks(tasks.map(task => task.id === taskId ? { ...task, notes: [...(task.notes ?? []), noteDraft.trim()] } : task));
+    const note = noteDraft.trim();
+    if (!note) return;
+    const task = tasks.find(item => item.id === taskId);
+    if (task) patchTask(taskId, { notes: [...task.notes, note] });
     setNoteDraft(''); setNoteDraftId(undefined);
   };
 
@@ -113,8 +151,9 @@ export function TaskFlowBoard({ groupId }: { groupId: string }) {
       <span style={{ display: 'flex', alignItems: 'center', gap: 9, color: '#0F172A', fontSize: 18, fontWeight: 700 }}><ListChecks size={21} color="#475569" />Nhiệm vụ nhóm</span>
       <span style={{ color: '#64748B', fontSize: 13 }}>{completed.length} / {tasks.length} hoàn thành</span>
     </header>
+    {error && <div role="alert" style={{ padding: '8px 284px 8px 24px', background: '#FEF2F2', borderBottom: '1px solid #FECACA', color: '#B91C1C', fontSize: 12 }}>{error}</div>}
     <div style={{ padding: '12px 284px 12px 20px', background: 'white', borderBottom: '1px solid #E2E8F0', display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
-      <form onSubmit={event => { event.preventDefault(); addTask(); }} style={{ display: 'flex', gap: 7, flex: '1 1 420px' }}>
+      <form onSubmit={event => { event.preventDefault(); void addTask(); }} style={{ display: 'flex', gap: 7, flex: '1 1 420px' }}>
         <input aria-label="Tên nhiệm vụ" value={title} onChange={event => setTitle(event.target.value)} placeholder={parentId ? 'Tên node con...' : 'Thêm nhiệm vụ gốc...'} style={{ height: 36, flex: 1, minWidth: 120, padding: '0 10px', border: '1px solid #CBD5E1', borderRadius: 7, fontSize: 13, boxSizing: 'border-box' }} />
         <input aria-label="Người phụ trách" value={assignee} onChange={event => setAssignee(event.target.value)} placeholder="Người phụ trách" style={{ height: 36, width: 140, padding: '0 9px', border: '1px solid #CBD5E1', borderRadius: 7, fontSize: 12, boxSizing: 'border-box' }} />
         <input aria-label="Hạn hoàn thành" type="date" value={dueDate} onChange={event => setDueDate(event.target.value)} style={{ height: 36, width: 132, padding: '0 7px', border: '1px solid #CBD5E1', borderRadius: 7, fontSize: 12, boxSizing: 'border-box' }} />
@@ -125,14 +164,15 @@ export function TaskFlowBoard({ groupId }: { groupId: string }) {
       </div>
     </div>
     <div onWheel={event => { if (event.ctrlKey || event.metaKey) { event.preventDefault(); setZoom(value => Math.max(.35, Math.min(2, value + (event.deltaY < 0 ? .08 : -.08)))); } }} onPointerDown={event => { if (event.target === event.currentTarget) { event.currentTarget.setPointerCapture(event.pointerId); setPan({ x: event.clientX - offset.x, y: event.clientY - offset.y }); } }} onPointerMove={event => { if (pan) setOffset({ x: event.clientX - pan.x, y: event.clientY - pan.y }); }} onPointerUp={() => setPan(null)} style={{ flex: 1, minHeight: 0, marginRight: 260, overflow: 'hidden', position: 'relative', backgroundColor: '#F8FAFC', backgroundImage: 'radial-gradient(#CBD5E1 1px, transparent 1px)', backgroundSize: `${24 * zoom}px ${24 * zoom}px`, cursor: pan ? 'grabbing' : 'grab', touchAction: 'none' }}>
-      {tasks.length === 0 && <div style={{ position: 'absolute', inset: 0, display: 'grid', placeItems: 'center', color: '#64748B' }}>Thêm nhiệm vụ đầu tiên để bắt đầu sơ đồ nhóm.</div>}
+      {!loading && tasks.length === 0 && <div style={{ position: 'absolute', inset: 0, display: 'grid', placeItems: 'center', color: '#64748B' }}>Thêm nhiệm vụ đầu tiên để bắt đầu sơ đồ nhóm.</div>}
+      {loading && <div style={{ position: 'absolute', inset: 0, display: 'grid', placeItems: 'center', color: '#64748B' }}>Đang tải bảng nhiệm vụ...</div>}
       <svg style={{ position: 'absolute', inset: 0, width: '100%', height: '100%', pointerEvents: 'none', overflow: 'visible' }}><defs><marker id="task-flow-arrow" markerWidth="9" markerHeight="9" refX="8" refY="4.5" orient="auto"><path d="M0,0 L9,4.5 L0,9 z" fill="#64748B" /></marker></defs><g transform={`translate(${offset.x} ${offset.y}) scale(${zoom})`}>{positions.filter(position => position.parentId).map(position => { const parent = positions.find(item => item.task.id === position.parentId); return parent ? <path key={position.task.id} d={`M ${parent.x + 250} ${parent.y + 71} C ${parent.x + 292} ${parent.y + 71}, ${position.x - 42} ${position.y + 71}, ${position.x} ${position.y + 71}`} fill="none" stroke="#64748B" strokeWidth="1.6" markerEnd="url(#task-flow-arrow)" /> : null; })}</g></svg>
       <div style={{ position: 'absolute', left: offset.x, top: offset.y, transform: `scale(${zoom})`, transformOrigin: 'top left' }}>
-        {positions.map(({ task, x, y }) => <article key={task.id} onPointerDown={event => { if ((event.target as HTMLElement).closest('button,input,form')) return; event.stopPropagation(); event.currentTarget.setPointerCapture(event.pointerId); setDrag({id:task.id,x,y,startX:event.clientX,startY:event.clientY,originX:x,originY:y}); }} onPointerMove={event => { if(drag?.id===task.id) setDrag({...drag,x:drag.originX+(event.clientX-drag.startX)/zoom,y:drag.originY+(event.clientY-drag.startY)/zoom}); }} onPointerUp={() => { if(drag?.id===task.id){saveTasks(tasks.map(item=>item.id===task.id?{...item,position:{x:drag.x,y:drag.y}}:item));setDrag(null);} }} style={{ position: 'absolute', left: drag?.id===task.id?drag.x:x, top: drag?.id===task.id?drag.y:y, width: 250, minHeight: 142, boxSizing: 'border-box', background: 'white', border: '1px solid #334155', boxShadow: '0 3px 10px rgba(15,23,42,.12)', cursor: drag?.id===task.id?'grabbing':'grab', touchAction:'none' }}>
-          <header onDoubleClick={() => { const edited = window.prompt('Chỉnh sửa nhiệm vụ', task.title)?.trim(); if (edited) saveTasks(tasks.map(item => item.id === task.id ? { ...item, title: edited } : item)); }} style={{ height: 36, padding: '0 10px', borderBottom: '1px solid #64748B', display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 6, fontSize: 13, fontWeight: 700, cursor: 'grab' }}><span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{task.title}</span><button aria-label="Xóa nhiệm vụ" onClick={() => saveTasks(tasks.filter(item => item.id !== task.id && item.parentId !== task.id))} style={{ border: 0, background: 'transparent', color: '#94A3B8', cursor: 'pointer' }}>×</button></header>
-          <div style={{ padding: '8px 10px', display: 'grid', gap: 5, color: '#334155', fontSize: 12 }}><div>Phụ trách: {task.assignee || 'Chưa phân công'}</div><div>Hạn: {task.dueDate ? new Date(`${task.dueDate}T00:00:00`).toLocaleDateString('vi-VN') : 'Chưa đặt'}</div><div style={{ display: 'flex', alignItems: 'center', gap: 6 }}><button onClick={() => toggleDone(task.id, true)} style={{ border: 0, padding: 0, background: 'transparent', color: '#15803D', fontSize: 11, cursor: 'pointer' }}>✓ Hoàn thành</button><button aria-label={`Thêm node con cho ${task.title}`} title="Thêm node con" onClick={() => { setParentId(task.id); setTitle(''); setChildDraftId(task.id); }} style={{ marginLeft: 'auto', width: 25, height: 25, borderRadius: '50%', border: '1px solid #93C5FD', background: '#EFF6FF', color: '#1D4ED8', fontSize: 17, cursor: 'pointer' }}>+</button></div>
-            {(task.notes ?? []).map((note, index) => <div key={`${task.id}-${index}`} style={{ borderTop: '1px solid #E2E8F0', paddingTop: 4, color: '#64748B', fontSize: 11 }}>• {note}</div>)}
-            {childDraftId === task.id && <form onSubmit={event => { event.preventDefault(); addTask(); setChildDraftId(undefined); }} style={{ display: 'flex', gap: 4 }}><input autoFocus value={title} onChange={event => setTitle(event.target.value)} placeholder="Tên node con" style={{ width: 165, height: 27, border: '1px solid #CBD5E1', borderRadius: 4, padding: '0 6px', fontSize: 11 }} /><button type="submit" disabled={!title.trim()} style={{ border: 0, borderRadius: 4, background: '#2563EB', color: 'white', fontSize: 11 }}>Thêm</button></form>}
+        {positions.map(({ task, x, y }) => <article key={task.id} onPointerDown={event => { if ((event.target as HTMLElement).closest('button,input,form')) return; event.stopPropagation(); event.currentTarget.setPointerCapture(event.pointerId); setDrag({id:task.id,x,y,startX:event.clientX,startY:event.clientY,originX:x,originY:y}); }} onPointerMove={event => { if(drag?.id===task.id) setDrag({...drag,x:drag.originX+(event.clientX-drag.startX)/zoom,y:drag.originY+(event.clientY-drag.startY)/zoom}); }} onPointerUp={() => { if(drag?.id===task.id){ if(drag.x!==drag.originX||drag.y!==drag.originY) moveTask(task.id,{x:drag.x,y:drag.y}); setDrag(null);} }} style={{ position: 'absolute', left: drag?.id===task.id?drag.x:x, top: drag?.id===task.id?drag.y:y, width: 250, minHeight: 142, boxSizing: 'border-box', background: 'white', border: '1px solid #334155', boxShadow: '0 3px 10px rgba(15,23,42,.12)', cursor: drag?.id===task.id?'grabbing':'grab', touchAction:'none' }}>
+          <header onDoubleClick={() => { const edited = window.prompt('Chỉnh sửa nhiệm vụ', task.title)?.trim(); if (edited && edited !== task.title) renameTask(task.id, edited); }} style={{ height: 36, padding: '0 10px', borderBottom: '1px solid #64748B', display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 6, fontSize: 13, fontWeight: 700, cursor: 'grab' }}><span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{task.title}</span><button aria-label="Xóa nhiệm vụ" onClick={() => removeTask(task.id)} style={{ border: 0, background: 'transparent', color: '#94A3B8', cursor: 'pointer' }}>×</button></header>
+          <div style={{ padding: '8px 10px', display: 'grid', gap: 5, color: '#334155', fontSize: 12 }}><div>Phụ trách: {task.assignee || 'Chưa phân công'}</div><div>Hạn: {task.due_date ? new Date(`${task.due_date}T00:00:00`).toLocaleDateString('vi-VN') : 'Chưa đặt'}</div><div style={{ display: 'flex', alignItems: 'center', gap: 6 }}><button onClick={() => toggleDone(task.id, true)} style={{ border: 0, padding: 0, background: 'transparent', color: '#15803D', fontSize: 11, cursor: 'pointer' }}>✓ Hoàn thành</button><button aria-label={`Thêm node con cho ${task.title}`} title="Thêm node con" onClick={() => { setParentId(task.id); setTitle(''); setChildDraftId(task.id); }} style={{ marginLeft: 'auto', width: 25, height: 25, borderRadius: '50%', border: '1px solid #93C5FD', background: '#EFF6FF', color: '#1D4ED8', fontSize: 17, cursor: 'pointer' }}>+</button></div>
+            {task.notes.map((note, index) => <div key={`${task.id}-${index}`} style={{ borderTop: '1px solid #E2E8F0', paddingTop: 4, color: '#64748B', fontSize: 11 }}>• {note}</div>)}
+            {childDraftId === task.id && <form onSubmit={event => { event.preventDefault(); void addTask(); setChildDraftId(undefined); }} style={{ display: 'flex', gap: 4 }}><input autoFocus value={title} onChange={event => setTitle(event.target.value)} placeholder="Tên node con" style={{ width: 165, height: 27, border: '1px solid #CBD5E1', borderRadius: 4, padding: '0 6px', fontSize: 11 }} /><button type="submit" disabled={!title.trim()} style={{ border: 0, borderRadius: 4, background: '#2563EB', color: 'white', fontSize: 11 }}>Thêm</button></form>}
             {noteDraftId === task.id ? <form onSubmit={event => { event.preventDefault(); addNote(task.id); }} style={{ display: 'flex', gap: 4 }}><input autoFocus value={noteDraft} onChange={event => setNoteDraft(event.target.value)} placeholder="Thuộc tính / note" style={{ width: 165, height: 27, border: '1px solid #CBD5E1', borderRadius: 4, padding: '0 6px', fontSize: 11 }} /><button type="submit" style={{ border: 0, borderRadius: 4, background: '#2563EB', color: 'white', fontSize: 11 }}>Lưu</button></form> : <button onClick={() => setNoteDraftId(task.id)} style={{ justifySelf: 'start', border: 0, background: 'transparent', padding: 0, color: '#2563EB', fontSize: 11, cursor: 'pointer' }}>+ Thêm thuộc tính / note</button>}
           </div>
         </article>)}

@@ -5,7 +5,6 @@ import { supabase } from '../lib/supabase';
 import { ApiError, setAccessTokenProvider } from '../lib/apiClient';
 import { fetchCurrentUser } from '../lib/auth.api';
 import { createProfile, fetchProfile } from '../lib/profile.api';
-import { moderationApi } from '../lib/moderation.api';
 import type { BanResponse } from '../lib/moderation.types';
 import { AuthContext } from './auth-context';
 import type { AuthProfile } from './auth-context';
@@ -15,6 +14,8 @@ import { getDb } from '../mocks/db';
 export function AuthProvider({ children }: { children: ReactNode }) {
   const [session, setSession] = useState<Session | null>(null);
   const [profile, setProfile] = useState<AuthProfile | null>(null);
+  // The MVP backend has no moderation module (no GET /moderation/bans/me), so this stays
+  // empty; kept in the context so restriction-aware UI keeps compiling unchanged.
   const [bans, setBans] = useState<BanResponse[]>([]);
   const [loading, setLoading] = useState(true);
   const sessionRef = useRef<Session | null>(null);
@@ -105,20 +106,6 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     return entry.promise;
   };
 
-  const refreshBans = async (): Promise<void> => {
-    if (!sessionRef.current?.user.id) {
-      setBans([]);
-      return;
-    }
-    try {
-      setBans(await moderationApi.listMyBans());
-    } catch (err) {
-      // Non-critical: proactive restriction banners just won't show; the backend still
-      // enforces bans at action time regardless of this fetch's outcome.
-      console.error('Failed to fetch own restrictions', err);
-    }
-  };
-
   useEffect(() => {
     setAccessTokenProvider(() => sessionRef.current?.access_token ?? null);
     const applySession = async (nextSession: Session | null) => {
@@ -126,7 +113,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       setSession(nextSession);
       const userId = nextSession?.user?.id ?? null;
       if (userId) {
-        await Promise.all([refreshProfile(), refreshBans()]);
+        await refreshProfile();
         if (verifiedUserIdRef.current !== userId) {
           verifiedUserIdRef.current = userId;
           fetchCurrentUser().catch((err) => console.error('Failed to verify session with GET /auth/me', err));
