@@ -49,7 +49,6 @@ export function Header() {
                 </Link>
                 <div style={{justifyContent: 'flex-start', alignItems: 'flex-start', gap: 24, display: 'flex', marginLeft: 16}}>
                     <NavLink to="/groups" style={navLinkStyle}>Phòng học</NavLink>
-                    <NavLink to="/aim" style={navLinkStyle}>Mục tiêu</NavLink>
                 </div>
             </div>
 

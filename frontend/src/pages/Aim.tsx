@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import type { FormEvent, KeyboardEvent } from 'react';
-import { Plus, Sparkles, Trash2, X } from 'lucide-react';
+import { Plus, Sparkles, Trash2, X, ZoomIn, ZoomOut, Maximize2 } from 'lucide-react';
 import { TaskManagementSection } from './TaskManagementSection';
 import { Modal } from '../components/ui/Modal';
 import {
@@ -61,7 +61,6 @@ function PhaseListEditor({
   const add = async () => {
     const name = newName.trim();
     if (!name) return;
-    if (phases.length >= 20) { setErr('Tối đa 20 chặng.'); return; }
     setAdding(true); setErr(null);
     try {
       const p = await addRoadmapPhase(roadmapId, name);
@@ -136,7 +135,7 @@ function PhaseTagInput({ value, onChange }: { value: string[]; onChange: (v: str
 
   const add = () => {
     const name = draft.trim();
-    if (!name || value.length >= 20) return;
+    if (!name) return;
     onChange([...value, name]);
     setDraft('');
   };
@@ -148,7 +147,7 @@ function PhaseTagInput({ value, onChange }: { value: string[]; onChange: (v: str
   return (
     <div style={{ display: 'grid', gap: 8 }}>
       <label style={fieldLabel}>
-        Các chặng học <span style={{ color: '#94A3B8', fontWeight: 400 }}>(tối đa 20)</span>
+        Các chặng học
       </label>
       {value.length > 0 && (
         <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
@@ -172,11 +171,10 @@ function PhaseTagInput({ value, onChange }: { value: string[]; onChange: (v: str
           onChange={e => setDraft(e.target.value)}
           onKeyDown={onKey}
           maxLength={100}
-          placeholder={value.length < 20 ? 'Nhập tên chặng, nhấn Enter...' : 'Đã đạt tối đa 20 chặng'}
-          disabled={value.length >= 20}
+          placeholder="Nhập tên chặng, nhấn Enter..."
           style={{ ...input, flex: 1 }}
         />
-        <button type="button" onClick={add} disabled={!draft.trim() || value.length >= 20} style={secondaryButton}>
+        <button type="button" onClick={add} disabled={!draft.trim()} style={secondaryButton}>
           <Plus size={14} /> Thêm
         </button>
       </div>
@@ -216,6 +214,9 @@ export function AimPage() {
   const [phaseEditing, setPhaseEditing] = useState<{ roadmapId: string; phase: RoadmapPhase } | null>(null);
   const [phaseProgress, setPhaseProgress] = useState(0);
   const [phaseProgressInput, setPhaseProgressInput] = useState('0');
+  const [canvasZoom, setCanvasZoom] = useState(1);
+  const [canvasOffset, setCanvasOffset] = useState({ x: 40, y: 32 });
+  const [panning, setPanning] = useState<{ x: number; y: number } | null>(null);
 
   useEffect(() => {
     void (async () => {
@@ -448,20 +449,23 @@ export function AimPage() {
                 })}
               </div>
 
-              {/* Horizontal Scroll Content */}
-              <div 
-                className="custom-scrollbar"
-                style={{ 
-                  display: 'flex', 
-                  gap: 16, 
-                  overflowX: 'auto', 
-                  paddingBottom: 16, 
-                  scrollSnapType: 'x mandatory',
-                  minHeight: 320 // Giữ chiều cao cố định tối thiểu để thanh cuộn không bị giật lên xuống
-                }}
+              <div style={{display: 'flex', justifyContent: 'flex-end', gap: 6, marginBottom: 10}}>
+                <button aria-label="Thu nhỏ sơ đồ" onClick={() => setCanvasZoom(z => Math.max(.35, z - .15))} style={canvasButton}><ZoomOut size={16}/></button>
+                <span style={{alignSelf: 'center', minWidth: 46, textAlign: 'center', color: '#64748B', fontSize: 12}}>{Math.round(canvasZoom * 100)}%</span>
+                <button aria-label="Phóng to sơ đồ" onClick={() => setCanvasZoom(z => Math.min(2, z + .15))} style={canvasButton}><ZoomIn size={16}/></button>
+                <button aria-label="Đặt lại sơ đồ" onClick={() => {setCanvasZoom(1); setCanvasOffset({x: 40, y: 32});}} style={canvasButton}><Maximize2 size={16}/></button>
+              </div>
+              {/* Infinite pan/zoom canvas. Nodes occupy an unbounded horizontal flow; the viewport only clips the current view. */}
+              <div
+                onWheel={e => { if (e.ctrlKey || e.metaKey) { e.preventDefault(); setCanvasZoom(z => Math.max(.35, Math.min(2, z + (e.deltaY < 0 ? .08 : -.08)))); } }}
+                onPointerDown={e => { if (e.target === e.currentTarget) { e.currentTarget.setPointerCapture(e.pointerId); setPanning({x: e.clientX - canvasOffset.x, y: e.clientY - canvasOffset.y}); } }}
+                onPointerMove={e => { if (panning) setCanvasOffset({x: e.clientX - panning.x, y: e.clientY - panning.y}); }}
+                onPointerUp={() => setPanning(null)}
+                style={{position: 'relative', height: 450, overflow: 'hidden', borderRadius: 12, border: '1px solid #E2E8F0', backgroundColor: '#F8FAFC', backgroundImage: 'radial-gradient(#CBD5E1 1px, transparent 1px)', backgroundSize: `${24 * canvasZoom}px ${24 * canvasZoom}px`, cursor: panning ? 'grabbing' : 'grab', touchAction: 'none'}}
               >
+                <div style={{position: 'absolute', left: canvasOffset.x, top: canvasOffset.y, display: 'flex', alignItems: 'center', gap: 64, transform: `scale(${canvasZoom})`, transformOrigin: 'top left', width: 'max-content', minHeight: 360, padding: 16}}>
                 {roadmaps.filter(r => statusOf(r) === activeTab).length === 0 && (
-                  <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 40, width: '100%', color: '#64748B', background: '#F8FAFC', borderRadius: 12, border: '1px dashed #CBD5E1' }}>
+                  <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 40, color: '#64748B', background: 'white', borderRadius: 12, border: '1px dashed #CBD5E1' }}>
                     Chưa có mục tiêu nào trong trạng thái này.
                   </div>
                 )}
@@ -475,7 +479,7 @@ export function AimPage() {
                       title="Bấm để chỉnh sửa lộ trình"
                       style={{ 
                         background: 'white', border: '1px solid #E2E8F0', borderRadius: 12, padding: 20, cursor: 'pointer',
-                        minWidth: 320, maxWidth: 350, flexShrink: 0, scrollSnapAlign: 'start',
+                        minWidth: 320, flexShrink: 0,
                         boxShadow: '0 2px 4px rgba(0,0,0,0.02)', display: 'flex', flexDirection: 'column'
                       }}
                     >
@@ -494,22 +498,23 @@ export function AimPage() {
                       </div>
                       <small style={{ color: '#64748B' }}>{item.phases.filter(p => p.progress === 100).length}/{item.phases.length} chặng hoàn thành</small>
                       
-                      <div style={{ display: 'grid', gap: 8, marginTop: 16, maxHeight: 200, overflowY: 'auto' }} className="custom-scrollbar">
-                        {item.phases.map(phase => (
-                          <button
-                            key={phase.id}
-                            onClick={e => { e.stopPropagation(); openPhase(item.id, phase); }}
-                            title="Bấm để cập nhật tiến độ"
-                            style={{ ...control, padding: '8px 12px', textAlign: 'left', display: 'flex', justifyContent: 'space-between', background: phase.progress === 100 ? '#F0FDF4' : '#F8FAFC', border: phase.progress === 100 ? '1px solid #BBF7D0' : '1px solid #E2E8F0' }}
-                          >
-                            <span style={{ color: phase.progress === 100 ? '#15803D' : '#334155', fontWeight: phase.progress === 100 ? 600 : 500 }}>{phase.name}</span>
-                            <b style={{ color: phase.progress === 100 ? '#16A34A' : '#0F172A' }}>{phase.progress}%</b>
-                          </button>
+                      <div style={{display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 34, marginTop: 22}}>
+                        {item.phases.map((phase, index) => (
+                          <div key={phase.id} style={{position: 'relative', width: 240}}>
+                            {index > 0 && <div style={{position: 'absolute', height: 34, width: 2, background: '#94A3B8', left: '50%', top: -34}}/>}
+                            <button onClick={e => {e.stopPropagation(); openPhase(item.id, phase);}} title="Chọn để cập nhật tiến độ" style={{width: '100%', minHeight: 92, whiteSpace: 'pre-wrap', textAlign: 'left', padding: 14, borderRadius: 12, background: phase.progress === 100 ? '#F0FDF4' : 'white', border: `1px solid ${phase.progress === 100 ? '#86EFAC' : '#CBD5E1'}`, boxShadow: '0 4px 12px rgba(15,23,42,.08)', color: '#334155', cursor: 'pointer', font: 'inherit'}}>
+                              <span style={{display: 'block', fontWeight: 650, lineHeight: 1.45}}>{phase.name.split('\\n').map((line, i) => <span key={i}>{i > 0 && <br/>}{line}</span>)}</span>
+                              <span style={{display: 'block', fontSize: 12, color: '#64748B', marginTop: 8}}>Tiến độ {phase.progress}%</span>
+                            </button>
+                            <button aria-label={`Thêm node con cho ${phase.name}`} title="Thêm node con" onClick={async e => {e.stopPropagation(); const name = window.prompt('Tên node con'); if (!name?.trim()) return; try {const child = await addRoadmapPhase(item.id, name.trim()); setRoadmaps(all => all.map(r => r.id === item.id ? {...r, phases: [...r.phases, child]} : r));} catch (c) {setError(friendlyError(c));}}} style={{position: 'absolute', right: -14, top: '50%', transform: 'translateY(-50%)', width: 28, height: 28, borderRadius: '50%', border: '1px solid #BFDBFE', color: '#1D4ED8', background: 'white', display: 'grid', placeItems: 'center', cursor: 'pointer', boxShadow: '0 2px 6px #0002'}}><Plus size={15}/></button>
+                          </div>
                         ))}
+                        <button onClick={async e => {e.stopPropagation(); const name = window.prompt('Tên node mới'); if (!name?.trim()) return; try {const node = await addRoadmapPhase(item.id, name.trim()); setRoadmaps(all => all.map(r => r.id === item.id ? {...r, phases: [...r.phases, node]} : r));} catch (c) {setError(friendlyError(c));}}} style={{...secondaryButton, borderStyle: 'dashed', whiteSpace: 'nowrap'}}><Plus size={14}/> Thêm node</button>
                       </div>
                     </article>
                   );
                 })}
+                </div>
               </div>
             </div>
           )}
@@ -744,5 +749,6 @@ const input = { padding: 10, border: '1px solid #CBD5E1', borderRadius: 7, font:
 const primaryButton = { display: 'inline-flex', alignItems: 'center', justifyContent: 'center', gap: 6, border: 0, borderRadius: 8, padding: '9px 14px', background: '#1E3A8A', color: 'white', fontSize: 13, fontWeight: 600, cursor: 'pointer' } as const;
 const secondaryButton = { ...primaryButton, background: 'white', color: '#334155', border: '1px solid #CBD5E1' } as const;
 const control = { border: '1px solid #CBD5E1', background: 'white', borderRadius: 7, padding: '9px 14px', fontSize: 13, fontWeight: 600, cursor: 'pointer', color: '#0F172A', display: 'inline-flex', alignItems: 'center' } as const;
+const canvasButton = { width: 30, height: 30, display: 'grid', placeItems: 'center', background: 'white', border: '1px solid #CBD5E1', borderRadius: 7, color: '#334155', cursor: 'pointer' } as const;
 const fieldLabel = { display: 'grid', gap: 6, color: '#334155', fontSize: 13, fontWeight: 600 } as const;
 const statusBtn = { padding: '12px 8px', borderRadius: 10, cursor: 'pointer', transition: 'all 0.2s', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center' } as const;

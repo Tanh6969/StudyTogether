@@ -17,7 +17,8 @@ import {
     Download,
     Image as ImageIcon,
     ShieldCheck,
-    Flame
+    Flame,
+    ListChecks
 } from 'lucide-react';
 import { useAuth } from '../../hooks/useAuth';
 import { useChannelMessagesRealtime } from '../../hooks/useChannelMessagesRealtime';
@@ -33,6 +34,7 @@ import { useGroupTableRealtime } from '../../hooks/useGroupTableRealtime';
 import { useGroupResources } from '../../hooks/useGroupResources';
 import { useGroupNotes } from '../../hooks/useGroupNotes';
 import { NotesStackPanel } from './NotesStackPanel';
+import { TaskFlowBoard } from './TaskFlowBoard';
 import { ApiError } from '../../lib/apiClient';
 import { getGroup, listGroupMembers, leaveGroup, removeMember, updateMemberRole } from '../../lib/group.api';
 import { InviteModal } from '../../components/invitations/InviteModal';
@@ -113,7 +115,7 @@ export function StudyGroupDetail() {
   // Dynamic States
   const [activeChannel, setActiveChannel] = useState('');
   const [chatInput, setChatInput] = useState('');
-  const [mainView, setMainView] = useState<'chat' | 'rooms' | 'documents'>('chat');
+  const [mainView, setMainView] = useState<'chat' | 'rooms' | 'documents' | 'tasks'>('tasks');
 
   // Group Settings & Dropdown Menu States
   const [showGroupMenu, setShowGroupMenu] = useState(false);
@@ -895,8 +897,8 @@ export function StudyGroupDetail() {
             ))}
           </div>
         </div>
-        {/* Right sidebar skeleton */}
-        <div style={{ width: 240, flexShrink: 0, borderLeft: '1px solid #E2E8F0', padding: 16, display: 'flex', flexDirection: 'column', gap: 12 }}>
+        {/* Right member column removed from the group workspace. */}
+        <div style={{ display: 'none' }}>
           <div className="skeleton-pulse" style={{ width: '60%', height: 12, borderRadius: 4 }} />
           {[...Array(4)].map((_, i) => (
             <div key={i} style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
@@ -1268,6 +1270,13 @@ export function StudyGroupDetail() {
                         </div>
                     </div>
 
+                    <div style={{marginBottom: 20}}>
+                      <div style={{color:'#64748B',fontSize:12,fontFamily:'Inter',fontWeight:700,textTransform:'uppercase',marginBottom:8,paddingLeft:8}}>Nhiệm vụ</div>
+                      <button onClick={()=>setMainView('tasks')} style={{width:'100%',padding:'9px 12px',background:mainView==='tasks'?'#E2E8F0':'transparent',border:0,borderRadius:6,display:'flex',alignItems:'center',gap:9,color:mainView==='tasks'?'#0F172A':'#475569',fontWeight:mainView==='tasks'?600:500,cursor:'pointer',fontSize:14,textAlign:'left'}}>
+                        <ListChecks size={17} color="#64748B"/> Bảng nhiệm vụ nhóm
+                      </button>
+                    </div>
+
                     {/* Resources — real backend data (app/resources) */}
                     <div>
                         <div style={{display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 8, paddingLeft: 8, paddingRight: 4}}>
@@ -1554,6 +1563,8 @@ export function StudyGroupDetail() {
                         ))}
                     </div>
                 </div>
+            ) : mainView === 'tasks' ? (
+                <TaskFlowBoard groupId={groupId ?? ''} />
             ) : (
                 <div style={{flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column', background: 'white'}}>
                     <div style={{height: 60, padding: '0 24px', borderBottom: '1px solid #E2E8F0', display: 'flex', alignItems: 'center', justifyContent: 'space-between', color: '#0F172A', fontSize: 18, fontWeight: '700', background: 'white'}}>
@@ -1647,6 +1658,7 @@ export function StudyGroupDetail() {
                 </div>
             )}
 
+            <div style={{display:'none'}} aria-hidden="true">
             {/* Right Sidebar - Members. Public channel: every active Group member (unchanged).
                 Private channel: the composed private-channel roster (see `displayedMembers`
                 above) -- shows a skeleton (rather than a stale/incorrect flash of the previous
@@ -1678,6 +1690,7 @@ export function StudyGroupDetail() {
                     onInviteClick={() => setIsInviteModalOpen(true)}
                 />
             )}
+            </div>
 
         </div>
 

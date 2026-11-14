@@ -8,7 +8,6 @@ import { LoginPage } from '../pages/LoginPage';
 import { RegisterPage } from '../pages/RegisterPage';
 import { ForgotPasswordPage } from '../pages/ForgotPasswordPage';
 import { UpdatePasswordPage } from '../pages/UpdatePasswordPage';
-import { AimPage } from '../pages/Aim';
 import { AccountSettingsPage } from '../pages/AccountSettingsPage';
 import { useAuth } from '../hooks/useAuth';
 import { PageLoadingSkeleton } from '../components/ui/Skeleton';
@@ -42,7 +41,6 @@ export function AppRoutes() {
           <Route index element={<Navigate to="/groups" replace />} />
           <Route path="groups" element={<StudyRooms />} />
           <Route path="groups/:id" element={<StudyGroupDetail />} />
-          <Route path="aim" element={<AimPage />} />
           <Route path="settings" element={<AccountSettingsPage />} />
         </Route>
 

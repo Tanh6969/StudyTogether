@@ -14,7 +14,14 @@ function load(): MockDb {
     const raw = localStorage.getItem(STORAGE_KEY);
     if (raw) {
       const parsed = JSON.parse(raw) as MockDb;
-      if (parsed.version === MOCK_DB_VERSION) return parsed;
+      if (parsed.version === MOCK_DB_VERSION) {
+        // Add the latest task-board demo cards to existing mock sessions without
+        // resetting the user's mock account or other saved data.
+        const latestSeedTasks = createSeed().tasks.filter(task => ['task-11', 'task-12', 'task-13'].includes(task.id));
+        const existingTaskIds = new Set(parsed.tasks.map(task => task.id));
+        parsed.tasks.push(...latestSeedTasks.filter(task => !existingTaskIds.has(task.id)));
+        return parsed;
+      }
     }
   } catch {
     // localStorage bị chặn hoặc dữ liệu hỏng -> dùng seed mới
