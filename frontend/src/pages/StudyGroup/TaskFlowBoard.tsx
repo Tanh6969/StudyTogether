@@ -147,8 +147,8 @@ export function TaskFlowBoard({ groupId }: { groupId: string }) {
   };
 
   return <main style={{ flex: 1, minWidth: 0, minHeight: 0, display: 'flex', flexDirection: 'column', background: '#F8FAFC', position: 'relative', overflow: 'hidden' }}>
-    <header style={{ height: 60, flexShrink: 0, padding: '0 284px 0 24px', borderBottom: '1px solid #E2E8F0', display: 'flex', alignItems: 'center', justifyContent: 'space-between', background: 'white' }}>
-      <span style={{ display: 'flex', alignItems: 'center', gap: 9, color: '#0F172A', fontSize: 18, fontWeight: 700 }}><ListChecks size={21} color="#475569" />Nhiệm vụ nhóm</span>
+    <header style={{ height: 56, flexShrink: 0, padding: '0 284px 0 24px', borderBottom: '1px solid #E2E8F0', display: 'flex', alignItems: 'center', justifyContent: 'space-between', background: 'white' }}>
+      <span style={{ display: 'flex', alignItems: 'center', gap: 8, color: '#0F172A', fontSize: 15, fontWeight: 700 }}><ListChecks size={18} color="#64748B" />Bảng nhiệm vụ</span>
       <span style={{ color: '#64748B', fontSize: 13 }}>{completed.length} / {tasks.length} hoàn thành</span>
     </header>
     {error && <div role="alert" style={{ padding: '8px 284px 8px 24px', background: '#FEF2F2', borderBottom: '1px solid #FECACA', color: '#B91C1C', fontSize: 12 }}>{error}</div>}
@@ -179,6 +179,6 @@ export function TaskFlowBoard({ groupId }: { groupId: string }) {
       </div>
     </div>
     <div style={{ height: 30, flexShrink: 0, padding: '0 274px 0 14px', display: 'flex', alignItems: 'center', fontSize: 11, color: '#64748B' }}>Kéo nền để di chuyển · Kéo thẻ để tự sắp xếp · Ctrl/⌘ + cuộn để zoom · Bấm + trên thẻ để thêm node con</div>
-    <aside style={{position:'absolute',zIndex:5,right:0,top:0,bottom:0,width:260,display:'flex',flexDirection:'column',background:'white',borderLeft:'1px solid #334155',boxShadow:'-5px 0 18px rgba(15,23,42,.08)'}}><header style={{minHeight:60,padding:'0 14px',display:'flex',alignItems:'center',borderBottom:'1px solid #E2E8F0',fontSize:13,fontWeight:700,color:'#0F172A'}}>Nhiệm vụ đã hoàn thành <span style={{marginLeft:'auto',color:'#64748B',fontWeight:500}}>{completed.length}</span></header><div style={{flex:1,minHeight:0,overflowY:'auto',padding:10,display:'grid',alignContent:'start',gap:8}}>{completed.map(task=><button key={task.id} onClick={()=>toggleDone(task.id,false)} style={{padding:10,border:'1px solid #D1D5DB',borderRadius:5,background:'#F8FAFC',color:'#475569',fontSize:12,textAlign:'left',textDecoration:'line-through',cursor:'pointer'}}>{task.title}<span style={{display:'block',fontSize:10,color:'#94A3B8',marginTop:4}}>Bấm để khôi phục</span></button>)}</div></aside>
+    <aside style={{position:'absolute',zIndex:5,right:0,top:0,bottom:0,width:260,display:'flex',flexDirection:'column',background:'white',borderLeft:'1px solid #334155',boxShadow:'-5px 0 18px rgba(15,23,42,.08)'}}><header style={{minHeight:56,padding:'0 14px',display:'flex',alignItems:'center',borderBottom:'1px solid #E2E8F0',fontSize:13,fontWeight:700,color:'#0F172A'}}>Nhiệm vụ đã hoàn thành <span style={{marginLeft:'auto',color:'#64748B',fontWeight:500}}>{completed.length}</span></header><div style={{flex:1,minHeight:0,overflowY:'auto',padding:10,display:'grid',alignContent:'start',gap:8}}>{completed.map(task=><button key={task.id} onClick={()=>toggleDone(task.id,false)} style={{padding:10,border:'1px solid #D1D5DB',borderRadius:5,background:'#F8FAFC',color:'#475569',fontSize:12,textAlign:'left',textDecoration:'line-through',cursor:'pointer'}}>{task.title}<span style={{display:'block',fontSize:10,color:'#94A3B8',marginTop:4}}>Bấm để khôi phục</span></button>)}</div></aside>
   </main>;
 }

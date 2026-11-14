@@ -18,7 +18,10 @@ import {
     Image as ImageIcon,
     ShieldCheck,
     Flame,
-    ListChecks
+    ListChecks,
+    MessagesSquare,
+    Users,
+    Clock
 } from 'lucide-react';
 import { useAuth } from '../../hooks/useAuth';
 import { useChannelMessagesRealtime } from '../../hooks/useChannelMessagesRealtime';
@@ -35,6 +38,7 @@ import { useGroupResources } from '../../hooks/useGroupResources';
 import { useGroupNotes } from '../../hooks/useGroupNotes';
 import { NotesStackPanel } from './NotesStackPanel';
 import { TaskFlowBoard } from './TaskFlowBoard';
+import { WorkspaceTabs, HeaderIconButton } from '../../components/groups/WorkspaceTabs';
 import { ApiError } from '../../lib/apiClient';
 import { getGroup, listGroupMembers, leaveGroup, removeMember, updateMemberRole } from '../../lib/group.api';
 import { InviteModal } from '../../components/invitations/InviteModal';
@@ -185,17 +189,32 @@ export function StudyGroupDetail() {
   const [isCreatingChannel, setIsCreatingChannel] = useState(false);
   const [createChannelError, setCreateChannelError] = useState<string | null>(null);
 
-  // Delete Channel: per-row "⋮" menu + confirmation modal state
-  const [openChannelMenuId, setOpenChannelMenuId] = useState<string | null>(null);
+  // Delete Channel: confirmation modal state (opened from the chat header "⋮" menu)
   const [channelPendingDelete, setChannelPendingDelete] = useState<Channel | null>(null);
   const [isDeletingChannel, setIsDeletingChannel] = useState(false);
   const [deleteChannelError, setDeleteChannelError] = useState<string | null>(null);
 
-  // Delete Study Room: per-row "⋮" menu + confirmation modal state (mirrors Delete Channel above)
-  const [openRoomMenuId, setOpenRoomMenuId] = useState<string | null>(null);
+  // Delete Study Room: confirmation modal state (opened from the rooms header "⋮" menu)
   const [roomPendingDelete, setRoomPendingDelete] = useState<StudyRoom | null>(null);
   const [isDeletingRoom, setIsDeletingRoom] = useState(false);
   const [deleteRoomError, setDeleteRoomError] = useState<string | null>(null);
+
+  // Workspace header tabs: which room tab is open, and which header "more" menu is open.
+  const [activeRoomId, setActiveRoomId] = useState<string | null>(null);
+  const [openHeaderMenu, setOpenHeaderMenu] = useState<'channel' | 'room' | null>(null);
+  useEffect(() => {
+    if (!openHeaderMenu) return;
+    const onPointerDown = (event: PointerEvent) => {
+      if (!(event.target as Element | null)?.closest('[data-header-menu]')) setOpenHeaderMenu(null);
+    };
+    const onKeyDown = (event: KeyboardEvent) => { if (event.key === 'Escape') setOpenHeaderMenu(null); };
+    document.addEventListener('pointerdown', onPointerDown);
+    document.addEventListener('keydown', onKeyDown);
+    return () => {
+      document.removeEventListener('pointerdown', onPointerDown);
+      document.removeEventListener('keydown', onKeyDown);
+    };
+  }, [openHeaderMenu]);
 
   useEffect(() => {
     if (!groupId) return;
@@ -707,6 +726,28 @@ export function StudyGroupDetail() {
 
   // Study Rooms that can still be joined/watched (mirrors the backend's can_join_room lifecycle gate).
   const openRooms = studyRooms.filter((r) => r.status !== 'ended');
+  const activeRoom = openRooms.find((r) => r.id === activeRoomId) ?? openRooms[0] ?? null;
+  const liveRoomCount = openRooms.filter((r) => r.status === 'active').length;
+  const activeRoomHost = activeRoom ? groupMembers.find((m) => m.user_id === activeRoom.host_id)?.user : undefined;
+
+  const countBadge = (count: number) => (
+    <span style={{minWidth: 22, padding: '1px 7px', borderRadius: 10, background: '#E2E8F0', color: '#475569', fontSize: 12, fontWeight: 600, textAlign: 'center', boxSizing: 'border-box'}}>{count}</span>
+  );
+  // One sidebar entry per feature; sub-items (channels, rooms) are tabs in the main header.
+  const workspaceNav = [
+    { key: 'tasks' as const, label: 'Bảng nhiệm vụ', icon: ListChecks, meta: null },
+    { key: 'chat' as const, label: 'Kênh chat', icon: MessagesSquare, meta: isChannelsLoading ? null : countBadge(channels.length) },
+    {
+      key: 'rooms' as const, label: 'Phòng học', icon: Video,
+      meta: liveRoomCount > 0
+        ? <span style={{display: 'flex', alignItems: 'center', gap: 5, padding: '1px 8px', borderRadius: 10, background: '#D1FAE5', color: '#047857', fontSize: 11, fontWeight: 700}}><span className="workspace-live-dot" style={{width: 6, height: 6, borderRadius: '50%', background: '#10B981'}} />{liveRoomCount} LIVE</span>
+        : isRoomsLoading ? null : countBadge(openRooms.length),
+    },
+    { key: 'documents' as const, label: 'Tài liệu', icon: FileText, meta: resourcesLoading ? null : countBadge(resources.length) },
+  ];
+
+  const headerMenuStyle: React.CSSProperties = {position: 'absolute', top: 'calc(100% + 6px)', right: 0, zIndex: 60, minWidth: 180, padding: 6, background: 'white', borderRadius: 10, border: '1px solid #E2E8F0', boxShadow: '0 10px 25px -5px rgba(15,23,42,0.15), 0 8px 10px -6px rgba(15,23,42,0.1)'};
+  const headerMenuItemStyle = (danger = false): React.CSSProperties => ({width: '100%', padding: '8px 12px', display: 'flex', alignItems: 'center', gap: 10, border: 'none', borderRadius: 6, background: 'transparent', color: danger ? '#DC2626' : '#0F172A', fontSize: 13, fontWeight: 500, cursor: 'pointer', textAlign: 'left'});
 
   const handleJoinRoom = (roomId: string) => {
     if (document.documentElement.requestFullscreen) {
@@ -1057,310 +1098,81 @@ export function StudyGroupDetail() {
                     NotesStackPanel); real, group-scoped, persisted via backend */}
                 <NotesStackPanel {...groupNotesController} isGroupManager={isGroupManager} />
 
-                {/* Scrollable Channels List */}
-                <div style={{flex: 1, overflowY: 'auto', padding: '16px 8px'}}>
-
-                    {/* Text Channels */}
-                    <div style={{marginBottom: 24}}>
-                        <div style={{display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 8, paddingLeft: 8, paddingRight: 4}}>
-                            <div style={{color: '#64748B', fontSize: 12, fontFamily: 'Inter', fontWeight: '700', textTransform: 'uppercase'}}>Kênh Chat</div>
-                            <div style={{display: 'flex', alignItems: 'center', gap: 4}}>
-                                <button
-                                    onClick={() => setIsJoinChannelModalOpen(true)}
-                                    title="Tham gia kênh riêng tư bằng mã"
-                                    style={{width: 20, height: 20, display: 'flex', alignItems: 'center', justifyContent: 'center', background: 'transparent', border: 'none', borderRadius: 4, cursor: 'pointer', color: '#64748B'}}
-                                    onMouseOver={e => { e.currentTarget.style.background = '#E2E8F0'; e.currentTarget.style.color = '#0B1C30'; }}
-                                    onMouseOut={e => { e.currentTarget.style.background = 'transparent'; e.currentTarget.style.color = '#64748B'; }}
-                                >
-                                    <Ticket size={14} />
-                                </button>
-                                {isGroupManager && (
-                                    <button
-                                        onClick={() => { setCreateChannelError(null); setIsCreateChannelModalOpen(true); }}
-                                        title="Tạo kênh chat mới"
-                                        style={{width: 20, height: 20, display: 'flex', alignItems: 'center', justifyContent: 'center', background: 'transparent', border: 'none', borderRadius: 4, cursor: 'pointer', color: '#64748B'}}
-                                        onMouseOver={e => { e.currentTarget.style.background = '#E2E8F0'; e.currentTarget.style.color = '#0B1C30'; }}
-                                        onMouseOut={e => { e.currentTarget.style.background = 'transparent'; e.currentTarget.style.color = '#64748B'; }}
-                                    >
-                                        <Plus size={14} />
-                                    </button>
-                                )}
-                            </div>
-                        </div>
-                        <div style={{display: 'flex', flexDirection: 'column', gap: 2}}>
-                            {isChannelsLoading ? (
-                                <div style={{ padding: '4px 8px', display: 'flex', flexDirection: 'column', gap: 8 }}>
-                                    {[...Array(3)].map((_, i) => (
-                                        <div key={i} className="skeleton-pulse" style={{ height: 32, borderRadius: 6 }} />
-                                    ))}
-                                </div>
-                            ) : (
-                                <>
-                                    {channels.length === 0 && (
-                                        <div style={{padding: '8px 12px', color: '#94A3B8', fontSize: 13}}>Chưa có kênh nào.</div>
-                                    )}
-                                    {channels.map((channel) => {
-                                const isActive = activeChannel === channel.id && mainView === 'chat';
-                                const isMenuOpen = openChannelMenuId === channel.id;
-                                return (
-                                    <div key={channel.id} style={{position: 'relative'}}>
-                                        <div
-                                            onClick={() => { setActiveChannel(channel.id); setMainView('chat'); }}
-                                            style={{padding: '8px 8px 8px 12px', background: isActive ? '#E2E8F0' : 'transparent', borderRadius: 6, display: 'flex', alignItems: 'center', gap: 8, color: isActive ? '#0F172A' : '#475569', fontWeight: isActive ? '600' : '500', cursor: 'pointer'}}
-                                            onMouseOver={e => !isActive && (e.currentTarget.style.background = '#F1F5F9')}
-                                            onMouseOut={e => !isActive && (e.currentTarget.style.background = 'transparent')}
-                                        >
-                                            {channel.is_private ? <Lock size={16} color={isActive ? '#64748B' : '#94A3B8'} /> : <Hash size={18} color={isActive ? '#64748B' : '#94A3B8'} />}
-                                            <span style={{flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap'}}>{channel.name}</span>
-                                            {isGroupManager && (
-                                                <button
-                                                    onClick={(e) => { e.stopPropagation(); setOpenChannelMenuId(isMenuOpen ? null : channel.id); }}
-                                                    title="Tùy chọn kênh"
-                                                    style={{width: 20, height: 20, flexShrink: 0, display: 'flex', alignItems: 'center', justifyContent: 'center', background: isMenuOpen ? '#E2E8F0' : 'transparent', border: 'none', borderRadius: 4, cursor: 'pointer', color: '#64748B'}}
-                                                >
-                                                    <MoreVertical size={14} />
-                                                </button>
-                                            )}
-                                        </div>
-
-                                        {isMenuOpen && (
-                                            <div
-                                                style={{position: 'absolute', top: '100%', right: 4, zIndex: 60, background: 'white', borderRadius: 8, boxShadow: '0 10px 25px -5px rgba(0, 0, 0, 0.15), 0 8px 10px -6px rgba(0, 0, 0, 0.1)', border: '1px solid #E2E8F0', padding: '6px', marginTop: 2, minWidth: 160}}
-                                            >
-                                                {channel.is_private && (
-                                                    <div
-                                                        onClick={() => { setOpenChannelMenuId(null); setChannelToInvite(channel); }}
-                                                        style={{padding: '8px 12px', borderRadius: 6, display: 'flex', alignItems: 'center', gap: 10, fontSize: 13, fontWeight: '500', color: '#0F172A', cursor: 'pointer'}}
-                                                        onMouseOver={e => e.currentTarget.style.background = '#F1F5F9'}
-                                                        onMouseOut={e => e.currentTarget.style.background = 'transparent'}
-                                                    >
-                                                        <UserPlus size={16} color="#00236F" /> Mời vào kênh
-                                                    </div>
-                                                )}
-                                                <div
-                                                    onClick={() => { setOpenChannelMenuId(null); setDeleteChannelError(null); setChannelPendingDelete(channel); }}
-                                                    style={{padding: '8px 12px', borderRadius: 6, display: 'flex', alignItems: 'center', gap: 10, fontSize: 13, fontWeight: '500', color: '#DC2626', cursor: 'pointer'}}
-                                                    onMouseOver={e => e.currentTarget.style.background = '#FEF2F2'}
-                                                    onMouseOut={e => e.currentTarget.style.background = 'transparent'}
-                                                >
-                                                    <Trash2 size={16} color="#DC2626" /> Xóa kênh
-                                                </div>
-                                            </div>
-                                        )}
-                                    </div>
-                                );
-                            })}
-                            </>
-                        )}
-                        </div>
-                    </div>
-
-                    {/* Voice / Video Rooms */}
-                    <div style={{marginBottom: 24}}>
-                        <div style={{display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 8, paddingLeft: 8, paddingRight: 4}}>
-                            <div style={{color: '#64748B', fontSize: 12, fontFamily: 'Inter', fontWeight: '700', textTransform: 'uppercase'}}>Phòng học</div>
-                            <div style={{display: 'flex', alignItems: 'center', gap: 4}}>
-                                <button
-                                    onClick={() => setIsJoinRoomModalOpen(true)}
-                                    title="Tham gia phòng học bằng mã"
-                                    style={{width: 20, height: 20, display: 'flex', alignItems: 'center', justifyContent: 'center', background: 'transparent', border: 'none', borderRadius: 4, cursor: 'pointer', color: '#64748B'}}
-                                    onMouseOver={e => { e.currentTarget.style.background = '#E2E8F0'; e.currentTarget.style.color = '#0B1C30'; }}
-                                    onMouseOut={e => { e.currentTarget.style.background = 'transparent'; e.currentTarget.style.color = '#64748B'; }}
-                                >
-                                    <Ticket size={14} />
-                                </button>
-                                {isGroupManager && (
-                                    <button
-                                        onClick={() => { setCreateRoomError(null); setIsCreateRoomModalOpen(true); }}
-                                        title="Tạo phòng học mới"
-                                        style={{width: 20, height: 20, display: 'flex', alignItems: 'center', justifyContent: 'center', background: 'transparent', border: 'none', borderRadius: 4, cursor: 'pointer', color: '#64748B'}}
-                                        onMouseOver={e => { e.currentTarget.style.background = '#E2E8F0'; e.currentTarget.style.color = '#0B1C30'; }}
-                                        onMouseOut={e => { e.currentTarget.style.background = 'transparent'; e.currentTarget.style.color = '#64748B'; }}
-                                    >
-                                        <Plus size={14} />
-                                    </button>
-                                )}
-                            </div>
-                        </div>
-
-                        <div style={{display: 'flex', flexDirection: 'column', gap: 6}}>
-                            {isRoomsLoading ? (
-                                <div style={{ display: 'flex', flexDirection: 'column', gap: 8, padding: '0 8px' }}>
-                                    {[...Array(2)].map((_, i) => (
-                                        <div key={i} className="skeleton-pulse" style={{ height: 80, borderRadius: 8 }} />
-                                    ))}
-                                </div>
-                            ) : (
-                                <>
-                                    {openRooms.length === 0 && (
-                                        <div style={{padding: '8px', color: '#94A3B8', fontSize: 13}}>Chưa có phòng học nào đang mở.</div>
-                                    )}
-                            {/* Limit rooms to top 2 for Sidebar */}
-                            {openRooms.slice(0, 2).map(room => {
-                                const isRoomMenuOpen = openRoomMenuId === room.id;
-                                return (
-                                <div key={room.id} style={{padding: '10px 12px', background: '#E0E7FF', borderRadius: 8, display: 'flex', flexDirection: 'column', gap: 10, cursor: 'pointer', border: '1px solid #C7D2FE', position: 'relative'}}>
-                                    <div style={{display: 'flex', justifyContent: 'space-between', alignItems: 'center'}}>
-                                        <div style={{display: 'flex', alignItems: 'center', gap: 8, color: '#4338CA', fontWeight: '600'}}>
-                                            <Video size={16} /> {room.name}
-                                        </div>
-                                        <div style={{display: 'flex', alignItems: 'center', gap: 6}}>
-                                            <div style={{background: room.status === 'active' ? '#10B981' : '#F59E0B', color: 'white', fontSize: 10, fontWeight: '700', padding: '2px 6px', borderRadius: 4}}>
-                                                {room.status === 'active' ? 'LIVE' : 'CHỜ'}
-                                            </div>
-                                            {canDeleteRoom && (
-                                                <button
-                                                    onClick={(e) => { e.stopPropagation(); setOpenRoomMenuId(isRoomMenuOpen ? null : room.id); }}
-                                                    title="Tùy chọn phòng học"
-                                                    style={{width: 20, height: 20, flexShrink: 0, display: 'flex', alignItems: 'center', justifyContent: 'center', background: isRoomMenuOpen ? 'white' : 'transparent', border: 'none', borderRadius: 4, cursor: 'pointer', color: '#4338CA'}}
-                                                >
-                                                    <MoreVertical size={14} />
-                                                </button>
-                                            )}
-                                        </div>
-                                    </div>
-
-                                    {isRoomMenuOpen && (
-                                        <div
-                                            onClick={(e) => e.stopPropagation()}
-                                            style={{position: 'absolute', top: 36, right: 8, zIndex: 60, background: 'white', borderRadius: 8, boxShadow: '0 10px 25px -5px rgba(0, 0, 0, 0.15), 0 8px 10px -6px rgba(0, 0, 0, 0.1)', border: '1px solid #E2E8F0', padding: '6px', minWidth: 160}}
-                                        >
-                                            <div
-                                                onClick={() => { setOpenRoomMenuId(null); setDeleteRoomError(null); setRoomPendingDelete(room); }}
-                                                style={{padding: '8px 12px', borderRadius: 6, display: 'flex', alignItems: 'center', gap: 10, fontSize: 13, fontWeight: '500', color: '#DC2626', cursor: 'pointer'}}
-                                                onMouseOver={e => e.currentTarget.style.background = '#FEF2F2'}
-                                                onMouseOut={e => e.currentTarget.style.background = 'transparent'}
-                                            >
-                                                <Trash2 size={16} color="#DC2626" /> Xóa phòng học
-                                            </div>
-                                        </div>
-                                    )}
-                                    {room.description && (
-                                        <div style={{fontSize: 12, color: '#475569', paddingLeft: 24}}>
-                                            {room.description}
-                                        </div>
-                                    )}
-                                    <div
-                                      onClick={() => handleJoinRoom(room.id)}
-                                      style={{padding: '8px 0', background: 'white', borderRadius: 6, textAlign: 'center', color: '#4338CA', fontSize: 12, fontWeight: '600', border: '1px solid #C7D2FE', cursor: 'pointer', transition: 'all 0.2s'}}
-                                      onMouseOver={e => e.currentTarget.style.background = '#EEF2FF'}
-                                      onMouseOut={e => e.currentTarget.style.background = 'white'}
-                                    >
-                                        Tham gia ngay
-                                    </div>
-                                </div>
-                                );
-                            })}
-
-                            {/* View All rooms Button */}
-                            {openRooms.length > 2 && (
-                                <div
-                                    onClick={() => setMainView('rooms')}
-                                    style={{padding: '8px', textAlign: 'center', color: '#4338CA', fontSize: 13, fontWeight: '600', cursor: 'pointer', borderRadius: 6, background: '#EEF2FF', border: '1px dashed #C7D2FE', transition: 'all 0.2s'}}
-                                    onMouseOver={e => e.currentTarget.style.background = '#E0E7FF'}
-                                    onMouseOut={e => e.currentTarget.style.background = '#EEF2FF'}
-                                >
-                                    Xem tất cả {openRooms.length} phòng học
-                                </div>
-                            )}
-                                </>
-                            )}
-
-
-                        </div>
-                    </div>
-
-                    <div style={{marginBottom: 20}}>
-                      <div style={{color:'#64748B',fontSize:12,fontFamily:'Inter',fontWeight:700,textTransform:'uppercase',marginBottom:8,paddingLeft:8}}>Nhiệm vụ</div>
-                      <button onClick={()=>setMainView('tasks')} style={{width:'100%',padding:'9px 12px',background:mainView==='tasks'?'#E2E8F0':'transparent',border:0,borderRadius:6,display:'flex',alignItems:'center',gap:9,color:mainView==='tasks'?'#0F172A':'#475569',fontWeight:mainView==='tasks'?600:500,cursor:'pointer',fontSize:14,textAlign:'left'}}>
-                        <ListChecks size={17} color="#64748B"/> Bảng nhiệm vụ nhóm
-                      </button>
-                    </div>
-
-                    {/* Resources — real backend data (app/resources) */}
-                    <div>
-                        <div style={{display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 8, paddingLeft: 8, paddingRight: 4}}>
-                            <div style={{color: '#64748B', fontSize: 12, fontFamily: 'Inter', fontWeight: '700', textTransform: 'uppercase'}}>Tài liệu đính kèm</div>
+                {/* Workspace navigation -- one entry per feature. Channels and rooms are no longer
+                    listed here; they open as tabs in the main area header (WorkspaceTabs). */}
+                <nav aria-label="Không gian nhóm" style={{flex: 1, overflowY: 'auto', padding: '12px 8px', display: 'flex', flexDirection: 'column', gap: 2}}>
+                    <div style={{padding: '4px 12px 8px', color: '#94A3B8', fontSize: 11, fontWeight: 700, letterSpacing: 0.4, textTransform: 'uppercase'}}>Không gian nhóm</div>
+                    {workspaceNav.map(item => {
+                        const isActive = mainView === item.key;
+                        const Icon = item.icon;
+                        return (
                             <button
-                                onClick={() => resourceFileInputRef.current?.click()}
-                                disabled={isUploadingResource}
-                                title="Tải tài liệu lên"
-                                style={{width: 22, height: 22, display: 'flex', alignItems: 'center', justifyContent: 'center', background: 'transparent', border: 'none', borderRadius: 4, cursor: isUploadingResource ? 'not-allowed' : 'pointer', color: '#4338CA', opacity: isUploadingResource ? 0.5 : 1}}
+                                key={item.key}
+                                type="button"
+                                className="workspace-nav-item"
+                                aria-current={isActive ? 'page' : undefined}
+                                onClick={() => { setMainView(item.key); setOpenHeaderMenu(null); }}
+                                style={{position: 'relative', width: '100%', minHeight: 40, padding: '0 10px 0 14px', display: 'flex', alignItems: 'center', gap: 10, border: 'none', borderRadius: 8, background: isActive ? '#E0E7FF' : 'transparent', color: isActive ? '#00236F' : '#475569', fontSize: 14, fontWeight: isActive ? 600 : 500, cursor: 'pointer', textAlign: 'left'}}
                             >
-                                <Plus size={16} />
+                                {isActive && <span aria-hidden="true" style={{position: 'absolute', left: 0, top: 10, bottom: 10, width: 3, borderRadius: 3, background: '#00236F'}} />}
+                                <Icon size={18} color={isActive ? '#00236F' : '#64748B'} />
+                                <span style={{flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap'}}>{item.label}</span>
+                                {item.meta}
                             </button>
-                            <input
-                                ref={resourceFileInputRef}
-                                type="file"
-                                style={{display: 'none'}}
-                                onChange={handleResourceFileSelected}
-                                disabled={isUploadingResource}
-                            />
-                        </div>
-
-                        {isUploadingResource && (
-                            <div style={{padding: '4px 8px', fontSize: 12, color: '#4338CA'}}>Đang tải lên...</div>
-                        )}
-                        {resourceUploadError && (
-                            <div style={{padding: '4px 8px', fontSize: 12, color: '#DC2626'}}>{resourceUploadError.message}</div>
-                        )}
-
-                        {resourcesLoading ? (
-                            <div style={{padding: '8px', fontSize: 12, color: '#94A3B8'}}>Đang tải...</div>
-                        ) : resourcesListError ? (
-                            <div style={{padding: '8px', fontSize: 12, color: '#DC2626'}}>{resourcesListError.message}</div>
-                        ) : resources.length === 0 ? (
-                            <div style={{padding: '8px', fontSize: 12, color: '#94A3B8'}}>Chưa có tài liệu nào.</div>
-                        ) : (
-                            <div style={{display: 'flex', flexDirection: 'column', gap: 2}}>
-                                {resources.slice(0, 2).map((resource) => (
-                                    <div
-                                        key={resource.id}
-                                        onClick={() => openResourceFile(resource.id)}
-                                        style={{padding: '8px 12px', borderRadius: 6, display: 'flex', alignItems: 'flex-start', gap: 10, cursor: 'pointer'}}
-                                        onMouseOver={e => e.currentTarget.style.background = '#F1F5F9'}
-                                        onMouseOut={e => e.currentTarget.style.background = 'transparent'}
-                                    >
-                                        <FileText size={18} color="#3B82F6" style={{marginTop: 2, flexShrink: 0}} />
-                                        <div style={{minWidth: 0}}>
-                                            <div style={{color: '#334155', fontSize: 13, fontWeight: '500', marginBottom: 2, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap'}}>{resource.name}</div>
-                                            <div style={{color: '#94A3B8', fontSize: 11}}>{formatFileSize(resource.file_size)} • {getDisplayName(resource.uploader)}</div>
-                                        </div>
-                                    </div>
-                                ))}
-                            </div>
-                        )}
-
-                        {/* Nút Xem tất cả tài liệu đính kèm */}
-                        <div style={{marginTop: 12, borderTop: '1px solid #E2E8F0', paddingTop: 12}}>
-                            <div
-                                onClick={() => setMainView('documents')}
-                                style={{padding: '8px', textAlign: 'center', color: '#4338CA', fontSize: 13, fontWeight: '600', cursor: 'pointer', borderRadius: 6, background: '#EEF2FF', border: '1px dashed #C7D2FE', transition: 'all 0.2s', display: 'flex', justifyContent: 'center', alignItems: 'center', gap: 6}}
-                                onMouseOver={e => e.currentTarget.style.background = '#E0E7FF'}
-                                onMouseOut={e => e.currentTarget.style.background = '#EEF2FF'}
-                            >
-                                Xem tất cả tài liệu
-                            </div>
-                        </div>
-                    </div>
-
-                </div>
-
-
+                        );
+                    })}
+                </nav>
+                <input
+                    ref={resourceFileInputRef}
+                    type="file"
+                    style={{display: 'none'}}
+                    onChange={handleResourceFileSelected}
+                    disabled={isUploadingResource}
+                />
             </div>
 
             {/* Center - Main Area */}
             {mainView === 'chat' ? (
                 <div style={{flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column', background: 'white'}}>
 
-                    {/* Chat Header */}
-                    <div style={{height: 60, padding: '0 24px', borderBottom: '1px solid #E2E8F0', display: 'flex', justifyContent: 'space-between', alignItems: 'center'}}>
-                        <div style={{display: 'flex', alignItems: 'center', gap: 8, color: '#0F172A', fontSize: 18, fontWeight: '700'}}>
-                            <Hash size={24} color="#64748B" /> {activeChannelObj?.name ?? 'Chưa chọn kênh'}
-                        </div>
-                        <div style={{display: 'flex', gap: 16, color: '#64748B'}}>
-                        </div>
-                    </div>
+                    <WorkspaceTabs
+                        title="Kênh chat"
+                        titleIcon={<MessagesSquare size={18} color="#64748B" />}
+                        ariaLabel="Kênh chat của nhóm"
+                        tabs={channels.map(channel => ({
+                            id: channel.id,
+                            label: channel.name,
+                            icon: channel.is_private ? <Lock size={14} /> : <Hash size={15} />,
+                            title: channel.description ? `#${channel.name} — ${channel.description}` : `#${channel.name}`,
+                        }))}
+                        activeId={activeChannelObj?.id ?? null}
+                        onSelect={id => { setActiveChannel(id); setOpenHeaderMenu(null); }}
+                        loading={isChannelsLoading}
+                        emptyLabel="Chưa có kênh nào"
+                        actions={<>
+                            <HeaderIconButton label="Tham gia kênh riêng tư bằng mã" onClick={() => setIsJoinChannelModalOpen(true)}><Ticket size={17} /></HeaderIconButton>
+                            {isGroupManager && (
+                                <HeaderIconButton label="Tạo kênh chat mới" onClick={() => { setCreateChannelError(null); setIsCreateChannelModalOpen(true); }}><Plus size={18} /></HeaderIconButton>
+                            )}
+                            {isGroupManager && activeChannelObj && (
+                                <div data-header-menu style={{position: 'relative'}}>
+                                    <HeaderIconButton label={`Tùy chọn kênh #${activeChannelObj.name}`} active={openHeaderMenu === 'channel'} onClick={() => setOpenHeaderMenu(openHeaderMenu === 'channel' ? null : 'channel')}><MoreVertical size={17} /></HeaderIconButton>
+                                    {openHeaderMenu === 'channel' && (
+                                        <div role="menu" style={headerMenuStyle}>
+                                            {activeChannelObj.is_private && (
+                                                <button type="button" role="menuitem" className="workspace-icon-button" style={headerMenuItemStyle()} onClick={() => { setOpenHeaderMenu(null); setChannelToInvite(activeChannelObj); }}>
+                                                    <UserPlus size={16} color="#00236F" /> Mời vào kênh
+                                                </button>
+                                            )}
+                                            <button type="button" role="menuitem" className="workspace-icon-button" style={headerMenuItemStyle(true)} onClick={() => { setOpenHeaderMenu(null); setDeleteChannelError(null); setChannelPendingDelete(activeChannelObj); }}>
+                                                <Trash2 size={16} color="#DC2626" /> Xóa kênh
+                                            </button>
+                                        </div>
+                                    )}
+                                </div>
+                            )}
+                        </>}
+                    />
 
                     {/* Messages List */}
                     <div style={{flex: 1, overflowY: 'auto', padding: '24px', display: 'flex', flexDirection: 'column', gap: 20}}>
@@ -1522,53 +1334,125 @@ export function StudyGroupDetail() {
                 </div>
             ) : mainView === 'rooms' ? (
                 <div style={{flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column', background: '#F8FAFC'}}>
-                    <div style={{height: 60, padding: '0 24px', borderBottom: '1px solid #E2E8F0', display: 'flex', alignItems: 'center', color: '#0F172A', fontSize: 18, fontWeight: '700', background: 'white'}}>
-                        Danh sách Phòng học ({openRooms.length})
-                    </div>
-                    <div style={{flex: 1, overflowY: 'auto', padding: 24, display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(280px, 1fr))', gap: 24, alignContent: 'flex-start'}}>
-                        {openRooms.map(room => (
-                            <div key={room.id} style={{background: 'white', border: '1px solid #E2E8F0', borderRadius: 12, overflow: 'hidden', boxShadow: '0 4px 6px -1px rgba(0, 0, 0, 0.05)', display: 'flex', flexDirection: 'column'}}>
-                                <div style={{height: 100, background: 'linear-gradient(135deg, #EFF6FF, #DBEAFE)', position: 'relative', display: 'flex', alignItems: 'center', justifyContent: 'center', borderBottom: '1px solid #E2E8F0'}}>
-                                    <Video size={36} color="#60A5FA" />
-                                    <div style={{position: 'absolute', top: 12, right: 12, background: room.status === 'active' ? '#10B981' : '#F59E0B', color: 'white', fontSize: 10, fontWeight: '700', padding: '4px 8px', borderRadius: 4, letterSpacing: 0.5}}>
-                                        {room.status === 'active' ? 'LIVE' : 'CHỜ BẮT ĐẦU'}
-                                    </div>
-                                </div>
-                                <div style={{padding: 20, flex: 1, display: 'flex', flexDirection: 'column'}}>
-                                    <div style={{display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 8, marginBottom: 6}}>
-                                        <div style={{fontSize: 18, fontWeight: '700', color: '#0F172A'}}>{room.name}</div>
-                                        {canDeleteRoom && (
-                                            <button
-                                                onClick={() => { setOpenRoomMenuId(null); setDeleteRoomError(null); setRoomPendingDelete(room); }}
-                                                title="Xóa phòng học"
-                                                style={{flexShrink: 0, width: 24, height: 24, display: 'flex', alignItems: 'center', justifyContent: 'center', background: 'transparent', border: 'none', borderRadius: 4, cursor: 'pointer', color: '#94A3B8'}}
-                                                onMouseOver={e => { e.currentTarget.style.background = '#FEF2F2'; e.currentTarget.style.color = '#DC2626'; }}
-                                                onMouseOut={e => { e.currentTarget.style.background = 'transparent'; e.currentTarget.style.color = '#94A3B8'; }}
-                                            >
-                                                <Trash2 size={16} />
+                    <WorkspaceTabs
+                        title="Phòng học"
+                        titleIcon={<Video size={18} color="#64748B" />}
+                        ariaLabel="Phòng học của nhóm"
+                        tabs={openRooms.map(room => ({
+                            id: room.id,
+                            label: room.name,
+                            icon: <Video size={15} />,
+                            indicator: room.status === 'active'
+                                ? <span className="workspace-live-dot" aria-label="Đang diễn ra" style={{width: 7, height: 7, borderRadius: '50%', background: '#10B981', flexShrink: 0}} />
+                                : undefined,
+                        }))}
+                        activeId={activeRoom?.id ?? null}
+                        onSelect={id => { setActiveRoomId(id); setOpenHeaderMenu(null); }}
+                        loading={isRoomsLoading}
+                        emptyLabel="Chưa có phòng học nào đang mở"
+                        actions={<>
+                            <HeaderIconButton label="Tham gia phòng học bằng mã" onClick={() => setIsJoinRoomModalOpen(true)}><Ticket size={17} /></HeaderIconButton>
+                            {isGroupManager && (
+                                <HeaderIconButton label="Tạo phòng học mới" onClick={() => { setCreateRoomError(null); setIsCreateRoomModalOpen(true); }}><Plus size={18} /></HeaderIconButton>
+                            )}
+                            {canDeleteRoom && activeRoom && (
+                                <div data-header-menu style={{position: 'relative'}}>
+                                    <HeaderIconButton label={`Tùy chọn phòng ${activeRoom.name}`} active={openHeaderMenu === 'room'} onClick={() => setOpenHeaderMenu(openHeaderMenu === 'room' ? null : 'room')}><MoreVertical size={17} /></HeaderIconButton>
+                                    {openHeaderMenu === 'room' && (
+                                        <div role="menu" style={headerMenuStyle}>
+                                            <button type="button" role="menuitem" className="workspace-icon-button" style={headerMenuItemStyle(true)} onClick={() => { setOpenHeaderMenu(null); setDeleteRoomError(null); setRoomPendingDelete(activeRoom); }}>
+                                                <Trash2 size={16} color="#DC2626" /> Xóa phòng học
                                             </button>
-                                        )}
-                                    </div>
-                                    <div style={{fontSize: 14, color: '#64748B', marginBottom: 20, flex: 1}}>{room.description || 'Chưa có mô tả.'}</div>
-                                    <button
-                                        onClick={() => handleJoinRoom(room.id)}
-                                        style={{width: '100%', padding: '12px 0', background: '#3B82F6', color: 'white', borderRadius: 8, border: 'none', fontWeight: '600', cursor: 'pointer', transition: 'background 0.2s'}}
-                                        onMouseOver={e => e.currentTarget.style.background = '#2563EB'}
-                                        onMouseOut={e => e.currentTarget.style.background = '#3B82F6'}
-                                    >
-                                        Tham gia phòng
+                                        </div>
+                                    )}
+                                </div>
+                            )}
+                        </>}
+                    />
+
+                    <div style={{flex: 1, overflowY: 'auto', padding: 32, display: 'flex', justifyContent: 'center', alignItems: 'flex-start'}}>
+                        {isRoomsLoading ? (
+                            <div className="skeleton-pulse" style={{width: '100%', maxWidth: 680, height: 360, borderRadius: 16}} />
+                        ) : !activeRoom ? (
+                            <div style={{marginTop: 48, maxWidth: 380, textAlign: 'center'}}>
+                                <div style={{width: 64, height: 64, margin: '0 auto 16px', borderRadius: 16, background: '#EEF2FF', display: 'grid', placeItems: 'center'}}>
+                                    <Video size={28} color="#4338CA" />
+                                </div>
+                                <div style={{fontSize: 18, fontWeight: 700, color: '#0F172A', marginBottom: 6}}>Chưa có phòng học nào đang mở</div>
+                                <div style={{fontSize: 14, color: '#64748B', lineHeight: 1.5, marginBottom: 20}}>
+                                    {isGroupManager ? 'Tạo phòng để cả nhóm học cùng qua video và bảng trắng.' : 'Khi quản trị viên mở phòng, phòng sẽ xuất hiện ở đây.'}
+                                </div>
+                                <div style={{display: 'flex', justifyContent: 'center', gap: 8, flexWrap: 'wrap'}}>
+                                    {isGroupManager && (
+                                        <button type="button" onClick={() => { setCreateRoomError(null); setIsCreateRoomModalOpen(true); }} style={{display: 'flex', alignItems: 'center', gap: 6, padding: '10px 16px', border: 'none', borderRadius: 8, background: '#00236F', color: 'white', fontSize: 14, fontWeight: 600, cursor: 'pointer'}}>
+                                            <Plus size={16} /> Tạo phòng học
+                                        </button>
+                                    )}
+                                    <button type="button" onClick={() => setIsJoinRoomModalOpen(true)} style={{display: 'flex', alignItems: 'center', gap: 6, padding: '10px 16px', border: '1px solid #CBD5E1', borderRadius: 8, background: 'white', color: '#334155', fontSize: 14, fontWeight: 600, cursor: 'pointer'}}>
+                                        <Ticket size={16} /> Tham gia bằng mã
                                     </button>
                                 </div>
                             </div>
-                        ))}
+                        ) : (
+                            <article key={activeRoom.id} style={{width: '100%', maxWidth: 680, background: 'white', border: '1px solid #E2E8F0', borderRadius: 16, overflow: 'hidden', boxShadow: '0 1px 3px rgba(15,23,42,0.06)'}}>
+                                <div style={{padding: '28px 28px 24px', display: 'flex', alignItems: 'center', gap: 16, background: activeRoom.status === 'active' ? 'linear-gradient(135deg, #ECFDF5, #D1FAE5)' : 'linear-gradient(135deg, #EFF6FF, #E0E7FF)'}}>
+                                    <div style={{width: 56, height: 56, flexShrink: 0, borderRadius: 14, background: 'white', display: 'grid', placeItems: 'center', boxShadow: '0 1px 3px rgba(15,23,42,0.08)'}}>
+                                        <Video size={26} color={activeRoom.status === 'active' ? '#059669' : '#4338CA'} />
+                                    </div>
+                                    <div style={{minWidth: 0}}>
+                                        {activeRoom.status === 'active' ? (
+                                            <span style={{display: 'inline-flex', alignItems: 'center', gap: 6, padding: '2px 10px', borderRadius: 999, background: '#10B981', color: 'white', fontSize: 11, fontWeight: 700, letterSpacing: 0.4}}>
+                                                <span className="workspace-live-dot" style={{width: 6, height: 6, borderRadius: '50%', background: 'white'}} /> ĐANG DIỄN RA
+                                            </span>
+                                        ) : (
+                                            <span style={{display: 'inline-flex', padding: '2px 10px', borderRadius: 999, background: '#FEF3C7', color: '#B45309', fontSize: 11, fontWeight: 700, letterSpacing: 0.4}}>CHỜ BẮT ĐẦU</span>
+                                        )}
+                                        <h2 style={{margin: '8px 0 0', fontSize: 22, fontWeight: 700, color: '#0F172A', lineHeight: 1.3, overflowWrap: 'anywhere'}}>{activeRoom.name}</h2>
+                                    </div>
+                                </div>
+
+                                <div style={{padding: 28, display: 'grid', gap: 24}}>
+                                    <p style={{margin: 0, fontSize: 15, lineHeight: 1.6, color: activeRoom.description ? '#334155' : '#94A3B8'}}>
+                                        {activeRoom.description || 'Chưa có mô tả cho phòng học này.'}
+                                    </p>
+
+                                    <dl style={{margin: 0, display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(170px, 1fr))', gap: 12}}>
+                                        {[
+                                            { icon: <UserPlus size={16} color="#64748B" />, label: 'Chủ phòng', value: getDisplayName(activeRoomHost) },
+                                            { icon: <Users size={16} color="#64748B" />, label: 'Sức chứa', value: `${activeRoom.max_participants} người` },
+                                            {
+                                                icon: <Clock size={16} color="#64748B" />,
+                                                label: activeRoom.status === 'active' && activeRoom.started_at ? 'Bắt đầu lúc' : 'Tạo ngày',
+                                                value: activeRoom.status === 'active' && activeRoom.started_at
+                                                    ? new Date(activeRoom.started_at).toLocaleTimeString('vi-VN', { hour: '2-digit', minute: '2-digit' })
+                                                    : new Date(activeRoom.created_at).toLocaleDateString('vi-VN'),
+                                            },
+                                        ].map(item => (
+                                            <div key={item.label} style={{padding: '12px 14px', borderRadius: 10, background: '#F8FAFC', border: '1px solid #F1F5F9', minWidth: 0}}>
+                                                <dt style={{display: 'flex', alignItems: 'center', gap: 6, color: '#64748B', fontSize: 12, fontWeight: 500}}>{item.icon}{item.label}</dt>
+                                                <dd style={{margin: '4px 0 0', color: '#0F172A', fontSize: 14, fontWeight: 600, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap'}}>{item.value}</dd>
+                                            </div>
+                                        ))}
+                                    </dl>
+
+                                    <button
+                                        type="button"
+                                        onClick={() => handleJoinRoom(activeRoom.id)}
+                                        style={{width: '100%', padding: '13px 0', border: 'none', borderRadius: 10, background: activeRoom.status === 'active' ? '#059669' : '#00236F', color: 'white', fontSize: 15, fontWeight: 600, cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8}}
+                                    >
+                                        <Video size={18} /> {activeRoom.status === 'active' ? 'Vào phòng ngay' : 'Tham gia phòng'}
+                                    </button>
+                                </div>
+                            </article>
+                        )}
                     </div>
                 </div>
             ) : mainView === 'tasks' ? (
                 <TaskFlowBoard groupId={groupId ?? ''} />
             ) : (
                 <div style={{flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column', background: 'white'}}>
-                    <div style={{height: 60, padding: '0 24px', borderBottom: '1px solid #E2E8F0', display: 'flex', alignItems: 'center', justifyContent: 'space-between', color: '#0F172A', fontSize: 18, fontWeight: '700', background: 'white'}}>
-                        Tất cả dữ liệu đính kèm
+                    <div style={{height: 56, flexShrink: 0, padding: '0 16px 0 24px', borderBottom: '1px solid #E2E8F0', display: 'flex', alignItems: 'center', justifyContent: 'space-between', color: '#0F172A', fontSize: 15, fontWeight: '700', background: 'white'}}>
+                        <span style={{display: 'flex', alignItems: 'center', gap: 8}}><FileText size={18} color="#64748B" /> Tài liệu nhóm</span>
                         <button
                             onClick={() => resourceFileInputRef.current?.click()}
                             disabled={isUploadingResource}
