@@ -37,6 +37,8 @@ class ProfileResponse(BaseModel):
     bio: str | None
     organization: str | None
     role: ProfileRole
+    avatar_frame: str | None = None
+    cheer_style: str | None = None  # None reads as the default "clap"
     created_at: datetime
     updated_at: datetime
 
@@ -55,3 +57,6 @@ class UserSummary(BaseModel):
     display_name: str | None
     avatar_url: str | None
     role: ProfileRole
+    # Cosmetic rewards (migration 006) -- everywhere an avatar is drawn can wear the frame.
+    avatar_frame: str | None = None
+    cheer_style: str | None = None  # None reads as the default "clap"

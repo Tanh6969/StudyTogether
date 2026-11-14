@@ -3,11 +3,13 @@ import { supabase } from '../lib/supabase';
 import { USE_MOCK } from '../mocks/config';
 import { createRoomTask, deleteRoomTask, listRoomTasks, updateRoomTask } from '../lib/roomTask.api';
 import type { RoomTask, RoomTaskStatus } from '../lib/roomTask.api';
-import { playClap } from '../utils/clapSound';
+import { playCheer } from '../utils/cheerSounds';
 
 interface ClapPayload {
   task_id: string;
   user_id: string;
+  /** Cheer style id (lib/rewards.ts) of whoever clapped. */
+  style?: string;
 }
 
 /** Session tasks of a study room ("Buổi học hôm nay") for everyone in it.
@@ -19,7 +21,7 @@ interface ClapPayload {
  *   rest of the app uses) and a `clap` broadcast. Claps are deliberately ephemeral: they
  *   are a moment of encouragement, not a record, so there is no table for them -- counts
  *   reset when you reopen the room. */
-export function useRoomTasks(roomId: string | null, currentUserId: string | null) {
+export function useRoomTasks(roomId: string | null, currentUserId: string | null, cheerStyle = 'clap') {
   const [tasks, setTasks] = useState<RoomTask[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -49,10 +51,10 @@ export function useRoomTasks(roomId: string | null, currentUserId: string | null
     void reload();
   }, [reload]);
 
-  const registerClap = useCallback((taskId: string, withSound: boolean) => {
+  const registerClap = useCallback((taskId: string, style: string | undefined) => {
     setClaps((prev) => ({ ...prev, [taskId]: (prev[taskId] ?? 0) + 1 }));
     setClapPulse((prev) => ({ ...prev, [taskId]: Date.now() }));
-    if (withSound) playClap();
+    playCheer(style);
   }, []);
 
   useEffect(() => {
@@ -66,7 +68,7 @@ export function useRoomTasks(roomId: string | null, currentUserId: string | null
       .channel(`room_tasks:room:${roomId}`)
       .on('postgres_changes', { event: '*', schema: 'public', table: 'room_tasks', filter: `room_id=eq.${roomId}` }, scheduleReload)
       .on('broadcast', { event: 'clap' }, ({ payload }: { payload: ClapPayload }) => {
-        if (payload?.task_id) registerClap(payload.task_id, true);
+        if (payload?.task_id) registerClap(payload.task_id, payload.style);
       })
       .subscribe((status, err) => {
         if (status === 'CHANNEL_ERROR' || status === 'TIMED_OUT') {
@@ -141,11 +143,11 @@ export function useRoomTasks(roomId: string | null, currentUserId: string | null
       const now = Date.now();
       if (now - lastClapSentRef.current < 250) return;
       lastClapSentRef.current = now;
-      registerClap(taskId, true);
-      const payload: ClapPayload = { task_id: taskId, user_id: currentUserId ?? '' };
+      registerClap(taskId, cheerStyle);
+      const payload: ClapPayload = { task_id: taskId, user_id: currentUserId ?? '', style: cheerStyle };
       void channelRef.current?.send({ type: 'broadcast', event: 'clap', payload });
     },
-    [currentUserId, registerClap]
+    [currentUserId, cheerStyle, registerClap]
   );
 
   return { tasks, isLoading, error, reload, addTask, setStatus, removeTask, claps, clapPulse, clap };

@@ -29,6 +29,10 @@ class Profile(Base):
     avatar_url: Mapped[str | None] = mapped_column(Text)
     bio: Mapped[str | None] = mapped_column(Text)
     organization: Mapped[str | None] = mapped_column(Text)
+    # Cosmetic rewards (migration 006): the frame worn around the avatar and the cheer the
+    # "Cổ vũ" button plays. Both validated against app/rewards/catalog.py on write.
+    avatar_frame: Mapped[str | None] = mapped_column(Text)
+    cheer_style: Mapped[str] = mapped_column(Text, server_default=text("'clap'"), default="clap")
     role: Mapped[ProfileRole] = mapped_column(
         pg_enum(ProfileRole, "profile_role"), server_default=text("'user'"), default=ProfileRole.USER
     )

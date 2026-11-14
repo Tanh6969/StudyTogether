@@ -4,6 +4,7 @@ import { useAuth } from '../hooks/useAuth';
 import { useAuthContext } from '../contexts/auth-context';
 import { updateProfile, uploadProfileAvatar } from '../lib/profile.api';
 import { NotificationSettingsSection } from '../components/settings/NotificationSettingsSection';
+import { RewardsSection } from '../components/settings/RewardsSection';
 import { supabase } from '../lib/supabase';
 
 const fieldStyle: React.CSSProperties = { width: '100%', height: 43, padding: '0 12px', border: '1px solid #D9E1EF', borderRadius: 5, background: '#F8FAFF', color: '#344460', fontSize: 16, outline: 'none', boxSizing: 'border-box' };
@@ -165,6 +166,8 @@ export function AccountSettingsPage() {
             </section>
 
             <NotificationSettingsSection />
+
+            <RewardsSection />
 
             {/* ── Đổi mật khẩu (đặt dưới Cài đặt Thông báo) ── */}
             <section className="settings-card" style={cardStyle}>

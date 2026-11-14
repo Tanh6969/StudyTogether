@@ -1,6 +1,8 @@
 import { useEffect, useMemo, useState } from 'react';
 import type { CSSProperties, FormEvent } from 'react';
 import { Check, ChevronDown, PartyPopper, Play, Plus, RotateCcw, Square, Trash2 } from 'lucide-react';
+import { FramedAvatar } from '../../components/ui/FramedAvatar';
+import { cheerById } from '../../lib/rewards';
 import { useRoomTasks } from '../../hooks/useRoomTasks';
 import type { RoomTask } from '../../lib/roomTask.api';
 import { getAvatarColor, getAvatarInitials } from '../../utils/avatarUtils';
@@ -13,6 +15,10 @@ export interface SessionParticipant {
   color: string;
   avatarUrl?: string | null;
   isSelf: boolean;
+  /** Avatar frame id worn by this person (lib/rewards.ts), if any. */
+  frame?: string | null;
+  /** The cheer style this person's "Cổ vũ" plays; only the viewer's own is used here. */
+  cheerStyle?: string;
 }
 
 interface SessionTasksPanelProps {
@@ -48,6 +54,7 @@ interface PersonGroup {
   initial: string;
   color: string;
   avatarUrl: string | null;
+  frame: string | null;
   isSelf: boolean;
   inRoom: boolean;
   tasks: RoomTask[];
@@ -81,9 +88,12 @@ const iconButton: CSSProperties = {
 };
 
 export function SessionTasksPanel({ roomId, currentUserId, participants, canEdit }: SessionTasksPanelProps) {
+  const myCheer = cheerById(participants.find((p) => p.isSelf)?.cheerStyle);
+  const CheerIcon = myCheer.icon;
   const { tasks, isLoading, error, reload, addTask, setStatus, removeTask, claps, clapPulse, clap } = useRoomTasks(
     roomId,
-    currentUserId
+    currentUserId,
+    myCheer.id
   );
   const [draft, setDraft] = useState('');
   const [isAdding, setIsAdding] = useState(false);
@@ -112,6 +122,7 @@ export function SessionTasksPanel({ roomId, currentUserId, participants, canEdit
         initial: p.initial,
         color: p.color,
         avatarUrl: p.avatarUrl ?? null,
+        frame: p.frame ?? null,
         isSelf: p.isSelf,
         inRoom: true,
         tasks: list,
@@ -127,6 +138,7 @@ export function SessionTasksPanel({ roomId, currentUserId, participants, canEdit
         initial: getAvatarInitials(name),
         color: getAvatarColor(name),
         avatarUrl: list[0].user.avatar_url,
+        frame: list[0].user.avatar_frame ?? null,
         isSelf: userId === currentUserId,
         inRoom: false,
         tasks: sortTasks(list),
@@ -214,13 +226,7 @@ export function SessionTasksPanel({ roomId, currentUserId, participants, canEdit
                   aria-expanded={!isCollapsed}
                   style={{ width: '100%', display: 'flex', alignItems: 'center', gap: 10, padding: '6px 4px', border: 'none', borderRadius: 8, background: 'transparent', color: T.text, cursor: 'pointer', textAlign: 'left' }}
                 >
-                  {group.avatarUrl ? (
-                    <img src={group.avatarUrl} alt="" style={{ width: 26, height: 26, borderRadius: '50%', objectFit: 'cover', flexShrink: 0 }} />
-                  ) : (
-                    <span aria-hidden style={{ width: 26, height: 26, borderRadius: '50%', background: group.color, color: 'white', display: 'grid', placeItems: 'center', fontSize: 11, fontWeight: 700, flexShrink: 0 }}>
-                      {group.initial}
-                    </span>
-                  )}
+                  <FramedAvatar size={28} initials={group.initial} color={group.color} avatarUrl={group.avatarUrl} frame={group.frame} />
                   <span style={{ flex: 1, minWidth: 0, display: 'flex', alignItems: 'baseline', gap: 8 }}>
                     <span style={{ fontSize: 13, fontWeight: 600, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{group.name}</span>
                     {!group.inRoom && <span style={{ fontSize: 11, color: T.faint }}>đã rời phòng</span>}
@@ -282,11 +288,12 @@ export function SessionTasksPanel({ roomId, currentUserId, participants, canEdit
                             <button
                               type="button"
                               onClick={() => clap(task.id)}
-                              aria-label={`Cổ vũ ${group.name} đã xong ${task.title}`}
+                              aria-label={`${myCheer.label}: cổ vũ ${group.name} đã xong ${task.title}`}
+                              title={myCheer.label}
                               style={{ ...iconButton, width: 'auto', gap: 5, padding: '0 8px', color: clapCount ? T.text : T.muted, borderColor: clapCount ? T.faint : T.line }}
                             >
                               {/* Keyed on the latest clap so the pop replays without remounting the button. */}
-                              <span key={pulse ?? 0} className={pulse ? 'session-clap-pop' : undefined} style={{ display: 'inline-flex' }}><PartyPopper size={14} /></span>
+                              <span key={pulse ?? 0} className={pulse ? 'session-clap-pop' : undefined} style={{ display: 'inline-flex' }}><CheerIcon size={14} /></span>
                               <span style={{ fontSize: 12, fontVariantNumeric: 'tabular-nums' }}>{clapCount ? clapCount : 'Cổ vũ'}</span>
                             </button>
                           )}

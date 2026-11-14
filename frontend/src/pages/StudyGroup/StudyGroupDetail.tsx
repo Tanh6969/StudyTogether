@@ -43,6 +43,8 @@ import { WorkspaceTabs, HeaderIconButton } from '../../components/groups/Workspa
 import { ApiError } from '../../lib/apiClient';
 import { getGroup, listGroupMembers, leaveGroup, removeMember, updateMemberRole } from '../../lib/group.api';
 import { InviteModal } from '../../components/invitations/InviteModal';
+import { GroupStreakStrip } from '../../components/groups/GroupStreakStrip';
+import { FramedAvatar } from '../../components/ui/FramedAvatar';
 import { JoinByCodeModal } from '../../components/invitations/JoinByCodeModal';
 import { GroupSettingsModal } from '../../components/groups/GroupSettingsModal';
 import { GroupMembersPanel } from '../../components/groups/GroupMembersPanel';
@@ -1397,7 +1399,8 @@ export function StudyGroupDetail() {
                         </>}
                     />
 
-                    <div style={{flex: 1, overflowY: 'auto', padding: 32, display: 'flex', justifyContent: 'center', alignItems: 'flex-start'}}>
+                    <div style={{flex: 1, overflowY: 'auto', padding: 32, display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 16}}>
+                        {group && <GroupStreakStrip groupId={group.id} isManager={isGroupManager} />}
                         {isRoomsLoading ? (
                             <div className="skeleton-pulse" style={{width: '100%', maxWidth: 680, height: 360, borderRadius: 16}} />
                         ) : !activeRoom ? (
@@ -1489,11 +1492,7 @@ export function StudyGroupDetail() {
                                                     const name = getDisplayName(member.user);
                                                     return (
                                                         <li key={member.id} style={{display: 'flex', alignItems: 'center', gap: 10, padding: '8px 10px', borderRadius: 10, background: '#F8FAFC', border: '1px solid #F1F5F9', minWidth: 0}}>
-                                                            {member.user.avatar_url ? (
-                                                                <img src={member.user.avatar_url} alt="" style={{width: 32, height: 32, flexShrink: 0, borderRadius: '50%', objectFit: 'cover'}} />
-                                                            ) : (
-                                                                <span aria-hidden style={{width: 32, height: 32, flexShrink: 0, borderRadius: '50%', background: getAvatarColor(name), color: 'white', display: 'grid', placeItems: 'center', fontSize: 12, fontWeight: 700}}>{getAvatarInitials(name)}</span>
-                                                            )}
+                                                            <FramedAvatar size={32} initials={getAvatarInitials(name)} color={getAvatarColor(name)} avatarUrl={member.user.avatar_url} frame={member.user.avatar_frame ?? null} />
                                                             <span style={{minWidth: 0, display: 'grid'}}>
                                                                 <span style={{fontSize: 13, fontWeight: 600, color: '#0F172A', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap'}}>{name}{isSelf ? ' (Bạn)' : ''}</span>
                                                                 <span style={{fontSize: 11, color: '#64748B'}}>{member.role === 'host' ? 'Chủ phòng' : member.role === 'moderator' ? 'Điều phối' : 'Thành viên'}</span>

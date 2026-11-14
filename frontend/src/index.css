@@ -169,6 +169,28 @@ h1, h2, h3, h4, h5, h6, p {
 .workspace-live-dot { animation: workspace-live-pulse 1.6s ease-in-out infinite; }
 @media (prefers-reduced-motion: reduce) { .workspace-live-dot { animation: none; } }
 
+/* Avatar frames (FramedAvatar + lib/rewards.ts). Pure CSS: no asset per frame. */
+:root {
+  --frame-sky: #38BDF8;
+  --frame-sunset: linear-gradient(135deg, #F97316, #EC4899);
+  --frame-aurora: conic-gradient(from 0deg, #34D399, #38BDF8, #A78BFA, #F472B6, #34D399);
+  --frame-gold: linear-gradient(135deg, #FDE68A, #F59E0B 55%, #FDE68A);
+  --frame-gold-glow: rgba(245, 158, 11, 0.45);
+  --frame-text: #FFFFFF;
+}
+.avatar-frame { position: relative; display: inline-grid; place-items: center; box-sizing: border-box; border-radius: 50%; overflow: hidden; isolation: isolate; flex-shrink: 0; }
+.avatar-frame::before { content: ''; position: absolute; inset: -45%; border-radius: 50%; background: var(--frame-bg, transparent); z-index: -1; }
+.avatar-frame-inner { width: 100%; height: 100%; border-radius: 50%; overflow: hidden; display: grid; place-items: center; color: var(--frame-text); font-weight: 700; line-height: 1; }
+.avatar-frame--ring-sky { --frame-bg: var(--frame-sky); }
+.avatar-frame--ring-sunset { --frame-bg: var(--frame-sunset); }
+.avatar-frame--ring-aurora { --frame-bg: var(--frame-aurora); }
+.avatar-frame--ring-aurora::before { animation: avatar-frame-spin 6s linear infinite; }
+.avatar-frame--ring-gold { --frame-bg: var(--frame-gold); box-shadow: 0 0 10px var(--frame-gold-glow); }
+@keyframes avatar-frame-spin { to { transform: rotate(1turn); } }
+@media (prefers-reduced-motion: reduce) { .avatar-frame--ring-aurora::before { animation: none; } }
+.rewards-section button:focus-visible { outline: 2px solid #3B82F6; outline-offset: 2px; }
+.rewards-section button:not([aria-disabled="true"]):active { transform: scale(0.98); }
+
 /* Study room: "Buổi học hôm nay" panel (SessionTasksPanel). Colours mirror the panel's
    T tokens in SessionTasksPanel.tsx; keep the two in step. */
 :root {

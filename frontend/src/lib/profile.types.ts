@@ -10,6 +10,9 @@ export interface UserSummary {
   display_name: string | null;
   avatar_url: string | null;
   role: ProfileRole;
+  /** Cosmetic rewards (lib/rewards.ts); optional so mocks and older payloads still type. */
+  avatar_frame?: string | null;
+  cheer_style?: string;
 }
 
 export interface Profile extends UserSummary {

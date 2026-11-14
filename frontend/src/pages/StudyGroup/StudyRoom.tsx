@@ -244,6 +244,8 @@ export function StudyRoom() {
           initial: isSelf ? currentUser.initials : getAvatarInitials(name),
           color: isSelf ? currentUser.color : getAvatarColor(name),
           avatarUrl: isSelf ? currentUser.avatarUrl : m.user.avatar_url,
+          frame: m.user.avatar_frame ?? null,
+          cheerStyle: m.user.cheer_style ?? 'clap',
           isHost: m.role === 'host',
           isModerator: m.role === 'moderator',
           isSelf,

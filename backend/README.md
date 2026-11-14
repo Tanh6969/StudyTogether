@@ -32,8 +32,9 @@ Plain SQL in `db/migrations/`, applied manually (psql or Supabase SQL editor), i
 | `002_security_realtime_storage.sql` | Constraints/indexes, triggers (group owner membership, streaks, `updated_at`), RLS, Realtime publication, Storage buckets + policies. Idempotent. |
 | `003_group_tasks.sql` | `group_tasks` table for the group task flow board (new in the MVP). |
 | `004_private_study_rooms.sql` | `study_rooms.is_private` (hidden rooms, join by invite code only) + updated `can_access_room` / RLS. |
+| `005_room_tasks.sql` | `room_tasks` (per-person session tasks shown to the whole room) + Realtime/RLS for `room_moderation_actions` (hand raise). |
 
-New schema changes go in `005_*.sql`, `006_*.sql`, … Don't regenerate 001 on a live DB.
+New schema changes go in `006_*.sql`, `007_*.sql`, … Don't regenerate 001 on a live DB.
 
 ## Demo data
 
@@ -53,6 +54,10 @@ The frontend login page shows quick-login buttons for these (`frontend/src/lib/d
   `PATCH/DELETE /groups/{id}/tasks/{taskId}`. Any active group member can edit. Tasks form a
   tree (`parent_id`); deleting a task deletes its subtree; re-parenting into its own subtree is
   rejected. `position` stores the manual canvas position (`null` = auto layout).
+- **Room session tasks** — `app/room_tasks`, `GET/POST /study-rooms/{id}/tasks`,
+  `PATCH/DELETE /study-rooms/{id}/tasks/{taskId}`. Each participant keeps their own list
+  (`todo` / `doing` / `done`, one `doing` at a time); everyone who can see the room reads all
+  lists. Claps are a Supabase Realtime broadcast on the same channel, never stored.
 - **Roadmaps without a 20-phase cap** — `MAX_PHASES = 200` is only an abuse guard.
 
 Access model: the backend connects as `postgres` (bypasses RLS) and does all writes. RLS is

@@ -1,4 +1,5 @@
 import { useMemo } from 'react';
+import { FramedAvatar } from '../../../components/ui/FramedAvatar';
 import type { ReactNode } from 'react';
 import { Track } from 'livekit-client';
 import { isTrackReference, useParticipants, useTracks, VideoTrack } from '@livekit/components-react';
@@ -205,12 +206,8 @@ function ConnectedGrid({ members, currentUserId, currentUserName, currentUserAva
                 trackRef={cameraTrackRef}
                 style={{ width: '100%', height: '100%', objectFit: 'cover', transform: isSelf ? 'scaleX(-1)' : undefined }}
               />
-            ) : avatarUrl ? (
-              <img src={avatarUrl} alt={name} style={{ width: 80, height: 80, borderRadius: '50%', objectFit: 'cover' }} />
             ) : (
-              <div style={{ width: 80, height: 80, borderRadius: '50%', background: color, display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'white', fontSize: 28, fontWeight: 'bold' }}>
-                {initial}
-              </div>
+              <FramedAvatar size={80} initials={initial} color={color} avatarUrl={avatarUrl} frame={member?.user.avatar_frame ?? null} alt={name} />
             )}
 
             <div style={{ position: 'absolute', bottom: 12, left: 12, background: 'rgba(15, 23, 42, 0.75)', backdropFilter: 'blur(4px)', padding: '4px 12px', borderRadius: 8, display: 'flex', alignItems: 'center', gap: 8, color: 'white', fontSize: 13, fontWeight: '500' }}>
