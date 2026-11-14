@@ -83,6 +83,13 @@ class StudyRoomStatus(str, enum.Enum):
     ENDED = "ended"
 
 
+class RoomTaskStatus(str, enum.Enum):
+    """A participant's session task inside a study room (migration 005)."""
+    TODO = "todo"
+    DOING = "doing"
+    DONE = "done"
+
+
 class ProfileRole(str, enum.Enum):
     USER = "user"
     MODERATOR = "moderator"

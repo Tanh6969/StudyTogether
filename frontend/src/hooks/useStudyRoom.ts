@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useAuth } from './useAuth';
 import { useStudyRoomMembersRealtime } from './useStudyRoomMembersRealtime';
+import { useRoomModerationRealtime } from './useRoomModerationRealtime';
 import { ApiError } from '../lib/apiClient';
 import { listGroupMembers } from '../lib/group.api';
 import {
@@ -162,6 +163,9 @@ export function useStudyRoom(roomId: string | undefined) {
   // Near-instant member list refresh on any INSERT/UPDATE to this room's study_room_members
   // rows (join/leave/kick/role-change) -- see useStudyRoomMembersRealtime.ts and 026's header.
   useStudyRoomMembersRealtime(room ? roomId ?? null : null, loadMembers);
+  // Raised hands / moderation mutes: without this, another participant's hand only showed
+  // up after a full reload (see db/migrations/005_room_tasks.sql).
+  useRoomModerationRealtime(room ? roomId ?? null : null, loadModeration);
 
   const currentMember = useMemo(
     () => members.find((m) => m.user_id === currentUserId) ?? null,

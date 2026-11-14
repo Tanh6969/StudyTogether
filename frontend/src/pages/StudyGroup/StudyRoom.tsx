@@ -40,9 +40,8 @@ import { WhiteboardUnavailableModal } from './meeting/WhiteboardUnavailableModal
 import { PresentationViewer } from './meeting/PresentationViewer';
 import { PreJoinLobby } from './meeting/PreJoinLobby';
 import type { MediaJoinChoice } from './meeting/PreJoinLobby';
-import { listTasks, createTask, toggleTaskComplete, type StudyTask } from '../../lib/task.api';
+import { SessionTasksPanel } from './SessionTasksPanel';
 
-const canvasControl: React.CSSProperties = { width: 26, height: 26, border: '1px solid #475569', borderRadius: 6, background: '#1E293B', color: '#E2E8F0', cursor: 'pointer', display: 'grid', placeItems: 'center' };
 
 interface CenteredRoomMessageProps {
   title: string;
@@ -104,23 +103,7 @@ export function StudyRoom() {
 
   // Room states
   const [activeMode, setActiveMode] = useState<'video' | 'whiteboard'>('video');
-  const [activeRightTab, setActiveRightTab] = useState<'chat' | 'progress'>('chat');
   const [activeSidebarTab, setActiveSidebarTab] = useState<'tasks' | 'chat'>('tasks');
-  const [roomTasks, setRoomTasks] = useState<StudyTask[]>([]);
-  const [taskBoardZoom, setTaskBoardZoom] = useState(1);
-  const [taskBoardOffset, setTaskBoardOffset] = useState({ x: 20, y: 20 });
-  const [taskBoardPanning, setTaskBoardPanning] = useState<{x:number;y:number}|null>(null);
-  const [newTaskTitle, setNewTaskTitle] = useState('');
-  const [newListTitle, setNewListTitle] = useState('');
-  const [taskLists, setTaskLists] = useState<Array<{id:string;title:string;taskIds:string[]}>>([{id:'today',title:'Danh sách',taskIds:[]}]);
-  useEffect(() => {
-    const today = new Date();
-    const key = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, '0')}-${String(today.getDate()).padStart(2, '0')}`;
-    void listTasks(key, key).then(tasks => {
-      setRoomTasks(tasks);
-      setTaskLists([{ id: 'today', title: 'Danh sách', taskIds: tasks.filter(task => !task.completed_at).map(task => task.id) }]);
-    }).catch(() => setRoomTasks([]));
-  }, []);
   const [activeBoardTab, setActiveBoardTab] = useState<'whiteboard' | 'presentation'>('whiteboard');
 
   const [isSidebarOpen, setIsSidebarOpen] = useState(true);
@@ -199,14 +182,24 @@ export function StudyRoom() {
     }
   };
 
-  const currentUserHandRaised = currentUserId ? handRaisedUserIds.has(currentUserId) : false;
+  // Optimistic hand state: the server round trip (log + two refetches) used to be the only
+  // thing that flipped the button, so it lagged by a second or more. The override is held
+  // until the audit-log refetch agrees, then dropped.
+  const [handOverride, setHandOverride] = useState<boolean | null>(null);
+  const serverHandRaised = currentUserId ? handRaisedUserIds.has(currentUserId) : false;
+  const currentUserHandRaised = handOverride ?? serverHandRaised;
+  useEffect(() => {
+    if (handOverride !== null && handOverride === serverHandRaised) setHandOverride(null);
+  }, [handOverride, serverHandRaised]);
 
   const handleToggleHand = async () => {
-    if (!currentUserId) return;
+    if (!currentUserId || handOverride !== null) return;
+    const next = !serverHandRaised;
+    setHandOverride(next);
     try {
-      await moderate(currentUserId, currentUserHandRaised ? 'lower_hand' : 'raise_hand');
+      await moderate(currentUserId, next ? 'raise_hand' : 'lower_hand');
     } catch {
-      // actionError is already populated by the hook.
+      setHandOverride(null); // actionError is already populated by the hook.
     }
   };
 
@@ -255,10 +248,10 @@ export function StudyRoom() {
           isModerator: m.role === 'moderator',
           isSelf,
           isMuted: moderationMutedUserIds.has(m.user_id),
-          handRaised: handRaisedUserIds.has(m.user_id),
+          handRaised: isSelf ? currentUserHandRaised : handRaisedUserIds.has(m.user_id),
         };
       });
-  }, [members, currentUserId, currentUser, moderationMutedUserIds, handRaisedUserIds]);
+  }, [members, currentUserId, currentUser, moderationMutedUserIds, handRaisedUserIds, currentUserHandRaised]);
 
   // Real persisted messages for this room's ROOM Conversation (reuses the same
   // /conversations/{id}/messages REST API + Realtime subscription as Channel chat --
@@ -306,7 +299,7 @@ export function StudyRoom() {
   const chatEndRef = useRef<HTMLDivElement | null>(null);
   useEffect(() => {
     chatEndRef.current?.scrollIntoView({ behavior: 'smooth' });
-  }, [messages, activeRightTab]);
+  }, [messages]);
 
   const handleSendMessage = async () => {
     const trimmed = chatInput.trim();
@@ -678,7 +671,7 @@ export function StudyRoom() {
 
         {/* RIGHT COLLAPSIBLE SIDEBAR WITH SLEEK EDGE TOGGLE */}
         {isSidebarOpen ? (
-          <aside style={{width: activeSidebarTab === 'tasks' ? 'min(68vw, 920px)' : 340, minWidth: activeSidebarTab === 'tasks' ? 520 : 0, background: '#1E293B', borderLeft: '1px solid #334155', display: 'flex', flexDirection: 'column', zIndex: 10, position: 'relative', transition: 'width .2s ease'}}>
+          <aside style={{width: 'min(40vw, 420px)', minWidth: 340, background: '#1E293B', borderLeft: '1px solid #334155', display: 'flex', flexDirection: 'column', zIndex: 10, position: 'relative'}}>
             
             {/* Collapse Edge Handle */}
             <button 
@@ -716,7 +709,7 @@ export function StudyRoom() {
                 <Sparkles size={16} /> Nhiệm vụ
               </button>
               <button 
-                onClick={() => { setActiveSidebarTab('chat'); setActiveRightTab('chat'); }}
+                onClick={() => setActiveSidebarTab('chat')}
                 style={{
                   flex: 1, 
                   padding: '14px 0', 
@@ -738,26 +731,16 @@ export function StudyRoom() {
             </div>
 
             {activeSidebarTab === 'tasks' && (
-              <div style={{flex:1,minHeight:0,display:'flex',flexDirection:'column',padding:12,color:'#E2E8F0'}}>
-                <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',gap:8,marginBottom:10}}>
-                  <div style={{fontSize:12,fontWeight:700,textTransform:'uppercase',color:'#CBD5E1'}}>Bảng nhiệm vụ</div>
-                  <div style={{display:'flex',gap:4}}><button aria-label="Thu nhỏ" onClick={()=>setTaskBoardZoom(z=>Math.max(.35,z-.15))} style={canvasControl}>−</button><span style={{fontSize:11,alignSelf:'center',minWidth:34,textAlign:'center'}}>{Math.round(taskBoardZoom*100)}%</span><button aria-label="Phóng to" onClick={()=>setTaskBoardZoom(z=>Math.min(2,z+.15))} style={canvasControl}>+</button><button aria-label="Đặt lại" onClick={()=>{setTaskBoardZoom(1);setTaskBoardOffset({x:20,y:20});}} style={canvasControl}>⤢</button></div>
-                </div>
-                <form onSubmit={async e=>{e.preventDefault();if(!newTaskTitle.trim())return;try{const today=new Date();const due=`${today.getFullYear()}-${String(today.getMonth()+1).padStart(2,'0')}-${String(today.getDate()).padStart(2,'0')}`;const task=await createTask({title:newTaskTitle.trim(),due_date:due,priority:2});setRoomTasks(ts=>[...ts,task]);setTaskLists(ls=>ls.map((l,i)=>i===0?{...l,taskIds:[...l.taskIds,task.id]}:l));setNewTaskTitle('');}catch{}}} style={{display:'flex',gap:6,marginBottom:8}}><input value={newTaskTitle} onChange={e=>setNewTaskTitle(e.target.value)} placeholder="Thêm nhiệm vụ..." style={{minWidth:0,flex:1,padding:'7px 9px',border:'1px solid #475569',borderRadius:7,background:'#0F172A',color:'white',fontSize:12}}/><button style={{...canvasControl,width:32,background:'#2563EB',borderColor:'#2563EB'}} aria-label="Thêm nhiệm vụ">+</button></form>
-                <form onSubmit={e=>{e.preventDefault();const title=newListTitle.trim();if(!title)return;setTaskLists(ls=>[...ls,{id:crypto.randomUUID(),title,taskIds:[]}]);setNewListTitle('');}} style={{display:'flex',gap:6,marginBottom:10}}><input value={newListTitle} onChange={e=>setNewListTitle(e.target.value)} placeholder="Tên danh sách mới..." style={{minWidth:0,flex:1,padding:'6px 9px',border:'1px solid #334155',borderRadius:7,background:'#172033',color:'#CBD5E1',fontSize:11}}/><button style={{...canvasControl,width:32}} aria-label="Thêm danh sách">+</button></form>
-                <div onWheel={e=>{if(e.ctrlKey||e.metaKey){e.preventDefault();setTaskBoardZoom(z=>Math.max(.35,Math.min(2,z+(e.deltaY<0?.08:-.08))));}}} onPointerDown={e=>{if(e.target===e.currentTarget){e.currentTarget.setPointerCapture(e.pointerId);setTaskBoardPanning({x:e.clientX-taskBoardOffset.x,y:e.clientY-taskBoardOffset.y});}}} onPointerMove={e=>{if(taskBoardPanning)setTaskBoardOffset({x:e.clientX-taskBoardPanning.x,y:e.clientY-taskBoardPanning.y});}} onPointerUp={()=>setTaskBoardPanning(null)} style={{flex:1,minHeight:180,overflow:'hidden',position:'relative',border:'1px solid #334155',borderRadius:9,backgroundColor:'#0F172A',backgroundImage:'radial-gradient(#334155 1px, transparent 1px)',backgroundSize:`${22*taskBoardZoom}px ${22*taskBoardZoom}px`,cursor:taskBoardPanning?'grabbing':'grab',touchAction:'none'}}>
-                  <svg style={{position:'absolute',inset:0,width:'100%',height:'100%',pointerEvents:'none'}}><defs><marker id="task-arrow" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0,0 L8,4 L0,8 z" fill="#94A3B8"/></marker></defs><path d="M 270 100 C 330 100, 330 100, 390 100" fill="none" stroke="#94A3B8" strokeWidth="1.5" markerEnd="url(#task-arrow)"/></svg>
-                  <div style={{position:'absolute',left:taskBoardOffset.x,top:taskBoardOffset.y,display:'flex',alignItems:'flex-start',gap:28,width:'max-content',transform:`scale(${taskBoardZoom})`,transformOrigin:'top left',padding:8}}>
-                    {taskLists.map(list=><section key={list.id} style={{width:220,minHeight:220,border:'1px solid #64748B',borderRadius:8,background:'#172033',boxShadow:'0 5px 14px #0004',overflow:'hidden'}}><header style={{padding:'9px 10px',borderBottom:'1px solid #475569',fontSize:12,fontWeight:700,display:'flex',justifyContent:'space-between',gap:6}}><span>{list.title}</span><button onClick={()=>setTaskLists(ls=>ls.filter(l=>l.id!==list.id))} aria-label="Xóa danh sách" style={{border:0,background:'transparent',color:'#94A3B8',cursor:'pointer'}}>×</button></header><div style={{padding:8,display:'grid',gap:6,minHeight:170}}>{roomTasks.filter(t=>!t.completed_at&&list.taskIds.includes(t.id)).map(task=><button key={task.id} onClick={async()=>{try{const updated=await toggleTaskComplete(task.id);setRoomTasks(ts=>ts.map(t=>t.id===updated.id?updated:t));}catch{}}} style={{textAlign:'left',padding:'8px 7px',background:'#0F172A',border:'1px solid #334155',borderRadius:6,color:'#DBEAFE',fontSize:12,cursor:'pointer'}}>{task.title}<small style={{display:'block',marginTop:4,color:'#64748B'}}>Chạm để hoàn thành</small></button>)}</div></section>)}
-                    <section style={{width:190,minHeight:420,border:'1px solid #64748B',borderRadius:8,background:'#172033',boxShadow:'0 5px 14px #0004',overflow:'hidden'}}><header style={{padding:'9px 10px',borderBottom:'1px solid #475569',fontSize:12,fontWeight:700}}>Nhiệm vụ đã hoàn thành</header><div style={{padding:8,display:'grid',gap:6}}>{roomTasks.filter(t=>t.completed_at).map(task=><button key={task.id} onClick={async()=>{try{const updated=await toggleTaskComplete(task.id);setRoomTasks(ts=>ts.map(t=>t.id===updated.id?updated:t));}catch{}}} style={{textAlign:'left',padding:'8px 7px',background:'#0F172A',border:'1px solid #334155',borderRadius:6,color:'#86EFAC',fontSize:12,cursor:'pointer',textDecoration:'line-through'}}>{task.title}</button>)}</div></section>
-                  </div>
-                </div>
-                <div style={{fontSize:10,color:'#64748B',marginTop:6}}>Kéo nền để di chuyển · Ctrl/⌘ + cuộn để zoom · Chọn nhiệm vụ để chuyển trạng thái</div>
-              </div>
+              <SessionTasksPanel
+                roomId={room?.id ?? null}
+                currentUserId={currentUserId}
+                participants={participants}
+                canEdit={isCurrentUserMember && !isRoomEnded}
+              />
             )}
 
             {/* TAB CONTENT: CHAT */}
-            {activeSidebarTab === 'chat' && activeRightTab === 'chat' && (
+            {activeSidebarTab === 'chat' && (
               <div style={{flex: 1, display: 'flex', flexDirection: 'column', justifyContent: 'space-between', overflow: 'hidden'}}>
                 
                 {/* Messages List */}
@@ -883,18 +866,6 @@ export function StudyRoom() {
                     </button>
                   </div>
                 </div>
-              </div>
-            )}
-
-            {activeSidebarTab === 'chat' && activeRightTab === 'progress' && (
-              <div style={{flex: 1, overflowY: 'auto', padding: 16, color: '#E2E8F0'}}>
-                <span style={{color: '#94A3B8', fontSize: 12, fontWeight: 700, textTransform: 'uppercase', letterSpacing: .5}}>Tiến bộ chung</span>
-                <div style={{marginTop: 18, padding: 14, background: '#0F172A', border: '1px solid #334155', borderRadius: 10}}>
-                  <div style={{display: 'flex', justifyContent: 'space-between', marginBottom: 10, fontSize: 13}}><b>Nhiệm vụ hôm nay</b><span>{roomTasks.filter(t => t.completed_at).length}/{roomTasks.length}</span></div>
-                  <div style={{height: 8, background: '#334155', borderRadius: 8, overflow: 'hidden'}}><div style={{height: '100%', width: `${roomTasks.length ? roomTasks.filter(t => t.completed_at).length / roomTasks.length * 100 : 0}%`, background: '#10B981'}} /></div>
-                  <div style={{fontSize: 12, color: '#94A3B8', marginTop: 8}}>{participants.length} thành viên đang học</div>
-                </div>
-                <div style={{marginTop: 12, padding: 14, background: '#0F172A', border: '1px solid #334155', borderRadius: 10, fontSize: 13, color: '#94A3B8', lineHeight: 1.5}}>Tiến độ nhiệm vụ sẽ xuất hiện tại đây khi nhiệm vụ nhóm được liên kết với phòng học.</div>
               </div>
             )}
 

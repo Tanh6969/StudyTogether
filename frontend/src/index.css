@@ -168,3 +168,30 @@ h1, h2, h3, h4, h5, h6, p {
 @keyframes workspace-live-pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.35; } }
 .workspace-live-dot { animation: workspace-live-pulse 1.6s ease-in-out infinite; }
 @media (prefers-reduced-motion: reduce) { .workspace-live-dot { animation: none; } }
+
+/* Study room: "Buổi học hôm nay" panel (SessionTasksPanel). Colours mirror the panel's
+   T tokens in SessionTasksPanel.tsx; keep the two in step. */
+:root {
+  --session-accent: #38BDF8;
+  --session-text: #E2E8F0;
+  --session-faint: #64748B;
+  --session-done-wash: rgba(52, 211, 153, 0.22);
+}
+.session-panel button:focus-visible,
+.session-panel input:focus-visible { outline: 2px solid var(--session-accent); outline-offset: 2px; }
+.session-panel button:not(:disabled):hover { border-color: var(--session-faint); color: var(--session-text); }
+.session-panel button:not(:disabled):active { transform: scale(0.96); }
+.session-panel input::placeholder { color: var(--session-faint); }
+.session-row-actions { opacity: 0; transition: opacity 0.15s ease; }
+.session-row:hover .session-row-actions,
+.session-row:focus-within .session-row-actions { opacity: 1; }
+.session-progress-fill { transition: transform 0.4s ease; }
+@keyframes session-clap-pop { 0% { transform: scale(1); } 40% { transform: scale(1.25); } 100% { transform: scale(1); } }
+.session-clap-pop { animation: session-clap-pop 0.3s ease; }
+@keyframes session-done-flash { from { background-color: var(--session-done-wash); } to { background-color: transparent; } }
+.session-done-flash { animation: session-done-flash 1.8s ease-out; }
+@media (prefers-reduced-motion: reduce) {
+  .session-clap-pop, .session-done-flash { animation: none; }
+  .session-row-actions, .session-progress-fill { transition: none; }
+  .session-row-actions { opacity: 1; }
+}

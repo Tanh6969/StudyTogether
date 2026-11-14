@@ -20,6 +20,7 @@ from app.notifications.routers.notification_router import router as notification
 from app.invitations.routers.invitation_router import router as invitations_router
 from app.tasks.routers.task_router import router as tasks_router
 from app.group_tasks.routers.group_task_router import router as group_tasks_router
+from app.room_tasks.routers.room_task_router import router as room_tasks_router
 from app.roadmaps.routers.roadmap_router import router as roadmaps_router
 
 
@@ -76,4 +77,5 @@ app.include_router(notifications_router)
 app.include_router(invitations_router)
 app.include_router(tasks_router)
 app.include_router(group_tasks_router)
+app.include_router(room_tasks_router)
 app.include_router(roadmaps_router)
