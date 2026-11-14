@@ -2,7 +2,7 @@ import uuid
 from datetime import datetime
 from typing import TYPE_CHECKING
 
-from sqlalchemy import DateTime, ForeignKey, Integer, Text, UniqueConstraint, text
+from sqlalchemy import Boolean, DateTime, ForeignKey, Integer, Text, UniqueConstraint, text
 from sqlalchemy.dialects.postgresql import UUID, JSONB
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -29,6 +29,10 @@ class StudyRoom(Base):
         pg_enum(StudyRoomStatus, "study_room_status"), server_default=text("'waiting'::study_room_status")
     )
     max_participants: Mapped[int] = mapped_column(Integer, server_default=text("50"))
+    # Private ("hidden") room (migration 004): only visible to / joinable by group managers and
+    # users who already hold a study_room_members row -- everyone else needs an invitation
+    # code. See app/core/permissions.can_view_room.
+    is_private: Mapped[bool] = mapped_column(Boolean, server_default=text("false"))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=text("now()"))
     started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     ended_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))

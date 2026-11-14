@@ -5,7 +5,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 from sqlalchemy.exc import IntegrityError
 
-from app.auth.dependencies import get_current_user
+from app.auth.dependencies import get_current_user, get_current_user_optional
 from app.auth.dto.auth_dto import CurrentUser
 from app.conversations.entities.conversation_entity import Conversation
 from app.core import permissions
@@ -51,14 +51,17 @@ def fake_user():
 @pytest.fixture
 def as_fake_user(fake_user):
     app.dependency_overrides[get_current_user] = lambda: fake_user
+    app.dependency_overrides[get_current_user_optional] = lambda: fake_user
     yield fake_user
     app.dependency_overrides.pop(get_current_user, None)
+    app.dependency_overrides.pop(get_current_user_optional, None)
 
 
 def _make_room(
     status: StudyRoomStatus = StudyRoomStatus.ACTIVE,
     host_id: uuid.UUID | None = None,
     deleted_at: datetime | None = None,
+    is_private: bool = False,
 ) -> StudyRoom:
     return StudyRoom(
         id=uuid.uuid4(),
@@ -67,6 +70,7 @@ def _make_room(
         host_id=host_id or uuid.uuid4(),
         status=status,
         max_participants=50,
+        is_private=is_private,
         created_at=datetime.now(timezone.utc),
         deleted_at=deleted_at,
     )
@@ -955,8 +959,21 @@ async def test_list_members_requires_auth(async_client):
     assert response.status_code == 401
 
 
-async def test_list_members_forbidden_for_non_member(async_client, monkeypatch, as_fake_user):
+async def test_list_members_allowed_for_group_member_not_in_public_room(async_client, monkeypatch, as_fake_user):
+    """The group's room card shows who is inside before the caller joins, so a public room's
+    member list is visible to any active group member (can_view_room)."""
     room = _make_room()
+    monkeypatch.setattr(study_room_router.service, "get_by_id", AsyncMock(return_value=room))
+    _mock_group_membership(monkeypatch, _group_member(room.group_id, as_fake_user.id))
+    monkeypatch.setattr(permissions.study_rooms_service, "get_member", AsyncMock(return_value=None))
+    monkeypatch.setattr(study_room_router.service, "list_active_members", AsyncMock(return_value=[]))
+
+    response = await async_client.get(f"/study-rooms/{room.id}/members?active_only=true", headers=AUTH_HEADERS)
+    assert response.status_code == 200
+
+
+async def test_list_members_forbidden_for_non_member_of_private_room(async_client, monkeypatch, as_fake_user):
+    room = _make_room(is_private=True)
     monkeypatch.setattr(study_room_router.service, "get_by_id", AsyncMock(return_value=room))
     _mock_group_membership(monkeypatch, _group_member(room.group_id, as_fake_user.id))
     monkeypatch.setattr(permissions.study_rooms_service, "get_member", AsyncMock(return_value=None))
@@ -2333,3 +2350,105 @@ async def test_delete_room_succeeds_even_if_livekit_close_fails(async_client, mo
     response = await async_client.delete(f"/study-rooms/{room.id}", headers=AUTH_HEADERS)
 
     assert response.status_code == 204
+
+
+# --- Private (hidden) rooms, migration 004 ---
+
+
+async def test_list_rooms_hides_private_room_from_uninvited_member(async_client, monkeypatch, as_fake_user):
+    public_room = _make_room()
+    private_room = _make_room(is_private=True)
+    private_room.group_id = public_room.group_id
+    monkeypatch.setattr(study_room_router.service, "list_by_group", AsyncMock(return_value=[public_room, private_room]))
+    _mock_group_membership(monkeypatch, _group_member(public_room.group_id, as_fake_user.id))
+    monkeypatch.setattr(permissions.study_rooms_service, "get_member", AsyncMock(return_value=None))
+
+    response = await async_client.get(f"/study-rooms/?group_id={public_room.group_id}", headers=AUTH_HEADERS)
+    assert response.status_code == 200
+    assert [r["id"] for r in response.json()] == [str(public_room.id)]
+
+
+async def test_list_rooms_shows_private_room_to_invited_member(async_client, monkeypatch, as_fake_user):
+    private_room = _make_room(is_private=True)
+    monkeypatch.setattr(study_room_router.service, "list_by_group", AsyncMock(return_value=[private_room]))
+    _mock_group_membership(monkeypatch, _group_member(private_room.group_id, as_fake_user.id))
+    monkeypatch.setattr(
+        permissions.study_rooms_service, "get_member",
+        AsyncMock(return_value=_room_member(private_room.id, as_fake_user.id, left_at=datetime.now(timezone.utc))),
+    )
+
+    response = await async_client.get(f"/study-rooms/?group_id={private_room.group_id}", headers=AUTH_HEADERS)
+    assert [r["id"] for r in response.json()] == [str(private_room.id)]
+    assert response.json()[0]["is_private"] is True
+
+
+async def test_list_rooms_shows_private_room_to_group_manager(async_client, monkeypatch, as_fake_user):
+    private_room = _make_room(is_private=True)
+    monkeypatch.setattr(study_room_router.service, "list_by_group", AsyncMock(return_value=[private_room]))
+    _mock_group_membership(
+        monkeypatch, _group_member(private_room.group_id, as_fake_user.id, role=GroupMemberRole.MODERATOR)
+    )
+    monkeypatch.setattr(permissions.study_rooms_service, "get_member", AsyncMock(return_value=None))
+
+    response = await async_client.get(f"/study-rooms/?group_id={private_room.group_id}", headers=AUTH_HEADERS)
+    assert len(response.json()) == 1
+
+
+async def test_list_rooms_hides_private_room_from_anonymous(async_client, monkeypatch):
+    private_room = _make_room(is_private=True)
+    monkeypatch.setattr(study_room_router.service, "list_by_group", AsyncMock(return_value=[private_room]))
+
+    response = await async_client.get(f"/study-rooms/?group_id={private_room.group_id}")
+    assert response.json() == []
+
+
+async def test_get_private_room_404_for_uninvited_member(async_client, monkeypatch, as_fake_user):
+    room = _make_room(is_private=True)
+    monkeypatch.setattr(study_room_router.service, "get_by_id", AsyncMock(return_value=room))
+    _mock_group_membership(monkeypatch, _group_member(room.group_id, as_fake_user.id))
+    monkeypatch.setattr(permissions.study_rooms_service, "get_member", AsyncMock(return_value=None))
+
+    response = await async_client.get(f"/study-rooms/{room.id}", headers=AUTH_HEADERS)
+    assert response.status_code == 404
+
+
+async def test_join_private_room_directly_denied_without_invitation(async_client, monkeypatch, as_fake_user):
+    room = _make_room(is_private=True)
+    monkeypatch.setattr(study_room_router.service, "get_by_id", AsyncMock(return_value=room))
+    _mock_group_membership(monkeypatch, _group_member(room.group_id, as_fake_user.id))
+    monkeypatch.setattr(permissions.study_rooms_service, "get_member", AsyncMock(return_value=None))
+    join = AsyncMock()
+    monkeypatch.setattr(study_room_router.service, "join", join)
+
+    response = await async_client.post(f"/study-rooms/{room.id}/join", headers=AUTH_HEADERS)
+    assert response.status_code == 403
+    join.assert_not_called()
+
+
+async def test_rejoin_private_room_allowed_for_previous_member(async_client, monkeypatch, as_fake_user):
+    room = _make_room(is_private=True)
+    member = _room_member(room.id, as_fake_user.id, left_at=datetime.now(timezone.utc))
+    monkeypatch.setattr(study_room_router.service, "get_by_id", AsyncMock(return_value=room))
+    _mock_group_membership(monkeypatch, _group_member(room.group_id, as_fake_user.id))
+    monkeypatch.setattr(permissions.study_rooms_service, "get_member", AsyncMock(return_value=member))
+    monkeypatch.setattr(study_room_router.service, "get_member", AsyncMock(return_value=member))
+    monkeypatch.setattr(
+        study_room_router.service, "rejoin", AsyncMock(return_value=_room_member(room.id, as_fake_user.id))
+    )
+
+    response = await async_client.post(f"/study-rooms/{room.id}/join", headers=AUTH_HEADERS)
+    assert response.status_code == 200
+
+
+async def test_private_room_never_sends_group_wide_notifications(monkeypatch):
+    from app.study_rooms.services import study_room_service as svc_module
+
+    service = StudyRoomsService()
+    room = _make_room(is_private=True)
+    monkeypatch.setattr(service, "list_active_members", AsyncMock(return_value=[object()]))
+    monkeypatch.setattr(service, "get_by_id", AsyncMock(return_value=room))
+    notify = AsyncMock()
+    monkeypatch.setattr(svc_module.notifications_service, "notify_study_room_first_joiner", notify)
+
+    await service._trigger_room_notifications(MagicMock(), room.id, uuid.uuid4())
+    notify.assert_not_called()

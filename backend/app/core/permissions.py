@@ -118,6 +118,26 @@ def can_join_room(room: StudyRoom) -> bool:
     return room.deleted_at is None and room.status != StudyRoomStatus.ENDED
 
 
+async def can_view_room(session: AsyncSession, room: StudyRoom, user_id: uuid.UUID) -> bool:
+    """Visibility of a room (list/detail/presence list) and the prerequisite for joining it
+    directly -- weaker than `can_access_room`, which additionally needs an ACTIVE room
+    membership. Mirrors the SQL `public.can_access_room` helper (migration 004).
+
+    A private room is visible only to active group owners/moderators and to users who already
+    have a `study_room_members` row (the host, or someone who redeemed an invitation code --
+    that row survives leaving, so they can come back without a new code). Everyone else must
+    redeem an invitation code (invitation_router._join_target), which is never gated by this."""
+    if room.deleted_at is not None:
+        return False
+    if not await is_active_group_member(session, room.group_id, user_id):
+        return False
+    if not room.is_private:
+        return True
+    if await is_group_manager(session, room.group_id, user_id):
+        return True
+    return await study_rooms_service.get_member(session, room.id, user_id) is not None
+
+
 async def can_access_room(session: AsyncSession, room: StudyRoom, user_id: uuid.UUID) -> bool:
     """Mirrors `can_access_room_conversation` (SQL/RLS, migration 011). Participation requires
     BOTH a CURRENT active Group membership AND an active (non-left) `study_room_members` row --

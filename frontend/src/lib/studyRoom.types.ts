@@ -14,6 +14,9 @@ export interface StudyRoom {
   host_id: string;
   status: StudyRoomStatus;
   max_participants: number;
+  /** Hidden room (migration 004): only listed for group managers and users who already joined
+   * it once -- everyone else needs an invitation code. */
+  is_private: boolean;
   created_at: string;
   started_at: string | null;
   ended_at: string | null;
@@ -60,6 +63,7 @@ export interface StudyRoomCreate {
   name: string;
   description?: string | null;
   max_participants?: number;
+  is_private?: boolean;
 }
 
 /** Mirrors RoomModerationActionResponse */

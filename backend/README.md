@@ -31,8 +31,9 @@ Plain SQL in `db/migrations/`, applied manually (psql or Supabase SQL editor), i
 | `001_init_schema.sql` | Enums + tables. **Generated** from `app/*/entities` by `db/dump_ddl.py`. |
 | `002_security_realtime_storage.sql` | Constraints/indexes, triggers (group owner membership, streaks, `updated_at`), RLS, Realtime publication, Storage buckets + policies. Idempotent. |
 | `003_group_tasks.sql` | `group_tasks` table for the group task flow board (new in the MVP). |
+| `004_private_study_rooms.sql` | `study_rooms.is_private` (hidden rooms, join by invite code only) + updated `can_access_room` / RLS. |
 
-New schema changes go in `004_*.sql`, `005_*.sql`, … Don't regenerate 001 on a live DB.
+New schema changes go in `005_*.sql`, `006_*.sql`, … Don't regenerate 001 on a live DB.
 
 ## Demo data
 

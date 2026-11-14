@@ -21,7 +21,8 @@ import {
     ListChecks,
     MessagesSquare,
     Users,
-    Clock
+    Clock,
+    Globe
 } from 'lucide-react';
 import { useAuth } from '../../hooks/useAuth';
 import { useChannelMessagesRealtime } from '../../hooks/useChannelMessagesRealtime';
@@ -46,12 +47,13 @@ import { JoinByCodeModal } from '../../components/invitations/JoinByCodeModal';
 import { GroupSettingsModal } from '../../components/groups/GroupSettingsModal';
 import { GroupMembersPanel } from '../../components/groups/GroupMembersPanel';
 import { createChannel, deleteChannel, getChannel, listChannelMembers, listChannelsByGroup, removeChannelMember } from '../../lib/channel.api';
-import { createStudyRoom, deleteStudyRoom, getStudyRoom, listStudyRoomsByGroup } from '../../lib/studyRoom.api';
+import { createStudyRoom, deleteStudyRoom, getStudyRoom, listStudyRoomMembers, listStudyRoomsByGroup } from '../../lib/studyRoom.api';
+import { useStudyRoomMembersRealtime } from '../../hooks/useStudyRoomMembersRealtime';
 import { listConversationMessages, sendConversationMessage } from '../../lib/message.api';
 import { chatCache } from '../../lib/chatCache';
 import type { Group, GroupMember } from '../../lib/group.types';
 import type { Channel, ChannelMember } from '../../lib/channel.types';
-import type { StudyRoom } from '../../lib/studyRoom.types';
+import type { StudyRoom, StudyRoomMember } from '../../lib/studyRoom.types';
 import type { Message, MessageReactionSummary } from '../../lib/message.types';
 import { getAvatarInitials, getAvatarColor } from '../../utils/avatarUtils';
 import { getDisplayName } from '../../utils/userDisplay';
@@ -170,6 +172,7 @@ export function StudyGroupDetail() {
   // Create Study Room modal state
   const [isInviteModalOpen, setIsInviteModalOpen] = useState(false);
   const [channelToInvite, setChannelToInvite] = useState<Channel | null>(null);
+  const [roomToInvite, setRoomToInvite] = useState<StudyRoom | null>(null);
   // Dedicated Join Study Room / Join Private Channel entry points (see JoinByCodeModal) --
   // distinct from the group-level "Mời thêm người" (create invitation) flow above.
   const [isJoinRoomModalOpen, setIsJoinRoomModalOpen] = useState(false);
@@ -179,6 +182,7 @@ export function StudyGroupDetail() {
   const [createRoomName, setCreateRoomName] = useState('');
   const [createRoomDescription, setCreateRoomDescription] = useState('');
   const [isCreatingRoom, setIsCreatingRoom] = useState(false);
+  const [createRoomIsPrivate, setCreateRoomIsPrivate] = useState(false);
   const [createRoomError, setCreateRoomError] = useState<string | null>(null);
 
   // Create Channel modal state
@@ -492,6 +496,7 @@ export function StudyGroupDetail() {
         group_id: group.id,
         name: createRoomName.trim(),
         description: createRoomDescription.trim() || null,
+        is_private: createRoomIsPrivate,
       });
       // Real, persisted room returned by the backend -- append to reflect it immediately;
       // a refresh re-fetches from the backend and will show the same room.
@@ -499,6 +504,10 @@ export function StudyGroupDetail() {
       setIsCreateRoomModalOpen(false);
       setCreateRoomName('');
       setCreateRoomDescription('');
+      setCreateRoomIsPrivate(false);
+      setActiveRoomId(newRoom.id);
+      // A hidden room is useless until someone has its code -- hand the creator one right away.
+      if (newRoom.is_private) setRoomToInvite(newRoom);
     } catch (err) {
       setCreateRoomError(err instanceof ApiError ? err.message : 'Không thể tạo phòng học.');
     } finally {
@@ -729,6 +738,21 @@ export function StudyGroupDetail() {
   const activeRoom = openRooms.find((r) => r.id === activeRoomId) ?? openRooms[0] ?? null;
   const liveRoomCount = openRooms.filter((r) => r.status === 'active').length;
   const activeRoomHost = activeRoom ? groupMembers.find((m) => m.user_id === activeRoom.host_id)?.user : undefined;
+  const activeRoomIdForMembers = mainView === 'rooms' ? activeRoom?.id ?? null : null;
+
+  // People currently inside the selected room (active_only) -- shown on the room card.
+  const [roomPresence, setRoomPresence] = useState<{ roomId: string; members: StudyRoomMember[] } | null>(null);
+  const [roomPresenceReload, setRoomPresenceReload] = useState(0);
+  useStudyRoomMembersRealtime(activeRoomIdForMembers, () => setRoomPresenceReload((n) => n + 1));
+  useEffect(() => {
+    if (!activeRoomIdForMembers) return;
+    let cancelled = false;
+    listStudyRoomMembers(activeRoomIdForMembers, true)
+      .then((members) => { if (!cancelled) setRoomPresence({ roomId: activeRoomIdForMembers, members }); })
+      .catch(() => { if (!cancelled) setRoomPresence({ roomId: activeRoomIdForMembers, members: [] }); });
+    return () => { cancelled = true; };
+  }, [activeRoomIdForMembers, roomPresenceReload]);
+  const activeRoomPresence = roomPresence && roomPresence.roomId === activeRoomIdForMembers ? roomPresence.members : null;
 
   const countBadge = (count: number) => (
     <span style={{minWidth: 22, padding: '1px 7px', borderRadius: 10, background: '#E2E8F0', color: '#475569', fontSize: 12, fontWeight: 600, textAlign: 'center', boxSizing: 'border-box'}}>{count}</span>
@@ -1341,7 +1365,7 @@ export function StudyGroupDetail() {
                         tabs={openRooms.map(room => ({
                             id: room.id,
                             label: room.name,
-                            icon: <Video size={15} />,
+                            icon: room.is_private ? <Lock size={15} /> : <Video size={15} />,
                             indicator: room.status === 'active'
                                 ? <span className="workspace-live-dot" aria-label="Đang diễn ra" style={{width: 7, height: 7, borderRadius: '50%', background: '#10B981', flexShrink: 0}} />
                                 : undefined,
@@ -1360,6 +1384,9 @@ export function StudyGroupDetail() {
                                     <HeaderIconButton label={`Tùy chọn phòng ${activeRoom.name}`} active={openHeaderMenu === 'room'} onClick={() => setOpenHeaderMenu(openHeaderMenu === 'room' ? null : 'room')}><MoreVertical size={17} /></HeaderIconButton>
                                     {openHeaderMenu === 'room' && (
                                         <div role="menu" style={headerMenuStyle}>
+                                            <button type="button" role="menuitem" className="workspace-icon-button" style={headerMenuItemStyle(false)} onClick={() => { setOpenHeaderMenu(null); setRoomToInvite(activeRoom); }}>
+                                                <Ticket size={16} color="#475569" /> Mời bằng mã
+                                            </button>
                                             <button type="button" role="menuitem" className="workspace-icon-button" style={headerMenuItemStyle(true)} onClick={() => { setOpenHeaderMenu(null); setDeleteRoomError(null); setRoomPendingDelete(activeRoom); }}>
                                                 <Trash2 size={16} color="#DC2626" /> Xóa phòng học
                                             </button>
@@ -1407,6 +1434,11 @@ export function StudyGroupDetail() {
                                         ) : (
                                             <span style={{display: 'inline-flex', padding: '2px 10px', borderRadius: 999, background: '#FEF3C7', color: '#B45309', fontSize: 11, fontWeight: 700, letterSpacing: 0.4}}>CHỜ BẮT ĐẦU</span>
                                         )}
+                                        {activeRoom.is_private && (
+                                            <span style={{display: 'inline-flex', alignItems: 'center', gap: 4, marginLeft: 6, padding: '2px 10px', borderRadius: 999, background: '#1E293B', color: 'white', fontSize: 11, fontWeight: 700, letterSpacing: 0.4, verticalAlign: 'top'}}>
+                                                <Lock size={11} /> PHÒNG ẨN
+                                            </span>
+                                        )}
                                         <h2 style={{margin: '8px 0 0', fontSize: 22, fontWeight: 700, color: '#0F172A', lineHeight: 1.3, overflowWrap: 'anywhere'}}>{activeRoom.name}</h2>
                                     </div>
                                 </div>
@@ -1419,7 +1451,9 @@ export function StudyGroupDetail() {
                                     <dl style={{margin: 0, display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(170px, 1fr))', gap: 12}}>
                                         {[
                                             { icon: <UserPlus size={16} color="#64748B" />, label: 'Chủ phòng', value: getDisplayName(activeRoomHost) },
-                                            { icon: <Users size={16} color="#64748B" />, label: 'Sức chứa', value: `${activeRoom.max_participants} người` },
+                                            activeRoom.is_private
+                                                ? { icon: <Lock size={16} color="#64748B" />, label: 'Quyền vào', value: 'Chỉ người có mã mời' }
+                                                : { icon: <Globe size={16} color="#64748B" />, label: 'Quyền vào', value: 'Cả nhóm' },
                                             {
                                                 icon: <Clock size={16} color="#64748B" />,
                                                 label: activeRoom.status === 'active' && activeRoom.started_at ? 'Bắt đầu lúc' : 'Tạo ngày',
@@ -1434,6 +1468,42 @@ export function StudyGroupDetail() {
                                             </div>
                                         ))}
                                     </dl>
+
+                                    <section aria-label="Thành viên đang trong phòng" style={{display: 'grid', gap: 12}}>
+                                        <div style={{display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8}}>
+                                            <h3 style={{margin: 0, display: 'flex', alignItems: 'center', gap: 6, fontSize: 13, fontWeight: 600, color: '#334155'}}>
+                                                <Users size={16} color="#64748B" /> Đang trong phòng
+                                            </h3>
+                                            {activeRoomPresence && activeRoomPresence.length > 0 && countBadge(activeRoomPresence.length)}
+                                        </div>
+                                        {activeRoomPresence === null ? (
+                                            <div className="skeleton-pulse" style={{height: 52, borderRadius: 10}} />
+                                        ) : activeRoomPresence.length === 0 ? (
+                                            <div style={{padding: '14px 16px', borderRadius: 10, border: '1px dashed #CBD5E1', color: '#64748B', fontSize: 13, textAlign: 'center'}}>
+                                                Chưa có ai trong phòng. Hãy là người đầu tiên vào học!
+                                            </div>
+                                        ) : (
+                                            <ul style={{margin: 0, padding: 0, listStyle: 'none', display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(180px, 1fr))', gap: 8}}>
+                                                {activeRoomPresence.map((member) => {
+                                                    const isSelf = member.user_id === currentUserId;
+                                                    const name = getDisplayName(member.user);
+                                                    return (
+                                                        <li key={member.id} style={{display: 'flex', alignItems: 'center', gap: 10, padding: '8px 10px', borderRadius: 10, background: '#F8FAFC', border: '1px solid #F1F5F9', minWidth: 0}}>
+                                                            {member.user.avatar_url ? (
+                                                                <img src={member.user.avatar_url} alt="" style={{width: 32, height: 32, flexShrink: 0, borderRadius: '50%', objectFit: 'cover'}} />
+                                                            ) : (
+                                                                <span aria-hidden style={{width: 32, height: 32, flexShrink: 0, borderRadius: '50%', background: getAvatarColor(name), color: 'white', display: 'grid', placeItems: 'center', fontSize: 12, fontWeight: 700}}>{getAvatarInitials(name)}</span>
+                                                            )}
+                                                            <span style={{minWidth: 0, display: 'grid'}}>
+                                                                <span style={{fontSize: 13, fontWeight: 600, color: '#0F172A', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap'}}>{name}{isSelf ? ' (Bạn)' : ''}</span>
+                                                                <span style={{fontSize: 11, color: '#64748B'}}>{member.role === 'host' ? 'Chủ phòng' : member.role === 'moderator' ? 'Điều phối' : 'Thành viên'}</span>
+                                                            </span>
+                                                        </li>
+                                                    );
+                                                })}
+                                            </ul>
+                                        )}
+                                    </section>
 
                                     <button
                                         type="button"
@@ -1606,6 +1676,15 @@ export function StudyGroupDetail() {
             />
         )}
 
+        {roomToInvite && (
+            <InviteModal
+                isOpen={!!roomToInvite}
+                onClose={() => setRoomToInvite(null)}
+                target={{ roomId: roomToInvite.id }}
+                targetLabel={roomToInvite.name}
+            />
+        )}
+
         {/* Dedicated Join Study Room / Join Private Channel entry points -- same reusable
             flow as Join Group on the Groups list page, just target-aware (see
             JoinByCodeModal). A Group/Channel code entered here is rejected with a clear
@@ -1658,6 +1737,33 @@ export function StudyGroupDetail() {
                             style={{ width: '100%', padding: '10px 14px', borderRadius: 6, border: '1px solid #CBD5E1', fontSize: 14, outline: 'none', boxSizing: 'border-box', fontFamily: 'Inter', resize: 'vertical', minHeight: 72 }}
                         />
                     </div>
+
+                    <fieldset style={{ border: 'none', margin: '0 0 24px', padding: 0, display: 'grid', gap: 8 }}>
+                        <legend style={{ padding: 0, marginBottom: 6, fontSize: 13, fontWeight: 600, color: '#334155', fontFamily: 'Inter' }}>Quyền vào</legend>
+                        {[
+                            { value: false, icon: <Globe size={18} />, title: 'Cả nhóm', hint: 'Mọi thành viên nhóm đều thấy và vào được.' },
+                            { value: true, icon: <Lock size={18} />, title: 'Phòng ẩn', hint: 'Chỉ hiện với người có mã mời (và quản trị viên nhóm).' },
+                        ].map((opt) => {
+                            const selected = createRoomIsPrivate === opt.value;
+                            return (
+                                <label key={opt.title} style={{ position: 'relative', display: 'flex', alignItems: 'flex-start', gap: 10, padding: '10px 12px', borderRadius: 8, border: `1.5px solid ${selected ? '#00236F' : '#E2E8F0'}`, background: selected ? '#EEF2FF' : 'white', cursor: isCreatingRoom ? 'not-allowed' : 'pointer', fontFamily: 'Inter' }}>
+                                    <input
+                                        type="radio"
+                                        name="create-room-access"
+                                        checked={selected}
+                                        onChange={() => setCreateRoomIsPrivate(opt.value)}
+                                        disabled={isCreatingRoom}
+                                        style={{ position: 'absolute', opacity: 0, pointerEvents: 'none' }}
+                                    />
+                                    <span style={{ marginTop: 1, color: selected ? '#00236F' : '#64748B', display: 'flex' }}>{opt.icon}</span>
+                                    <span style={{ display: 'grid', gap: 2 }}>
+                                        <span style={{ fontSize: 14, fontWeight: 600, color: '#0F172A' }}>{opt.title}</span>
+                                        <span style={{ fontSize: 12, color: '#64748B' }}>{opt.hint}</span>
+                                    </span>
+                                </label>
+                            );
+                        })}
+                    </fieldset>
 
                     {createRoomError && (
                         <div style={{ background: '#FEF2F2', border: '1px solid #FECACA', borderRadius: 8, padding: 12, color: '#B91C1C', fontSize: 13, marginBottom: 16 }}>

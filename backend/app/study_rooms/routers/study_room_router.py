@@ -9,7 +9,7 @@ from app.attachments.services.attachment_service import (
     AttachmentStorageError,
     AttachmentsService,
 )
-from app.auth.dependencies import get_current_user
+from app.auth.dependencies import get_current_user, get_current_user_optional
 from app.auth.dto.auth_dto import CurrentUser
 from app.core.config import settings
 from app.core.permissions import (
@@ -18,6 +18,7 @@ from app.core.permissions import (
     can_join_room,
     can_join_room_meeting,
     can_manage_room,
+    can_view_room,
     is_active_group_member,
     is_group_manager,
 )
@@ -96,15 +97,34 @@ async def create_room(
 
 
 @router.get("/", response_model=list[StudyRoomResponse])
-async def list_rooms(group_id: uuid.UUID, session: AsyncSession = Depends(get_db_session)):
-    """List all study rooms belonging to a given group."""
-    return await service.list_by_group(session, group_id)
+async def list_rooms(
+    group_id: uuid.UUID,
+    current_user: CurrentUser | None = Depends(get_current_user_optional),
+    session: AsyncSession = Depends(get_db_session),
+):
+    """List the study rooms of a group. Public rooms stay listed as before (also to anonymous
+    callers, matching list_channels); a private room is only listed to callers who pass
+    `can_view_room` -- anyone else must not even learn its name."""
+    rooms = await service.list_by_group(session, group_id)
+    if current_user is None:
+        return [room for room in rooms if not room.is_private]
+    return [
+        room for room in rooms
+        if not room.is_private or await can_view_room(session, room, current_user.id)
+    ]
 
 
 @router.get("/{room_id}", response_model=StudyRoomResponse)
-async def get_room(room_id: uuid.UUID, session: AsyncSession = Depends(get_db_session)):
-    """Get a single study room by its ID."""
+async def get_room(
+    room_id: uuid.UUID,
+    current_user: CurrentUser | None = Depends(get_current_user_optional),
+    session: AsyncSession = Depends(get_db_session),
+):
+    """Get a single study room by its ID. A private room hidden from the caller 404s (rather
+    than 403) so its existence isn't confirmed by direct ID lookup either."""
     room = await _get_active_room_or_404(session, room_id)
+    if room.is_private and (current_user is None or not await can_view_room(session, room, current_user.id)):
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Study room not found")
     return room
 
 
@@ -374,7 +394,10 @@ async def join_room(
     # must not be able to join or rejoin a room under that group.
     if not await is_active_group_member(session, room.group_id, current_user.id):
         raise HTTPException(status.HTTP_403_FORBIDDEN, "Only an active group member can join this study room")
-
+    # Private room: a first-time joiner must come in through an invitation code
+    # (invitation_router._join_target); only managers and existing members may join directly.
+    if not await can_view_room(session, room, current_user.id):
+        raise HTTPException(status.HTTP_403_FORBIDDEN, "This study room is private -- join with an invitation code")
 
     # Check existing membership. The joining identity is always the caller --
     # never a client-supplied user_id -- and the role is always PARTICIPANT;
@@ -434,9 +457,11 @@ async def list_members(
     current_user: CurrentUser = Depends(get_current_user),
     session: AsyncSession = Depends(get_db_session)
 ):
-    """List the members of a study room, optionally filtered to active members only. Requires access to the room."""
+    """List the members of a study room, optionally filtered to active members only. Gated by
+    room visibility (`can_view_room`), not active participation: the group's room card shows
+    who is currently inside before the caller joins."""
     room = await _get_active_room_or_404(session, room_id)
-    if not await can_access_room(session, room, current_user.id):
+    if not await can_view_room(session, room, current_user.id):
         raise HTTPException(status.HTTP_403_FORBIDDEN, "You do not have access to this study room")
     if active_only:
         return await service.list_active_members(session, room_id)

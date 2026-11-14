@@ -107,7 +107,9 @@ class StudyRoomsService:
             active_members = await self.list_active_members(session, room_id)
             active_count = len(active_members)
             room = await self.get_by_id(session, room_id)
-            if not room:
+            if not room or room.is_private:
+                # Private rooms never broadcast group-wide: that would reveal the room's name
+                # to members who were deliberately not invited.
                 return
 
             user = await profiles_service.get_by_id(session, user_id)

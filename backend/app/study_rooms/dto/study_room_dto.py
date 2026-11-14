@@ -15,6 +15,7 @@ class StudyRoomCreate(BaseModel):
     name: str = Field(min_length=1, max_length=100)
     description: str | None = None
     max_participants: int = Field(default=50, ge=2, le=500)
+    is_private: bool = False
 
 
 class StudyRoomUpdate(BaseModel):
@@ -30,6 +31,7 @@ class StudyRoomUpdate(BaseModel):
     name: str | None = Field(default=None, min_length=1, max_length=100)
     description: str | None = None
     max_participants: int | None = Field(default=None, ge=2, le=500)
+    is_private: bool | None = None
 
 
 class StudyRoomResponse(BaseModel):
@@ -42,6 +44,7 @@ class StudyRoomResponse(BaseModel):
     host_id: uuid.UUID
     status: StudyRoomStatus
     max_participants: int
+    is_private: bool
     created_at: datetime
     started_at: datetime | None
     ended_at: datetime | None

@@ -165,7 +165,7 @@ export function createSeed(): MockDb {
   ];
 
   const room = (id: string, group_id: string, name: string, host_id: string, status: StudyRoom['status'], description: string | null, startedAgo: number | null): StudyRoom => ({
-    id, group_id, name, description, host_id, status, max_participants: 10,
+    id, group_id, name, description, host_id, status, max_participants: 10, is_private: false,
     created_at: ago(3 * DAY), started_at: startedAgo === null ? null : ago(startedAgo), ended_at: null,
     deleted_at: null, deleted_by: null, conversation_id: conv(`conv-${id}`, 'room'),
     whiteboard_state: null, presentation_state: null,
