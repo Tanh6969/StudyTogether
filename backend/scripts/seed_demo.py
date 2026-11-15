@@ -27,6 +27,9 @@ DEMO_ACCOUNTS = [
     ("minhanh", "minhanh@study.local", "minhanh", "Minh Anh", "ĐH Bách khoa Hà Nội", "Đang ôn IELTS và Giải tích 2."),
     ("hoangnam", "hoangnam@study.local", "hoangnam", "Hoàng Nam", "ĐH Bách khoa Hà Nội", "Thích chữa đề và giải bài khó."),
     ("thutrang", "thutrang@study.local", "thutrang", "Thu Trang", "ĐH Công nghệ – ĐHQGHN", "Frontend dev, đang học React."),
+    ("duchuy", "duchuy@study.local", "duchuy", "Đức Huy", None, None),
+    ("lanphuong", "lanphuong@study.local", "lanphuong", "Lan Phương", None, None),
+    ("quocbao", "quocbao@study.local", "quocbao", "Quốc Bảo", None, None),
 ]
 
 NS = uuid.UUID("6f1c2a52-7d0e-4c55-9a7e-3b1f0d6c9a10")
@@ -114,9 +117,9 @@ def seed_data(conn: psycopg.Connection, uid: dict[str, uuid.UUID]) -> None:
 
         # ---- groups (owner membership comes from the groups_add_owner trigger) ----
         groups = [
-            ("ielts", "Ôn thi IELTS 7.0", "Cùng luyện 4 kỹ năng mỗi tối, mục tiêu 7.0 trước kỳ thi tháng 3.", me, True, [(nam, "moderator"), (trang, "member")]),
-            ("giaitich", "Giải tích 2 – K67", "Chữa bài tập, chia sẻ đề cũ và ôn thi giữa kỳ, cuối kỳ.", nam, True, [(me, "member")]),
-            ("react", "Lập trình Web với React", "Học React + TypeScript từ cơ bản, làm project nhỏ mỗi tuần.", trang, True, [(me, "member"), (nam, "member")]),
+            ("ielts", "Ôn thi IELTS 7.0", "Cùng luyện 4 kỹ năng mỗi tối, mục tiêu 7.0 trước kỳ thi tháng 3.", me, True, [(nam, "moderator"), (trang, "member"), (uid["duchuy"], "member")]),
+            ("giaitich", "Giải tích 2 – K67", "Chữa bài tập, chia sẻ đề cũ và ôn thi giữa kỳ, cuối kỳ.", nam, True, [(me, "member"), (uid["duchuy"], "member"), (uid["lanphuong"], "member")]),
+            ("react", "Lập trình Web với React", "Học React + TypeScript từ cơ bản, làm project nhỏ mỗi tuần.", trang, True, [(me, "member"), (nam, "member"), (uid["lanphuong"], "member"), (uid["quocbao"], "member")]),
             ("doan", "Đồ án tốt nghiệp", "Nhóm kín để họp và theo dõi tiến độ đồ án.", me, False, [(trang, "member")]),
         ]
         for key, name, desc, owner, is_public, members in groups:

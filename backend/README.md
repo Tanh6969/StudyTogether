@@ -43,8 +43,9 @@ New schema changes go in `007_*.sql`, `008_*.sql`, … Don't regenerate 001 on a
 .venv/Scripts/python scripts/seed_demo.py
 ```
 
-Creates (or re-sets the password of) 3 confirmed accounts, password `123456`:
-`minhanh@study.local`, `hoangnam@study.local`, `thutrang@study.local`. Then wipes and
+Creates (or re-sets the password of) 6 confirmed accounts, password `123456`:
+`minhanh@study.local`, `hoangnam@study.local`, `thutrang@study.local`,
+`duchuy@study.local`, `lanphuong@study.local`, `quocbao@study.local`. Then wipes and
 re-creates everything those accounts own: 4 groups with channels, messages, rooms, notes,
 group task boards, plus personal tasks and roadmaps. Re-run any time to reset the demo.
 The frontend login page shows quick-login buttons for these (`frontend/src/lib/demoAccounts.ts`).

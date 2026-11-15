@@ -1,0 +1,37 @@
+TÀI KHOẢN DEMO - STUDY TOGETHER
+
+Trang demo: https://gfeg-delta.vercel.app/
+
+Mật khẩu chung: 123456
+
+1. Minh Anh
+   Email: minhanh@study.local
+   Vai trò: Chủ nhóm IELTS và Đồ án
+
+2. Hoàng Nam
+   Email: hoangnam@study.local
+   Vai trò: Chủ nhóm Giải tích, moderator nhóm IELTS
+
+3. Thu Trang
+   Email: thutrang@study.local
+   Vai trò: Chủ nhóm React
+
+4. Đức Huy
+   Email: duchuy@study.local
+   Vai trò: Thành viên nhóm IELTS và Giải tích
+
+5. Lan Phương
+   Email: lanphuong@study.local
+   Vai trò: Thành viên nhóm Giải tích và React
+
+6. Quốc Bảo
+   Email: quocbao@study.local
+   Vai trò: Thành viên nhóm React
+
+Lưu ý:
+- Tài khoản cần được tạo trên môi trường demo trước khi đăng nhập.
+- Nếu chạy local, vào thư mục backend và chạy:
+  .venv\Scripts\python scripts\seed_demo.py
+- Script seed_demo sẽ đặt lại mật khẩu và tạo lại dữ liệu demo do các tài khoản
+  này sở hữu. Chỉ chạy trên môi trường dev/demo, không chạy trên dữ liệu thật.
+- Đây là tài khoản dùng chung để test; không dùng cho dữ liệu cá nhân.

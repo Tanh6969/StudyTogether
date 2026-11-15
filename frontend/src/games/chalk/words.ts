@@ -64,7 +64,7 @@ export const WORD_PACKS: Record<string, WordEntry[]> = {
     ['Zill', 2], ['Zephys', 2], ['Ngộ Không', 2], ['Airi', 2], ['Florentino', 3], ['Yena', 2],
     ['Omen', 2], ['Veres', 2], ['Allain', 2], ['Yan', 2], ['Tachi', 3], ['Bright', 2],
     ['Tulen', 2], ['Natalya', 2], ['Liliana', 3], ['Raz', 2], ['Zata', 2], ['Yue', 2],
-    ['Kahlii', 3], ['Ignis', 2], ['Jinna', 3], ['Lorion', 3], ['Iggy', 2], ['Aleister', 3],
+    ['Kahlii', 3], ['Jinna', 3], ['Lorion', 3], ['Iggy', 2], ['Aleister', 3],
     ['Maloch', 2], ['Lữ Bố', 2], ['Taara', 2], ['Thane', 2], ['Baldum', 2], ['Grakk', 2],
     ['Zip', 2], ['Aya', 2], ['Annette', 2], ['Alice', 2], ['Xeniel', 3], ['Arum', 2],
     ['Mina', 2], ['Gildur', 2], ['Chaugnar', 3], ['Toro', 2],
