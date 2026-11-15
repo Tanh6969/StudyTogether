@@ -1,39 +1,35 @@
-import { useCallback, useEffect, useRef } from 'react';
-import { Tldraw } from 'tldraw';
-import type { Editor } from 'tldraw';
-import 'tldraw/tldraw.css';
-import { useWhiteboardSync } from '../../../hooks/useWhiteboardSync';
+import { Excalidraw } from '@excalidraw/excalidraw';
+import '@excalidraw/excalidraw/index.css';
+import { useExcalidrawSync } from '../../../hooks/useExcalidrawSync';
 
 interface SyncedWhiteboardProps {
   roomId: string;
-  initialState: Record<string, any> | null;
+  initialState: unknown;
   isReadonly: boolean;
+  /** LiveKit identities (= user ids) allowed to change the board; packets from others are ignored. */
+  editorIds: Set<string>;
+  selfName: string;
 }
 
-export function SyncedWhiteboard({ roomId, initialState, isReadonly }: SyncedWhiteboardProps) {
-  const store = useWhiteboardSync(roomId, initialState, isReadonly);
-  const editorRef = useRef<Editor | null>(null);
-
-  // useWhiteboardSync's own isReadonly check only gates whether local edits get
-  // broadcast/saved -- without this, a PARTICIPANT could still draw locally in the Tldraw UI
-  // (pointlessly, since it never syncs or persists, and is silently lost on any remote
-  // update). Setting the editor's own instance state disables the drawing tools and shows
-  // tldraw's built-in read-only treatment instead. `onMount` only fires once, so a later role
-  // change (e.g. promoted to moderator mid-session) needs the effect below too, not just this.
-  const handleMount = useCallback((editor: Editor) => {
-    editorRef.current = editor;
-    editor.updateInstanceState({ isReadonly });
-    return () => {
-      editorRef.current = null;
-    };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
-
-  useEffect(() => {
-    editorRef.current?.updateInstanceState({ isReadonly });
-  }, [isReadonly]);
-
+/**
+ * The room's shared whiteboard: Excalidraw (MIT licensed, works on any domain) synced live over
+ * the LiveKit data channel by useExcalidrawSync. Participants who aren't editors get Excalidraw's
+ * view mode: they see every stroke live and can pan/zoom, but cannot draw.
+ *
+ * The UI stays in English: Excalidraw only offers languages that are at least 85% translated,
+ * and Vietnamese is currently at 49%, so `langCode="vi-VN"` silently falls back to English.
+ */
+export function SyncedWhiteboard({ roomId, initialState, isReadonly, editorIds, selfName }: SyncedWhiteboardProps) {
+  const { setApi, initialData, onChange, onPointerUpdate } = useExcalidrawSync({ roomId, initialState, isReadonly, editorIds, selfName });
   return (
-    <Tldraw store={store} onMount={handleMount} />
+    <Excalidraw
+      excalidrawAPI={setApi}
+      initialData={initialData}
+      onChange={onChange}
+      onPointerUpdate={onPointerUpdate}
+      isCollaborating
+      viewModeEnabled={isReadonly}
+      UIOptions={{ canvasActions: { loadScene: false, saveToActiveFile: false, toggleTheme: true, export: { saveFileToDisk: true } } }}
+    />
   );
 }

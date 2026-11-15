@@ -4,8 +4,8 @@ import { Mic, MicOff, ScreenShare, ScreenShareOff, Video as VideoIcon, VideoOff 
 import { useMeetingContext } from './MeetingContext';
 
 const buttonBaseStyle = {
-  width: 48,
-  height: 48,
+  width: 42,
+  height: 42,
   borderRadius: '50%',
   border: 'none',
   color: 'white',

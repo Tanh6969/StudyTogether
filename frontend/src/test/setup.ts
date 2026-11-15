@@ -1,8 +1,7 @@
 import '@testing-library/jest-dom/vitest';
 
-// jsdom doesn't implement matchMedia -- tldraw's environment detection (color-scheme /
-// reduced-motion queries) calls it at module load time, so any test importing `tldraw`
-// (even indirectly, e.g. useWhiteboardSync.ts) fails without this stub.
+// jsdom doesn't implement matchMedia -- UI libraries (e.g. Excalidraw) query color-scheme /
+// reduced-motion at module load time, so tests importing them fail without this stub.
 if (!window.matchMedia) {
   window.matchMedia = (query: string) => ({
     matches: false,

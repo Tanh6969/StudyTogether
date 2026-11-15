@@ -322,6 +322,7 @@ export function useStudyRoom(roomId: string | undefined) {
     currentMember,
     isCurrentUserMember,
     isGroupManager,
+    groupManagerIds,
     handRaisedUserIds,
     moderationMutedUserIds,
     join,

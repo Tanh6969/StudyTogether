@@ -94,7 +94,7 @@ export function ActivityTray({ open, onClose, game, music, currentUserId, busy, 
       aria-label="Hoạt động"
       style={{
         position: 'absolute',
-        bottom: 84,
+        bottom: 70,
         left: '50%',
         transform: 'translateX(-50%)',
         width: 'min(92vw, 460px)',

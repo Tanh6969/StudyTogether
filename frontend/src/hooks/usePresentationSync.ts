@@ -25,11 +25,11 @@ export interface UsePresentationSyncResult {
 }
 
 /**
- * Syncs the Study Room's shared presentation deck the same way useWhiteboardSync syncs the
+ * Syncs the Study Room's shared presentation deck the same way useExcalidrawSync syncs the
  * board: LiveKit's reliable data channel for near-instant page-turn broadcast to everyone
  * currently connected, plus an immediate REST PUT so new/reconnecting participants (and a
  * REST resync after a network drop) load the current deck+page. Page turns are low-frequency
- * user actions (not a continuous stream like freehand drawing), so unlike useWhiteboardSync
+ * user actions (not a continuous stream like freehand drawing), so unlike useExcalidrawSync
  * there's no batching/throttling here -- every change is broadcast and saved immediately.
  */
 export function usePresentationSync(
@@ -116,7 +116,7 @@ export function usePresentationSync(
     };
   }, [room]);
 
-  // Resync from the persisted state after a reconnect -- mirrors useWhiteboardSync's own
+  // Resync from the persisted state after a reconnect -- mirrors useExcalidrawSync's own
   // reconnect handling (LiveKit doesn't replay data messages missed while disconnected).
   useEffect(() => {
     if (!room) return;

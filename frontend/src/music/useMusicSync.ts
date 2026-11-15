@@ -280,18 +280,29 @@ export function useMusicSync({ roomId, activity, queue, bus, currentUserId, onAc
   unlockedRef.current = unlocked;
   const isDjRef = useRef(isDj);
   isDjRef.current = isDj;
+  const activityIdRef = useRef(activityId);
+  activityIdRef.current = activityId;
   const [, forceTick] = useState(0);
 
   const current = useMemo(() => queue.queue.find((i) => i.id === state.currentId) ?? null, [queue.queue, state.currentId]);
 
   useHostHeartbeat(bus, activityId, isDj);
 
-  // Reset when the activity changes / ends.
+  // Reset when the activity changes / ends. Ending must be silent for sure, so the embedded
+  // players are destroyed (iframes removed), not merely paused -- a pause that races a load
+  // in progress could otherwise leave the track playing.
   useEffect(() => {
     if (!activityId) {
       setState(EMPTY_STATE);
       loadedIdRef.current = null;
-      activeAdapterRef.current?.pause();
+      loadingRef.current = null;
+      activeAdapterRef.current = null;
+      adaptersRef.current.forEach((a) => a.destroy());
+      adaptersRef.current.clear();
+      wrappersRef.current.forEach((w) => w.remove());
+      wrappersRef.current.clear();
+      setPositionMs(0);
+      setDurationMs(null);
       return;
     }
     const fromSnapshot = parseSnapshot(activity?.snapshot);
@@ -368,6 +379,7 @@ export function useMusicSync({ roomId, activity, queue, bus, currentUserId, onAc
   /** Make sure the player holds `item` (loads it if not), then play/pause per `s`. */
   const reconcile = useCallback(
     async (s: MusicState) => {
+      if (!activityIdRef.current) return;
       const item = queueRef.current.find((i) => i.id === s.currentId) ?? null;
       if (!item) {
         activeAdapterRef.current?.pause();

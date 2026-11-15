@@ -38,6 +38,7 @@ interface ActivitiesContextValue {
   music: MusicController;
   chalk: ChalkGameApi;
   setPlayerSlot: (el: HTMLElement | null) => void;
+  setMiniSlot: (el: HTMLElement | null) => void;
   trayOpen: boolean;
   setTrayOpen: (open: boolean) => void;
   busy: boolean;
@@ -83,6 +84,7 @@ export function RoomActivitiesProvider({ roomId, currentUserId, enabled, isManag
   const chalk = useChalkGame({ bus, activity: activities.game, currentUserId, persist: persistGame, endActivity: endGame });
 
   const [playerSlot, setPlayerSlot] = useState<HTMLElement | null>(null);
+  const [miniSlot, setMiniSlot] = useState<HTMLElement | null>(null);
   const [trayOpen, setTrayOpen] = useState(false);
   const [busy, setBusy] = useState(false);
   const [trayError, setTrayError] = useState<string | null>(null);
@@ -162,6 +164,7 @@ export function RoomActivitiesProvider({ roomId, currentUserId, enabled, isManag
             music,
             chalk,
             setPlayerSlot,
+            setMiniSlot,
             trayOpen,
             setTrayOpen,
             busy,
@@ -180,7 +183,7 @@ export function RoomActivitiesProvider({ roomId, currentUserId, enabled, isManag
   return (
     <ActivitiesContext.Provider value={value}>
       {children}
-      <PlayerDock attachContainer={music.attachContainer} target={playerSlot} hidden={!activities.music || !music.current} pipBottom={88} pipRight={16} />
+      <PlayerDock attachContainer={music.attachContainer} panelSlot={playerSlot} miniSlot={miniSlot} hidden={!activities.music || !music.current} />
     </ActivitiesContext.Provider>
   );
 }
@@ -203,28 +206,30 @@ export function ActivitiesButton({ disabled }: { disabled: boolean }) {
         onClick={() => setTrayOpen(!trayOpen)}
         disabled={disabled}
         title="Hoạt động: game giải lao, nghe nhạc chung"
+        aria-label="Hoạt động"
         aria-expanded={trayOpen}
         style={{
-          height: 48,
-          borderRadius: 24,
+          position: 'relative',
+          width: 42,
+          height: 42,
+          borderRadius: '50%',
           border: 'none',
           background: trayOpen ? '#2563EB' : '#334155',
           color: 'white',
           display: 'flex',
           alignItems: 'center',
-          gap: 8,
-          padding: '0 16px',
+          justifyContent: 'center',
           cursor: disabled ? 'default' : 'pointer',
           opacity: disabled ? 0.5 : 1,
-          fontSize: 13,
-          fontWeight: 600,
           transition: 'all 0.2s',
         }}
       >
-        <Sparkles size={18} /> Hoạt động
+        <Sparkles size={18} />
         {liveCount > 0 && (
-          <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4, fontSize: 11, background: '#0F172A', borderRadius: 999, padding: '2px 7px' }}>
-            <span className="activity-live-dot" style={{ width: 6, height: 6, borderRadius: '50%', background: '#10B981' }} />
+          <span
+            aria-label={`${people} người đang tham gia`}
+            style={{ position: 'absolute', top: -2, right: -2, minWidth: 16, height: 16, padding: '0 4px', boxSizing: 'border-box', borderRadius: 999, background: '#10B981', border: '2px solid #1E293B', color: '#0F172A', fontSize: 10, fontWeight: 700, display: 'flex', alignItems: 'center', justifyContent: 'center' }}
+          >
             {people}
           </span>
         )}
@@ -298,10 +303,17 @@ export function MusicMiniBar({ onOpen }: { onOpen: () => void }) {
   const ctx = useActivities();
   if (!ctx?.activities.music) return null;
   const m = ctx.activities.music;
-  return <MusicMiniPlayer controller={ctx.music} djName={ctx.nameOf(m.host, m.host_user_id)} onOpen={() => {
-    ctx.music.unlock();
-    onOpen();
-  }} />;
+  return (
+    <MusicMiniPlayer
+      controller={ctx.music}
+      djName={ctx.nameOf(m.host, m.host_user_id)}
+      onDiscSlot={ctx.setMiniSlot}
+      onOpen={() => {
+        ctx.music.unlock();
+        onOpen();
+      }}
+    />
+  );
 }
 
 export function MusicTabButton({ active, onClick, style }: { active: boolean; onClick: () => void; style: (active: boolean) => CSSProperties }) {

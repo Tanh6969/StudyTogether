@@ -1,6 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, screen } from '@testing-library/react';
-import userEvent from '@testing-library/user-event';
 import { WhiteboardPanel } from './WhiteboardPanel';
 
 const syncedWhiteboardSpy = vi.fn();
@@ -9,9 +8,8 @@ beforeEach(() => {
   syncedWhiteboardSpy.mockClear();
 });
 
-// SyncedWhiteboard mounts the real Tldraw editor (and its useWhiteboardSync/LiveKit
-// dependencies) -- mocking it here lets these tests assert purely on WhiteboardPanel's own
-// gating logic: whether Tldraw gets mounted at all, not how it behaves once mounted.
+// SyncedWhiteboard mounts the real Excalidraw editor (and its LiveKit sync) -- mocked so this
+// asserts only on what WhiteboardPanel passes through.
 vi.mock('./SyncedWhiteboard', () => ({
   SyncedWhiteboard: (props: unknown) => {
     syncedWhiteboardSpy(props);
@@ -20,39 +18,13 @@ vi.mock('./SyncedWhiteboard', () => ({
 }));
 
 describe('WhiteboardPanel', () => {
-  it('mounts SyncedWhiteboard when available', () => {
-    render(
-      <WhiteboardPanel
-        roomId="room-1"
-        initialState={null}
-        isReadonly={false}
-        isAvailable
-        onUnavailableClick={vi.fn()}
-      />,
-    );
+  it('always mounts the shared whiteboard (Excalidraw needs no license gate)', () => {
+    const editorIds = new Set(['u1']);
+    render(<WhiteboardPanel roomId="room-1" initialState={null} isReadonly={false} editorIds={editorIds} selfName="Minh Anh" />);
 
     expect(screen.getByTestId('synced-whiteboard')).toBeInTheDocument();
     expect(syncedWhiteboardSpy).toHaveBeenCalledWith(
-      expect.objectContaining({ roomId: 'room-1', initialState: null, isReadonly: false }),
+      expect.objectContaining({ roomId: 'room-1', initialState: null, isReadonly: false, editorIds, selfName: 'Minh Anh' }),
     );
-  });
-
-  it('does not mount SyncedWhiteboard when unavailable, and shows the fallback instead', async () => {
-    const onUnavailableClick = vi.fn();
-    render(
-      <WhiteboardPanel
-        roomId="room-1"
-        initialState={null}
-        isReadonly={false}
-        isAvailable={false}
-        onUnavailableClick={onUnavailableClick}
-      />,
-    );
-
-    expect(screen.queryByTestId('synced-whiteboard')).not.toBeInTheDocument();
-    expect(syncedWhiteboardSpy).not.toHaveBeenCalled();
-
-    await userEvent.click(screen.getByRole('button', { name: 'Xem chi tiết' }));
-    expect(onUnavailableClick).toHaveBeenCalledTimes(1);
   });
 });

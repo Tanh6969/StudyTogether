@@ -234,9 +234,9 @@ async def get_whiteboard_asset_download_url(
     try:
         # Longer-lived than the chat-attachment default (attachment_download_url_expires_in,
         # 300s): a board image is meant to stay visible for the whole session, not just a
-        # single message view. The frontend re-resolves on zoom/pan anyway (tldraw's
-        # useImageOrVideoAsset), so this is a ceiling on worst-case idle staleness, not the
-        # only refresh path.
+        # single message view. The Excalidraw board (useExcalidrawSync) downloads the bytes
+        # once through this URL and keeps them in memory, so expiry only matters for that
+        # first fetch.
         result = await attachments_service.create_signed_download_url(path, expires_in=WHITEBOARD_ASSET_URL_EXPIRES_IN)
     except AttachmentServiceNotConfigured as exc:
         raise HTTPException(status.HTTP_500_INTERNAL_SERVER_ERROR, "Attachment storage is not configured") from exc

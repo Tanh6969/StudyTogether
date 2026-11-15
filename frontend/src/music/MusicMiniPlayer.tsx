@@ -14,10 +14,12 @@ interface MusicMiniPlayerProps {
   controller: MusicController;
   djName: string;
   onOpen: () => void;
+  /** Receives the artwork element so the player can sit there while the panel is closed. */
+  onDiscSlot?: (el: HTMLElement | null) => void;
 }
 
 /** Always-visible strip above the sidebar tabs (design §3.6). */
-export function MusicMiniPlayer({ controller, djName, onOpen }: MusicMiniPlayerProps) {
+export function MusicMiniPlayer({ controller, djName, onOpen, onDiscSlot }: MusicMiniPlayerProps) {
   const { current, state, isDj, unlocked, unlock, positionMs, durationMs, muted, toggleMuted, togglePlay, voteSkip, capabilities, hasVotedSkip } = controller;
   const progress = durationMs && durationMs > 0 ? Math.min(1, positionMs / durationMs) : 0;
   const needsUnlock = !isDj && !unlocked && state.isPlaying && !!current;
@@ -46,6 +48,7 @@ export function MusicMiniPlayer({ controller, djName, onOpen }: MusicMiniPlayerP
       style={{ position: 'relative', height: 56, background: '#0B1220', borderBottom: '1px solid #334155', display: 'flex', alignItems: 'center', gap: 10, padding: '0 10px 0 12px', cursor: 'pointer', overflow: 'hidden' }}
     >
       <div
+        ref={onDiscSlot}
         className={state.isPlaying && current ? 'music-disc-spin' : undefined}
         style={{ width: 36, height: 36, borderRadius: '50%', background: '#1E293B', overflow: 'hidden', flexShrink: 0, display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#64748B', border: '2px solid #334155' }}
       >

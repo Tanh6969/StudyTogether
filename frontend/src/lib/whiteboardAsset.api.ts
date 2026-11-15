@@ -24,8 +24,8 @@ export async function uploadWhiteboardAssetFile(uploadUrl: string, file: File, c
 
 /** Resolves a signed view URL for a board asset by its storage path -- any active room
  * participant may call this (viewing isn't editor-only), unlike the upload-url endpoint
- * above. `path` is the value persisted as the tldraw asset's `src` (see
- * whiteboardAssetStore.ts), not a message id -- there's no message backing a board image. */
+ * above. `path` is the storage path persisted in the board's `files` map (see
+ * useExcalidrawSync.ts), not a message id -- there's no message backing a board image. */
 export function getWhiteboardAssetDownloadUrl(roomId: string, path: string): Promise<DownloadUrlResponse> {
   return apiClient.get<DownloadUrlResponse>(
     `/study-rooms/${roomId}/whiteboard/assets/download-url?path=${encodeURIComponent(path)}`

@@ -126,11 +126,14 @@ export function MusicPanel({ activity, controller, queue, currentUserId, isManag
 
   return (
     <section aria-label="Nghe nhạc chung" style={{ flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column', color: T.text, overflow: 'hidden' }}>
-      <div style={{ flex: 1, overflowY: 'auto', padding: 14, display: 'flex', flexDirection: 'column', gap: 12 }}>
-        {/* Player slot: the PlayerDock positions the real iframe over this box. */}
-        <div ref={slotRef} style={{ width: '100%', aspectRatio: current?.provider === 'youtube' ? '16 / 9' : current ? 'auto' : '16 / 9', height: current && current.provider !== 'youtube' ? 166 : undefined, borderRadius: 10, background: '#0F172A', border: `1px solid ${T.line}`, display: 'flex', alignItems: 'center', justifyContent: 'center', color: T.faint, fontSize: 12 }}>
+      {/* Player slot, outside the scroll area: the PlayerDock lays the real iframe over this box,
+          so it can never scroll underneath the mini player or the tabs. */}
+      <div style={{ padding: '14px 14px 0', flexShrink: 0 }}>
+        <div ref={slotRef} style={{ width: '100%', maxHeight: '28vh', aspectRatio: current?.provider === 'youtube' ? '16 / 9' : current ? 'auto' : '16 / 9', height: current && current.provider !== 'youtube' ? 166 : undefined, borderRadius: 10, background: '#0F172A', border: `1px solid ${T.line}`, display: 'flex', alignItems: 'center', justifyContent: 'center', color: T.faint, fontSize: 12, margin: '0 auto' }}>
           {!current && 'Dán link bên dưới để bắt đầu'}
         </div>
+      </div>
+      <div style={{ flex: 1, minHeight: 0, overflowY: 'auto', padding: 14, display: 'flex', flexDirection: 'column', gap: 12 }}>
 
         {needsUnlock && (
           <button type="button" onClick={unlock} style={{ padding: '10px 12px', borderRadius: 10, border: 'none', background: T.accent, color: '#0F172A', fontWeight: 700, fontSize: 13, cursor: 'pointer' }}>
