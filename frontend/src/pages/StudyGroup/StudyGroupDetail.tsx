@@ -69,27 +69,19 @@ function appendMessageDeduped(prev: Message[], message: Message): Message[] {
   return prev.some((m) => m.id === message.id) ? prev : [...prev, message];
 }
 
-/** Composes the right-sidebar member list for the active Channel. A public channel's access
- * derives entirely from Group membership, so it keeps showing every active Group member
- * unchanged. A private channel's accessible-user set differs: explicit `channel_members` PLUS
- * Group owner/moderators, who can access a private channel via manager authority alone
- * (channel_router._require_channel_member_access) without ever getting a channel_members row
- * -- GET /channels/{id}/members does not include them (see channel.api.ts's
- * listChannelMembers doc comment). Composed frontend-side from two already-authorized lists
- * rather than having the backend fabricate channel_members rows for managers -- this is
- * presentation only, it grants no new access: every user included here already
- * independently passed backend authorization to be counted as a participant of this channel.
- * Deduped by user_id; when a channel member is also a tracked active Group member, the
- * existing GroupMember object is reused as-is (so "Điều hành viên"/"Host" labels and
- * owner-only promote/demote/remove controls keep working unchanged) rather than only
- * surfacing a bare UserSummary. */
+/** Composes the right-sidebar member list. Outside chat, and in a public channel, it shows
+ * every active Group member. In a private channel chat, the accessible-user set differs:
+ * explicit `channel_members` plus Group owner/moderators, who can access the channel via
+ * manager authority alone without a `channel_members` row. The roster is composed from two
+ * already-authorized lists; it is presentation-only and grants no new access. */
 export function composeDisplayedMembers(
+  mainView: 'chat' | 'rooms' | 'documents' | 'tasks',
   isPrivateChannel: boolean,
   activeMembers: GroupMember[],
   channelMembers: ChannelMember[],
   groupId: string
 ): GroupMember[] {
-  if (!isPrivateChannel) return activeMembers;
+  if (mainView !== 'chat' || !isPrivateChannel) return activeMembers;
   const byUserId = new Map<string, GroupMember>();
   for (const m of activeMembers) {
     if (m.role === 'owner' || m.role === 'moderator') byUserId.set(m.user_id, m);
@@ -700,9 +692,11 @@ export function StudyGroupDetail() {
   // also a tracked active Group member, the existing GroupMember object is reused as-is (so
   // "Điều hành viên"/"Host" labels and owner-only promote/demote/remove controls keep working
   // unchanged) rather than only surfacing a bare UserSummary.
+  const isPrivateChannelContext = mainView === 'chat' && !!activeChannelObj?.is_private;
+  const isMemberPanelVisible = mainView !== 'tasks';
   const displayedMembers = useMemo(
-    () => composeDisplayedMembers(!!activeChannelObj?.is_private, activeMembers, channelMembers, group?.id ?? ''),
-    [activeChannelObj?.is_private, activeMembers, channelMembers, group?.id]
+    () => composeDisplayedMembers(mainView, !!activeChannelObj?.is_private, activeMembers, channelMembers, group?.id ?? ''),
+    [mainView, activeChannelObj?.is_private, activeMembers, channelMembers, group?.id]
   );
 
   // Which `displayedMembers` rows have an explicit channel_members row for the active
@@ -1009,16 +1003,17 @@ export function StudyGroupDetail() {
             ))}
           </div>
         </div>
-        {/* Right member column removed from the group workspace. */}
-        <div style={{ display: 'none' }}>
-          <div className="skeleton-pulse" style={{ width: '60%', height: 12, borderRadius: 4 }} />
-          {[...Array(4)].map((_, i) => (
-            <div key={i} style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-              <div className="skeleton-pulse" style={{ width: 32, height: 32, borderRadius: '50%', flexShrink: 0 }} />
-              <div className="skeleton-pulse" style={{ flex: 1, height: 14, borderRadius: 4 }} />
-            </div>
-          ))}
-        </div>
+        {isMemberPanelVisible && (
+          <div style={{ width: 280, flexShrink: 0, padding: 24, display: 'flex', flexDirection: 'column', gap: 16, background: '#F8FAFC', borderLeft: '1px solid #E2E8F0' }}>
+            <div className="skeleton-pulse" style={{ width: '60%', height: 12, borderRadius: 4 }} />
+            {[...Array(4)].map((_, i) => (
+              <div key={i} style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                <div className="skeleton-pulse" style={{ width: 32, height: 32, borderRadius: '50%', flexShrink: 0 }} />
+                <div className="skeleton-pulse" style={{ flex: 1, height: 14, borderRadius: 4 }} />
+              </div>
+            ))}
+          </div>
+        )}
       </div>
     );
   }
@@ -1677,39 +1672,38 @@ export function StudyGroupDetail() {
                 </div>
             )}
 
-            <div style={{display:'none'}} aria-hidden="true">
-            {/* Right Sidebar - Members. Public channel: every active Group member (unchanged).
-                Private channel: the composed private-channel roster (see `displayedMembers`
-                above) -- shows a skeleton (rather than a stale/incorrect flash of the previous
-                channel's list) while that roster is loading, including while switching between
-                two private channels. */}
-            {isMembersLoading || (activeChannelObj?.is_private && isChannelMembersLoading) ? (
-                <div style={{ width: 260, padding: 24, display: 'flex', flexDirection: 'column', gap: 16 }}>
-                    <div className="skeleton-pulse" style={{ height: 20, width: 100, borderRadius: 4 }}></div>
-                    <div className="skeleton-pulse" style={{ height: 48, borderRadius: 8 }}></div>
-                    <div className="skeleton-pulse" style={{ height: 48, borderRadius: 8 }}></div>
-                    <div className="skeleton-pulse" style={{ height: 48, borderRadius: 8 }}></div>
-                </div>
-            ) : (
-                <GroupMembersPanel
-                    members={displayedMembers}
-                    currentUserId={currentUserId}
-                    currentUser={currentUser}
-                    isOwner={isOwner}
-                    isGroupManager={isGroupManager}
-                    isPrivateChannel={!!activeChannelObj?.is_private}
-                    explicitChannelMemberUserIds={explicitChannelMemberUserIds}
-                    pendingMemberId={memberActionPendingId}
-                    channelActionPendingUserId={channelActionPendingUserId}
-                    error={channelMembersError ?? memberActionError ?? channelActionError}
-                    onPromote={handlePromoteMember}
-                    onDemote={handleDemoteMember}
-                    onRemove={handleRemoveMember}
-                    onKickFromChannel={handleKickFromChannel}
-                    onInviteClick={() => setIsInviteModalOpen(true)}
-                />
+            {isMemberPanelVisible && (
+                <>
+                    {/* Private-channel chat shows only people with access; other visible
+                        workspaces show the full active Group roster. */}
+                    {isMembersLoading || (isPrivateChannelContext && isChannelMembersLoading) ? (
+                        <div style={{ width: 280, flexShrink: 0, padding: 24, display: 'flex', flexDirection: 'column', gap: 16, background: '#F8FAFC', borderLeft: '1px solid #E2E8F0' }}>
+                            <div className="skeleton-pulse" style={{ height: 20, width: 100, borderRadius: 4 }}></div>
+                            <div className="skeleton-pulse" style={{ height: 48, borderRadius: 8 }}></div>
+                            <div className="skeleton-pulse" style={{ height: 48, borderRadius: 8 }}></div>
+                            <div className="skeleton-pulse" style={{ height: 48, borderRadius: 8 }}></div>
+                        </div>
+                    ) : (
+                        <GroupMembersPanel
+                            members={displayedMembers}
+                            currentUserId={currentUserId}
+                            currentUser={currentUser}
+                            isOwner={isOwner}
+                            isGroupManager={isGroupManager}
+                            isPrivateChannel={isPrivateChannelContext}
+                            explicitChannelMemberUserIds={explicitChannelMemberUserIds}
+                            pendingMemberId={memberActionPendingId}
+                            channelActionPendingUserId={channelActionPendingUserId}
+                            error={memberActionError ?? (isPrivateChannelContext ? channelMembersError ?? channelActionError : null)}
+                            onPromote={handlePromoteMember}
+                            onDemote={handleDemoteMember}
+                            onRemove={handleRemoveMember}
+                            onKickFromChannel={handleKickFromChannel}
+                            onInviteClick={() => setIsInviteModalOpen(true)}
+                        />
+                    )}
+                </>
             )}
-            </div>
 
         </div>
 

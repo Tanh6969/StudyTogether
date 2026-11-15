@@ -101,6 +101,8 @@ export function useExcalidrawSync({ roomId, initialState, isReadonly, editorIds,
   const broadcastTimerRef = useRef<number | null>(null);
   const saveTimerRef = useRef<number | null>(null);
   const lastPointerRef = useRef(0);
+  /** Latest scene (incl. deleted tombstones), kept so an unmount can still persist it. */
+  const lastSceneRef = useRef<readonly ExcalidrawElement[] | null>(null);
   const uploadingRef = useRef<Set<string>>(new Set());
   const fetchingRef = useRef<Set<string>>(new Set());
   const collaboratorsRef = useRef<Map<SocketId, Collaborator>>(new Map());
@@ -118,22 +120,24 @@ export function useExcalidrawSync({ roomId, initialState, isReadonly, editorIds,
     [room]
   );
 
+  /** Persist the scene right now. Keeps deleted elements: reconcile needs their tombstones to
+   * stop a stale copy coming back. Falls back to the last seen scene when the Excalidraw API is
+   * already gone (unmount order). */
+  const saveNow = useCallback(() => {
+    const elements = apiRef.current?.getSceneElementsIncludingDeleted() ?? lastSceneRef.current;
+    if (!elements) return;
+    const state: ExcalidrawBoardState = { format: 'excalidraw', version: 1, elements, files: fileRefsRef.current };
+    updateWhiteboardState(roomId, state as unknown as Record<string, unknown>).catch((err) => console.error('Failed to save whiteboard', err));
+  }, [roomId]);
+
   const scheduleSave = useCallback(() => {
     if (readonlyRef.current) return;
     if (saveTimerRef.current !== null) window.clearTimeout(saveTimerRef.current);
     saveTimerRef.current = window.setTimeout(() => {
-      const a = apiRef.current;
-      if (!a) return;
-      const state: ExcalidrawBoardState = {
-        format: 'excalidraw',
-        version: 1,
-        // Keep deleted elements: reconcile needs their tombstones to stop a stale copy coming back.
-        elements: a.getSceneElementsIncludingDeleted(),
-        files: fileRefsRef.current,
-      };
-      updateWhiteboardState(roomId, state as unknown as Record<string, unknown>).catch((err) => console.error('Failed to save whiteboard', err));
+      saveTimerRef.current = null;
+      saveNow();
     }, SAVE_DEBOUNCE_MS);
-  }, [roomId]);
+  }, [saveNow]);
 
   /** Fetch bytes for any image element whose file we don't hold yet. */
   const ensureFiles = useCallback(
@@ -177,6 +181,7 @@ export function useExcalidrawSync({ roomId, initialState, isReadonly, editorIds,
   const onChange = useCallback(
     (elements: readonly OrderedExcalidrawElement[], _appState: AppState, files: BinaryFiles) => {
       if (readonlyRef.current) return;
+      lastSceneRef.current = elements;
       let changed = false;
       for (const el of elements) {
         if ((sentVersionsRef.current.get(el.id) ?? -1) < el.version) {
@@ -316,12 +321,22 @@ export function useExcalidrawSync({ roomId, initialState, isReadonly, editorIds,
     };
   }, [room, roomId, applyRemoteElements, ensureFiles, send]);
 
+  // On unmount, don't drop strokes still waiting on the debounce: send pending edits to the
+  // room and save the scene immediately (this used to lose the last few seconds of drawing).
   useEffect(
     () => () => {
-      if (broadcastTimerRef.current !== null) window.clearTimeout(broadcastTimerRef.current);
-      if (saveTimerRef.current !== null) window.clearTimeout(saveTimerRef.current);
+      if (broadcastTimerRef.current !== null) {
+        window.clearTimeout(broadcastTimerRef.current);
+        broadcastTimerRef.current = null;
+        flush();
+      }
+      if (saveTimerRef.current !== null) {
+        window.clearTimeout(saveTimerRef.current);
+        saveTimerRef.current = null;
+        saveNow();
+      }
     },
-    []
+    [flush, saveNow]
   );
 
   const setApi = useCallback(

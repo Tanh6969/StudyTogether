@@ -35,52 +35,58 @@ describe('composeDisplayedMembers', () => {
   const activeMembers = [owner, moderator, plainMember, notInChannel];
 
   it('returns Group members unchanged for a public channel', () => {
-    const result = composeDisplayedMembers(false, activeMembers, [], 'group-1');
+    const result = composeDisplayedMembers('chat', false, activeMembers, [], 'group-1');
     expect(result).toBe(activeMembers);
   });
 
   it('for a private channel, includes only explicit channel_members plus Group owner/moderators', () => {
     const channelMembers = [channelMember({ id: 'cm-member', user_id: 'member-1' })];
-    const result = composeDisplayedMembers(true, activeMembers, channelMembers, 'group-1');
+    const result = composeDisplayedMembers('chat', true, activeMembers, channelMembers, 'group-1');
     const userIds = result.map((m) => m.user_id).sort();
     expect(userIds).toEqual(['member-1', 'mod-1', 'owner-1']);
   });
 
   it('excludes a Group member who has neither manager authority nor a channel_members row', () => {
     const channelMembers = [channelMember({ id: 'cm-member', user_id: 'member-1' })];
-    const result = composeDisplayedMembers(true, activeMembers, channelMembers, 'group-1');
+    const result = composeDisplayedMembers('chat', true, activeMembers, channelMembers, 'group-1');
     expect(result.some((m) => m.user_id === 'outsider-1')).toBe(false);
   });
 
   it('includes the Group owner/moderators even without a channel_members row', () => {
-    const result = composeDisplayedMembers(true, activeMembers, [], 'group-1');
+    const result = composeDisplayedMembers('chat', true, activeMembers, [], 'group-1');
     const userIds = result.map((m) => m.user_id).sort();
     expect(userIds).toEqual(['mod-1', 'owner-1']);
   });
 
   it('reuses the existing GroupMember object (preserving role) for a channel member who is also tracked as an active Group member', () => {
     const channelMembers = [channelMember({ id: 'cm-member', user_id: 'member-1' })];
-    const result = composeDisplayedMembers(true, activeMembers, channelMembers, 'group-1');
+    const result = composeDisplayedMembers('chat', true, activeMembers, channelMembers, 'group-1');
     const entry = result.find((m) => m.user_id === 'member-1');
     expect(entry).toBe(plainMember);
   });
 
   it('deduplicates by user_id when a manager also has an explicit channel_members row', () => {
     const channelMembers = [channelMember({ id: 'cm-owner-row', user_id: 'owner-1' })];
-    const result = composeDisplayedMembers(true, activeMembers, channelMembers, 'group-1');
+    const result = composeDisplayedMembers('chat', true, activeMembers, channelMembers, 'group-1');
     expect(result.filter((m) => m.user_id === 'owner-1')).toHaveLength(1);
   });
 
   it('synthesizes a fallback member entry for a channel_members row with no matching active Group member', () => {
     const channelMembers = [channelMember({ id: 'cm-untracked', user_id: 'untracked-1' })];
-    const result = composeDisplayedMembers(true, activeMembers, channelMembers, 'group-1');
+    const result = composeDisplayedMembers('chat', true, activeMembers, channelMembers, 'group-1');
     const entry = result.find((m) => m.user_id === 'untracked-1');
     expect(entry).toMatchObject({ user_id: 'untracked-1', role: 'member', status: 'active', group_id: 'group-1' });
   });
 
   it('the resulting count matches the rendered list length used for "Thành viên (N)"', () => {
     const channelMembers = [channelMember({ id: 'cm-member', user_id: 'member-1' })];
-    const result = composeDisplayedMembers(true, activeMembers, channelMembers, 'group-1');
+    const result = composeDisplayedMembers('chat', true, activeMembers, channelMembers, 'group-1');
     expect(result).toHaveLength(3);
+  });
+
+  it('shows all active Group members outside the chat view, even if a private channel is selected', () => {
+    const channelMembers = [channelMember({ id: 'cm-member', user_id: 'member-1' })];
+    const result = composeDisplayedMembers('documents', true, activeMembers, channelMembers, 'group-1');
+    expect(result).toBe(activeMembers);
   });
 });
