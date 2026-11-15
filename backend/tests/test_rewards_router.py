@@ -143,3 +143,56 @@ async def test_update_my_rewards_unknown_ids_are_422(async_client):
     assert response.status_code == 422
     response = await async_client.put("/rewards/me", json={}, headers=AUTH_HEADERS)
     assert response.status_code == 422
+
+
+# --- personal achievements ------------------------------------------------------------
+
+from app.rewards import achievements  # noqa: E402
+from app.rewards.achievements import consecutive_days  # noqa: E402
+from app.rewards.catalog import personal_items_met  # noqa: E402
+
+
+def test_consecutive_days_counts_run_ending_today_or_yesterday():
+    from datetime import timedelta
+    today = date(2026, 11, 15)
+    days = [today - timedelta(days=i) for i in (0, 1, 2, 4)]
+    assert consecutive_days(days, today) == 3
+    assert consecutive_days([today - timedelta(days=1), today - timedelta(days=2)], today) == 2
+    assert consecutive_days([today - timedelta(days=2)], today) == 0
+    assert consecutive_days([], today) == 0
+
+
+def test_personal_items_met_respects_thresholds():
+    met = {r.id for r in personal_items_met({"sessions": 20, "tasks_done": 25, "day_streak": 7})}
+    assert met == {"shadow", "neon", "storm", "inferno"}
+    assert personal_items_met({}) == []
+
+
+async def test_get_my_rewards_grants_newly_met_achievements(async_client, session, monkeypatch):
+    session.get.return_value = SimpleNamespace(avatar_frame=None, cheer_style="clap")
+    monkeypatch.setattr(
+        reward_router, "evaluate_and_grant",
+        AsyncMock(return_value=({"tasks_done": 30, "sessions": 2}, ["storm"])),
+    )
+    session.execute.return_value = _scalars(["storm"])  # _owned after the grant
+
+    response = await async_client.get("/rewards/me", headers=AUTH_HEADERS)
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["just_unlocked"] == ["storm"]
+    assert body["owned"] == ["storm"]
+    assert body["progress"]["tasks_done"] == 30
+    session.commit.assert_awaited_once()
+
+
+async def test_evaluate_and_grant_inserts_only_met_items(session, monkeypatch):
+    uid = uuid.uuid4()
+    monkeypatch.setattr(
+        achievements, "compute_progress",
+        AsyncMock(return_value={"tasks_done": 25, "sessions": 0, "study_hours": 0, "night_owl": 0, "early_bird": 0, "rooms_hosted": 0, "day_streak": 0}),
+    )
+    session.execute.return_value = _scalars(["storm"])
+    progress, granted = await achievements.evaluate_and_grant(session, uid)
+    assert granted == ["storm"] and progress["tasks_done"] == 25
+    stmt = session.execute.call_args.args[0]
+    assert "user_rewards" in str(stmt)

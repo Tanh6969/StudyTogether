@@ -138,6 +138,14 @@ export function StudyRoom() {
     return ids;
   }, [members, groupManagerIds]);
 
+  // Once opened, the board stays mounted (hidden) while you switch to video / slides / the game.
+  // Unmounting it threw away the live Excalidraw scene, and the remount only had the stale
+  // `room.whiteboard_state` from when the page loaded, so recent strokes vanished.
+  const [whiteboardOpened, setWhiteboardOpened] = useState(false);
+  useEffect(() => {
+    if (activeMode === 'whiteboard') setWhiteboardOpened(true);
+  }, [activeMode]);
+
   const handleLeaveRoom = async () => {
     if (document.fullscreenElement && document.exitFullscreen) {
       document.exitFullscreen().catch(() => {});
@@ -635,8 +643,8 @@ export function StudyRoom() {
         {activeMode === 'game' && <GameStage onExit={exitGame} />}
 
         {/* MODE B: WHITEBOARD & PRESENTATION VIEW */}
-        {activeMode === 'whiteboard' && (
-          <div style={{flex: 1, display: 'flex', flexDirection: 'column', background: '#F8FAFC'}}>
+        {(activeMode === 'whiteboard' || whiteboardOpened) && (
+          <div style={{flex: 1, display: activeMode === 'whiteboard' ? 'flex' : 'none', flexDirection: 'column', background: '#F8FAFC', minWidth: 0}}>
             
             {/* Board Sub-header */}
             <div style={{height: 48, background: 'white', borderBottom: '1px solid #E2E8F0', padding: '0 20px', display: 'flex', justifyContent: 'space-between', alignItems: 'center'}}>
@@ -669,7 +677,7 @@ export function StudyRoom() {
             {/* Canvas Area */}
             <div style={{flex: 1, position: 'relative', overflow: 'hidden'}}>
               
-              {activeBoardTab === 'whiteboard' ? (
+              <div style={{position: 'absolute', inset: 0, display: activeBoardTab === 'whiteboard' ? 'block' : 'none'}}>
                 <WhiteboardPanel
                   roomId={room.id}
                   initialState={room.whiteboard_state}
@@ -677,7 +685,8 @@ export function StudyRoom() {
                   editorIds={whiteboardEditorIds}
                   selfName={currentUser.name}
                 />
-              ) : (
+              </div>
+              {activeBoardTab === 'whiteboard' ? null : (
                 <div style={{position: 'absolute', inset: 0, background: '#FFFFFF', backgroundImage: 'radial-gradient(#CBD5E1 1px, transparent 1px)', backgroundSize: '24px 24px'}}>
                   <PresentationViewer
                     roomId={room.id}

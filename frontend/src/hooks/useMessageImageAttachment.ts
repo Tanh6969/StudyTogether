@@ -12,7 +12,7 @@ export const ALLOWED_IMAGE_ACCEPT = ALLOWED_IMAGE_CONTENT_TYPES.join(',');
 /** Mirrors MAX_ATTACHMENT_SIZE_BYTES (app/attachments/constants.py) -- client-side check is
  * purely for fast feedback, the backend re-validates on both the upload-url and message
  * create requests regardless. */
-export const MAX_IMAGE_SIZE_BYTES = 10 * 1024 * 1024;
+export const MAX_IMAGE_SIZE_BYTES = 20 * 1024 * 1024;
 
 export interface MessageAttachmentUploadError {
   status: number | null;
@@ -50,7 +50,7 @@ export function useMessageImageAttachment() {
       return;
     }
     if (picked.size > MAX_IMAGE_SIZE_BYTES) {
-      setPickError('Ảnh vượt quá dung lượng tối đa 10MB.');
+      setPickError('Ảnh vượt quá dung lượng tối đa 20MB.');
       return;
     }
     setPickError(null);

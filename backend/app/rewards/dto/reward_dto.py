@@ -49,6 +49,9 @@ class MyRewardsResponse(BaseModel):
     owned: list[str]
     avatar_frame: str | None
     cheer_style: str
+    # Personal achievement counters (catalog.PERSONAL_COUNTERS) for "12/25" progress labels.
+    progress: dict[str, int] = {}
+    just_unlocked: list[str] = []
 
 
 class MyRewardsUpdate(BaseModel):

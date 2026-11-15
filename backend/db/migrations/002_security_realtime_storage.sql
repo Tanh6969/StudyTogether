@@ -336,7 +336,7 @@ alter table public.message_reactions replica identity full;
 -- 9. Storage
 -- ----------------------------------------------------------------------------
 insert into storage.buckets (id, name, public, file_size_limit, allowed_mime_types) values
-  ('message-attachments', 'message-attachments', false, 10485760,
+  ('message-attachments', 'message-attachments', false, 20971520,
     array['image/jpeg','image/png','image/webp','application/pdf','text/plain']),
   ('group-resources', 'group-resources', false, 20971520,
     array['image/jpeg','image/png','image/webp','application/pdf','text/plain',

@@ -80,7 +80,7 @@ describe('useMessageImageAttachment', () => {
     });
 
     expect(result.current.hasImage).toBe(false);
-    expect(result.current.pickError).toMatch(/10MB/);
+    expect(result.current.pickError).toMatch(/20MB/);
   });
 
   it('revokes the previous preview URL when a second image is selected', () => {

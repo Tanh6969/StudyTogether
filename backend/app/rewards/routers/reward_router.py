@@ -19,7 +19,8 @@ from app.db.enums import MemberStatus
 from app.db.session import get_db_session
 from app.groups.entities.group_entity import GroupMember
 from app.profiles.entities.profile_entity import Profile
-from app.rewards.catalog import DEFAULT_CHEER, items_unlocked_by, next_tier_after
+from app.rewards.achievements import evaluate_and_grant
+from app.rewards.catalog import DEFAULT_CHEER, group_streak_items, next_group_tier
 from app.rewards.dto.reward_dto import (
     GroupStreakResponse,
     MilestoneCreate,
@@ -75,7 +76,7 @@ async def get_group_streak(
     keys = await _week_keys(session, group_id)
     today = date.today()
     streak = compute_streak(keys, today)
-    nxt = next_tier_after(streak)
+    nxt = next_group_tier(streak)
     recent = await session.execute(
         select(GroupMilestone)
         .where(GroupMilestone.group_id == group_id)
@@ -88,7 +89,7 @@ async def get_group_streak(
         current_week_key=week_key_for(today),
         current_week_recorded=week_key_for(today) in keys,
         next_tier=nxt,
-        next_tier_items=[r.id for r in items_unlocked_by(nxt) if r.tier == nxt] if nxt else [],
+        next_tier_items=[r.id for r in group_streak_items(nxt) if r.threshold == nxt] if nxt else [],
         recent=[MilestoneResponse.model_validate(m) for m in recent.scalars()],
     )
 
@@ -119,7 +120,7 @@ async def record_milestone(
         select(GroupMember.user_id).where(GroupMember.group_id == group_id, GroupMember.status == MemberStatus.ACTIVE)
     )
     member_ids = list(members.scalars())
-    rewards = items_unlocked_by(streak)
+    rewards = group_streak_items(streak)
     unlocked: list[str] = []
     if member_ids and rewards:
         rows = [
@@ -133,7 +134,8 @@ async def record_milestone(
             .on_conflict_do_nothing(index_elements=["user_id", "reward_id"])
             .returning(UserReward.reward_id)
         )
-        unlocked = sorted({rid for rid in result.scalars()}, key=lambda rid: next(r.tier for r in rewards if r.id == rid))
+        order = {r.id: i for i, r in enumerate(rewards)}  # catalog order: tier, then frame before cheer
+        unlocked = sorted({rid for rid in result.scalars()}, key=lambda rid: order.get(rid, len(order)))
     try:
         await session.commit()
     except Exception as e:
@@ -155,13 +157,20 @@ async def get_my_rewards(
     current_user: CurrentUser = Depends(get_current_user),
     session: AsyncSession = Depends(get_db_session),
 ):
+    """Also the moment personal achievements are evaluated: anything newly earned is granted
+    here and reported in `just_unlocked`, so opening the rewards page is what "collects"."""
     profile = await session.get(Profile, current_user.id)
     if profile is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Profile not found")
+    progress, just_unlocked = await evaluate_and_grant(session, current_user.id)
+    if just_unlocked:
+        await session.commit()
     return MyRewardsResponse(
         owned=await _owned(session, current_user.id),
         avatar_frame=profile.avatar_frame,
         cheer_style=profile.cheer_style or DEFAULT_CHEER,
+        progress=progress,
+        just_unlocked=just_unlocked,
     )
 
 

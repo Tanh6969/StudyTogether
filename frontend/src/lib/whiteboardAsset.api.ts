@@ -18,7 +18,19 @@ export async function uploadWhiteboardAssetFile(uploadUrl: string, file: File, c
     body: file,
   });
   if (!response.ok) {
-    throw new Error(`Upload failed with status ${response.status}`);
+    const body = await response.text();
+    let detail = '';
+    try {
+      const data: unknown = JSON.parse(body);
+      if (data && typeof data === 'object') {
+        const record = data as Record<string, unknown>;
+        const message = record.message ?? record.error;
+        if (typeof message === 'string') detail = message.slice(0, 240);
+      }
+    } catch {
+      detail = body.slice(0, 240);
+    }
+    throw new Error(`Storage upload failed with HTTP ${response.status}${detail ? `: ${detail}` : ''}`);
   }
 }
 
