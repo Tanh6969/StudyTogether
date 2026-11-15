@@ -47,9 +47,6 @@ export function Header() {
                 <Link to="/" style={{textDecoration: 'none'}}>
                     <div style={{color: '#00236F', fontSize: 20, fontFamily: 'Inter', fontWeight: '700', lineHeight: '28px'}}>StudyTogether</div>
                 </Link>
-                <div style={{justifyContent: 'flex-start', alignItems: 'flex-start', gap: 24, display: 'flex', marginLeft: 16}}>
-                    <NavLink to="/groups" style={navLinkStyle}>Phòng học</NavLink>
-                </div>
             </div>
 
             {/* ── RIGHT: Search + User ── */}
