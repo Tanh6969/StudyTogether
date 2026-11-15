@@ -136,9 +136,11 @@ export function StudyRooms() {
         try {
             const [publicGroups, myGroupsList, memberCountsObj, myMemberships] = await Promise.all([
                 getGroups(true, searchQuery),
-                currentUserId ? getMyGroups().catch(() => []) : Promise.resolve([]),
+                // Not swallowed: an empty "my groups" list would silently hide private groups
+                // the user belongs to. A failure shows the error + retry instead.
+                currentUserId ? getMyGroups() : Promise.resolve([]),
                 getMemberCounts().catch(() => ({} as Record<string, number>)),
-                currentUserId ? getMyMemberships().catch(() => []) : Promise.resolve([]),
+                currentUserId ? getMyMemberships() : Promise.resolve([]),
             ]);
 
             const merged = new Map<string, Group>();
@@ -367,8 +369,11 @@ export function StudyRooms() {
                 )}
 
                 {!isLoading && loadError && (
-                    <div style={{ color: '#B91C1C', background: '#FEF2F2', border: '1px solid #FECACA', borderRadius: 8, padding: 16, fontSize: 14 }}>
-                        {loadError}
+                    <div role="alert" style={{ color: '#B91C1C', background: '#FEF2F2', border: '1px solid #FECACA', borderRadius: 8, padding: 16, fontSize: 14, display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12 }}>
+                        <span>{loadError}</span>
+                        <button type="button" onClick={() => void loadGroups()} style={{ flexShrink: 0, padding: '6px 14px', borderRadius: 6, border: '1px solid #FCA5A5', background: 'white', color: '#B91C1C', fontSize: 13, fontWeight: 600, cursor: 'pointer' }}>
+                            Thử lại
+                        </button>
                     </div>
                 )}
 

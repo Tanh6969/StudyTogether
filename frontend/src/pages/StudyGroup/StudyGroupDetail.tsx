@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, useMemo } from 'react';
+import { useState, useEffect, useRef, useMemo, useCallback } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
 import {
     Hash,
@@ -158,6 +158,10 @@ export function StudyGroupDetail() {
   const [isMembersLoading, setIsMembersLoading] = useState(true);
   
   const [loadError, setLoadError] = useState<{ status: number | null; message: string } | null>(null);
+  // Per-list load failures. Shown as an error with a retry button -- never as an empty list,
+  // which used to look exactly like "this group has no rooms/channels" until a page refresh.
+  const [listErrors, setListErrors] = useState<{ channels?: string; rooms?: string; members?: string }>({});
+  const listLoadSeqRef = useRef(0);
 
   // Leave-group mutation state
   const [isLeaving, setIsLeaving] = useState(false);
@@ -222,6 +226,77 @@ export function StudyGroupDetail() {
     };
   }, [openHeaderMenu]);
 
+  /** Loads the group's channels / rooms / members. Used on mount and by the "Thử lại" button,
+   * which only re-fetches the lists that failed. Responses from an older call (another group,
+   * or a superseded retry) are ignored via the sequence number. */
+  const loadLists = useCallback(
+    async (which: Array<'channels' | 'rooms' | 'members'>) => {
+      if (!groupId) return;
+      const seq = ++listLoadSeqRef.current;
+      const stale = () => seq !== listLoadSeqRef.current;
+      const message = (err: unknown, fallback: string) => (err instanceof ApiError ? err.message : fallback);
+      setListErrors((prev) => {
+        const next = { ...prev };
+        for (const key of which) delete next[key];
+        return next;
+      });
+      const jobs: Promise<void>[] = [];
+      if (which.includes('channels')) {
+        setIsChannelsLoading(true);
+        jobs.push(
+          listChannelsByGroup(groupId)
+            .then((data) => {
+              if (stale()) return;
+              setChannels(data);
+              setActiveChannel((prev) => (data.some((c) => c.id === prev) ? prev : (data[0]?.id ?? '')));
+            })
+            .catch((err) => {
+              if (!stale()) setListErrors((prev) => ({ ...prev, channels: message(err, 'Không tải được danh sách kênh.') }));
+            })
+            .finally(() => {
+              if (!stale()) setIsChannelsLoading(false);
+            })
+        );
+      }
+      if (which.includes('rooms')) {
+        setIsRoomsLoading(true);
+        jobs.push(
+          listStudyRoomsByGroup(groupId)
+            .then((data) => {
+              if (!stale()) setStudyRooms(data);
+            })
+            .catch((err) => {
+              if (!stale()) setListErrors((prev) => ({ ...prev, rooms: message(err, 'Không tải được danh sách phòng học.') }));
+            })
+            .finally(() => {
+              if (!stale()) setIsRoomsLoading(false);
+            })
+        );
+      }
+      if (which.includes('members')) {
+        setIsMembersLoading(true);
+        jobs.push(
+          listGroupMembers(groupId)
+            .then((data) => {
+              if (!stale()) setGroupMembers(data);
+            })
+            .catch((err) => {
+              if (!stale()) setListErrors((prev) => ({ ...prev, members: message(err, 'Không tải được danh sách thành viên.') }));
+            })
+            .finally(() => {
+              if (!stale()) setIsMembersLoading(false);
+            })
+        );
+      }
+      await Promise.all(jobs);
+    },
+    [groupId]
+  );
+  const loadListsRef = useRef(loadLists);
+  loadListsRef.current = loadLists;
+  const failedLists = (Object.keys(listErrors) as Array<'channels' | 'rooms' | 'members'>).filter((k) => listErrors[k]);
+  const retryFailedLists = () => void loadLists(failedLists);
+
   useEffect(() => {
     if (!groupId) return;
     let cancelled = false;
@@ -250,42 +325,8 @@ export function StudyGroupDetail() {
         }
       });
 
-    // 2. Fetch Channels
-    listChannelsByGroup(groupId as string)
-      .then((data) => {
-        if (!cancelled) {
-          setChannels(data);
-          setActiveChannel((prev) => (data.some((c) => c.id === prev) ? prev : (data[0]?.id ?? '')));
-          setIsChannelsLoading(false);
-        }
-      })
-      .catch(() => {
-        if (!cancelled) setIsChannelsLoading(false);
-      });
-
-    // 3. Fetch Study Rooms
-    listStudyRoomsByGroup(groupId as string)
-      .then((data) => {
-        if (!cancelled) {
-          setStudyRooms(data);
-          setIsRoomsLoading(false);
-        }
-      })
-      .catch(() => {
-        if (!cancelled) setIsRoomsLoading(false);
-      });
-
-    // 4. Fetch Members
-    listGroupMembers(groupId as string)
-      .then((data) => {
-        if (!cancelled) {
-          setGroupMembers(data);
-          setIsMembersLoading(false);
-        }
-      })
-      .catch(() => {
-        if (!cancelled) setIsMembersLoading(false);
-      });
+    // 2-4. Channels, study rooms, members (see loadLists below).
+    void loadListsRef.current(['channels', 'rooms', 'members']);
 
     return () => {
       cancelled = true;
@@ -1157,6 +1198,17 @@ export function StudyGroupDetail() {
                 />
             </div>
 
+            {failedLists.length > 0 && (
+                <div role="alert" style={{position: 'fixed', top: 84, left: '50%', transform: 'translateX(-50%)', zIndex: 60, display: 'flex', alignItems: 'center', gap: 12, padding: '10px 14px', background: '#FEF2F2', border: '1px solid #FECACA', borderRadius: 10, color: '#B91C1C', fontSize: 13, boxShadow: '0 6px 20px rgba(0,0,0,0.08)'}}>
+                    <span>
+                        Không tải được {failedLists.map((k) => ({ channels: 'danh sách kênh', rooms: 'danh sách phòng học', members: 'danh sách thành viên' })[k]).join(', ')}.
+                    </span>
+                    <button type="button" onClick={retryFailedLists} style={{padding: '5px 12px', borderRadius: 6, border: '1px solid #FCA5A5', background: 'white', color: '#B91C1C', fontSize: 12, fontWeight: 600, cursor: 'pointer'}}>
+                        Thử lại
+                    </button>
+                </div>
+            )}
+
             {/* Center - Main Area */}
             {mainView === 'chat' ? (
                 <div style={{flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column', background: 'white'}}>
@@ -1174,7 +1226,7 @@ export function StudyGroupDetail() {
                         activeId={activeChannelObj?.id ?? null}
                         onSelect={id => { setActiveChannel(id); setOpenHeaderMenu(null); }}
                         loading={isChannelsLoading}
-                        emptyLabel="Chưa có kênh nào"
+                        emptyLabel={listErrors.channels ? 'Không tải được danh sách kênh' : 'Chưa có kênh nào'}
                         actions={<>
                             <HeaderIconButton label="Tham gia kênh riêng tư bằng mã" onClick={() => setIsJoinChannelModalOpen(true)}><Ticket size={17} /></HeaderIconButton>
                             {isGroupManager && (
@@ -1375,7 +1427,7 @@ export function StudyGroupDetail() {
                         activeId={activeRoom?.id ?? null}
                         onSelect={id => { setActiveRoomId(id); setOpenHeaderMenu(null); }}
                         loading={isRoomsLoading}
-                        emptyLabel="Chưa có phòng học nào đang mở"
+                        emptyLabel={listErrors.rooms ? 'Không tải được danh sách phòng học' : 'Chưa có phòng học nào đang mở'}
                         actions={<>
                             <HeaderIconButton label="Tham gia phòng học bằng mã" onClick={() => setIsJoinRoomModalOpen(true)}><Ticket size={17} /></HeaderIconButton>
                             {isGroupManager && (
@@ -1403,6 +1455,14 @@ export function StudyGroupDetail() {
                         {group && <GroupStreakStrip groupId={group.id} isManager={isGroupManager} />}
                         {isRoomsLoading ? (
                             <div className="skeleton-pulse" style={{width: '100%', maxWidth: 680, height: 360, borderRadius: 16}} />
+                        ) : listErrors.rooms && !activeRoom ? (
+                            <div role="alert" style={{marginTop: 48, maxWidth: 380, textAlign: 'center'}}>
+                                <div style={{fontSize: 18, fontWeight: 700, color: '#0F172A', marginBottom: 6}}>Không tải được danh sách phòng học</div>
+                                <div style={{fontSize: 14, color: '#64748B', lineHeight: 1.5, marginBottom: 20}}>{listErrors.rooms}</div>
+                                <button type="button" onClick={() => void loadLists(['rooms'])} style={{padding: '10px 16px', border: 'none', borderRadius: 8, background: '#00236F', color: 'white', fontSize: 14, fontWeight: 600, cursor: 'pointer'}}>
+                                    Thử lại
+                                </button>
+                            </div>
                         ) : !activeRoom ? (
                             <div style={{marginTop: 48, maxWidth: 380, textAlign: 'center'}}>
                                 <div style={{width: 64, height: 64, margin: '0 auto 16px', borderRadius: 16, background: '#EEF2FF', display: 'grid', placeItems: 'center'}}>

@@ -61,21 +61,71 @@ interface RequestOptions {
   keepalive?: boolean;
 }
 
+/**
+ * Lets the auth layer refresh the session (Supabase `refreshSession`) when the backend says the
+ * access token is no longer valid -- e.g. a tab left open for hours, or a laptop waking from
+ * sleep, sends its first request with an expired token before Supabase's own timer refreshed it.
+ * Resolves to the new access token, or null if the session cannot be refreshed.
+ */
+type SessionRefresher = () => Promise<string | null>;
+let refreshSession: SessionRefresher | null = null;
+let refreshInFlight: Promise<string | null> | null = null;
+
+export function setSessionRefresher(refresher: SessionRefresher | null): void {
+  refreshSession = refresher;
+}
+
+/** One refresh shared by every request that hit a 401 at the same moment. */
+function refreshOnce(): Promise<string | null> {
+  if (!refreshSession) return Promise.resolve(null);
+  if (!refreshInFlight) {
+    refreshInFlight = refreshSession()
+      .catch(() => null)
+      .finally(() => {
+        refreshInFlight = null;
+      });
+  }
+  return refreshInFlight;
+}
+
+/**
+ * Transient failures worth retrying for idempotent reads: the network request itself failed
+ * (server unreachable, still booting, connection reset) or a gateway/availability status, which
+ * is what a sleeping Render free-tier instance answers while it spins back up.
+ */
+const RETRYABLE_STATUS = new Set([502, 503, 504]);
+/** Backoff between attempts: ~1 minute in total, the time a cold Render instance needs. */
+const RETRY_DELAYS_MS = [1000, 2000, 4000, 8000, 15000, 30000];
+
+function wait(ms: number, signal?: AbortSignal): Promise<void> {
+  return new Promise((resolve, reject) => {
+    if (signal?.aborted) return reject(signal.reason ?? new DOMException('Aborted', 'AbortError'));
+    const timer = setTimeout(resolve, ms);
+    signal?.addEventListener(
+      'abort',
+      () => {
+        clearTimeout(timer);
+        reject(signal.reason ?? new DOMException('Aborted', 'AbortError'));
+      },
+      { once: true }
+    );
+  });
+}
+
+function isAbort(err: unknown): boolean {
+  return err instanceof DOMException && err.name === 'AbortError';
+}
+
 async function request<T>(path: string, options: RequestOptions = {}): Promise<T> {
   const { method = 'GET', body, headers, signal, keepalive } = options;
   if (USE_MOCK) {
     return mockApiRequest<T>(path, method, body);
   }
 
-  const requestHeaders: Record<string, string> = { Accept: 'application/json', ...headers };
-  if (body !== undefined) {
-    requestHeaders['Content-Type'] = 'application/json';
-  }
-
-  const token = getAccessToken();
-  if (token) {
-    requestHeaders['Authorization'] = `Bearer ${token}`;
-  }
+  // Only reads are retried after a failure: re-sending a POST/PATCH/DELETE whose response was
+  // lost could apply it twice. A 401 is different -- the server rejected the request before
+  // doing anything -- so any method may be re-sent once with a refreshed token.
+  const canRetry = method === 'GET' && !keepalive;
 
   let firedColdStart = false;
   const coldStartTimer = setTimeout(() => {
@@ -84,7 +134,10 @@ async function request<T>(path: string, options: RequestOptions = {}): Promise<T
     if (slowRequestCount === 1) notifyColdStart(true);
   }, COLD_START_THRESHOLD_MS);
 
-  try {
+  const send = async (token: string | null) => {
+    const requestHeaders: Record<string, string> = { Accept: 'application/json', ...headers };
+    if (body !== undefined) requestHeaders['Content-Type'] = 'application/json';
+    if (token) requestHeaders['Authorization'] = `Bearer ${token}`;
     const response = await fetch(`${API_BASE_URL}${path}`, {
       method,
       headers: requestHeaders,
@@ -92,20 +145,49 @@ async function request<T>(path: string, options: RequestOptions = {}): Promise<T
       signal,
       keepalive,
     });
-
     const contentType = response.headers.get('content-type') ?? '';
     const isJson = contentType.includes('application/json');
     const data = isJson ? await response.json().catch(() => null) : await response.text();
+    return { response, data, isJson };
+  };
 
-    if (!response.ok) {
-      const message =
-        isJson && data && typeof data === 'object' && 'detail' in data
-          ? String((data as { detail: unknown }).detail)
-          : response.statusText;
-      throw new ApiError(response.status, message, data);
+  try {
+    let token = getAccessToken() ?? null;
+    let refreshed = false;
+    for (let attempt = 0; ; attempt++) {
+      let result: Awaited<ReturnType<typeof send>>;
+      try {
+        result = await send(token);
+      } catch (err) {
+        // fetch() itself rejected: network down, server not listening yet, CORS-less gateway page.
+        if (isAbort(err) || !canRetry || attempt >= RETRY_DELAYS_MS.length) throw err;
+        await wait(RETRY_DELAYS_MS[attempt], signal);
+        continue;
+      }
+      const { response, data, isJson } = result;
+
+      if (response.status === 401 && token && !refreshed) {
+        refreshed = true;
+        const fresh = await refreshOnce();
+        if (fresh && fresh !== token) {
+          token = fresh;
+          attempt -= 1; // a token refresh is not a failed attempt
+          continue;
+        }
+      }
+      if (RETRYABLE_STATUS.has(response.status) && canRetry && attempt < RETRY_DELAYS_MS.length) {
+        await wait(RETRY_DELAYS_MS[attempt], signal);
+        continue;
+      }
+      if (!response.ok) {
+        const message =
+          isJson && data && typeof data === 'object' && 'detail' in data
+            ? String((data as { detail: unknown }).detail)
+            : response.statusText;
+        throw new ApiError(response.status, message, data);
+      }
+      return data as T;
     }
-
-    return data as T;
   } finally {
     clearTimeout(coldStartTimer);
     if (firedColdStart) {

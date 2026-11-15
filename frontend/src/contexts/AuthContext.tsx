@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import type { ReactNode } from 'react';
 import type { Session } from '@supabase/supabase-js';
 import { supabase } from '../lib/supabase';
-import { ApiError, setAccessTokenProvider } from '../lib/apiClient';
+import { ApiError, setAccessTokenProvider, setSessionRefresher } from '../lib/apiClient';
 import { fetchCurrentUser } from '../lib/auth.api';
 import { createProfile, fetchProfile } from '../lib/profile.api';
 import type { BanResponse } from '../lib/moderation.types';
@@ -108,6 +108,16 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   useEffect(() => {
     setAccessTokenProvider(() => sessionRef.current?.access_token ?? null);
+    // A 401 from the backend usually means the access token expired while the tab slept;
+    // refresh once and let apiClient re-send. The TOKEN_REFRESHED event below also updates
+    // sessionRef, this just makes the new token available to the waiting request right away.
+    setSessionRefresher(async () => {
+      if (USE_MOCK || localStorage.getItem('dev_session')) return null;
+      const { data, error } = await supabase.auth.refreshSession();
+      if (error || !data.session) return null;
+      sessionRef.current = data.session;
+      return data.session.access_token;
+    });
     const applySession = async (nextSession: Session | null) => {
       sessionRef.current = nextSession;
       setSession(nextSession);
@@ -143,6 +153,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     return () => {
       listener.subscription.unsubscribe();
       window.removeEventListener('dev_auth_changed', handleDevAuthChange);
+      setSessionRefresher(null);
     };
   }, []);
 
