@@ -800,7 +800,8 @@ export function StudyGroupDetail() {
   const countBadge = (count: number) => (
     <span style={{minWidth: 22, padding: '1px 7px', borderRadius: 10, background: '#E2E8F0', color: '#475569', fontSize: 12, fontWeight: 600, textAlign: 'center', boxSizing: 'border-box'}}>{count}</span>
   );
-  // One sidebar entry per feature; sub-items (channels, rooms) are tabs in the main header.
+  const notesHeader = <NotesStackPanel {...groupNotesController} isGroupManager={isGroupManager} />;
+  // Group channels and rooms are nested in the sidebar, like Discord.
   const workspaceNav = [
     { key: 'tasks' as const, label: 'Bảng nhiệm vụ', icon: ListChecks, meta: null },
     { key: 'chat' as const, label: 'Kênh chat', icon: MessagesSquare, meta: isChannelsLoading ? null : countBadge(channels.length) },
@@ -1161,20 +1162,15 @@ export function StudyGroupDetail() {
                     </div>
                 )}
 
-                {/* Group Notes -- paper stack, one focused Note at a time (see
-                    NotesStackPanel); real, group-scoped, persisted via backend */}
-                <NotesStackPanel {...groupNotesController} isGroupManager={isGroupManager} />
-
-                {/* Workspace navigation -- one entry per feature. Channels and rooms are no longer
-                    listed here; they open as tabs in the main area header (WorkspaceTabs). */}
+                {/* Workspace navigation with channels and rooms nested underneath. */}
                 <nav aria-label="Không gian nhóm" style={{flex: 1, overflowY: 'auto', padding: '12px 8px', display: 'flex', flexDirection: 'column', gap: 2}}>
                     <div style={{padding: '4px 12px 8px', color: '#94A3B8', fontSize: 11, fontWeight: 700, letterSpacing: 0.4, textTransform: 'uppercase'}}>Không gian nhóm</div>
                     {workspaceNav.map(item => {
                         const isActive = mainView === item.key;
                         const Icon = item.icon;
                         return (
+                          <div key={item.key}>
                             <button
-                                key={item.key}
                                 type="button"
                                 className="workspace-nav-item"
                                 aria-current={isActive ? 'page' : undefined}
@@ -1186,6 +1182,9 @@ export function StudyGroupDetail() {
                                 <span style={{flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap'}}>{item.label}</span>
                                 {item.meta}
                             </button>
+                            {item.key === 'chat' && channels.map(channel => <button key={channel.id} type="button" title={channel.description || channel.name} onClick={() => { setMainView('chat'); setActiveChannel(channel.id); setOpenHeaderMenu(null); }} style={{width:'100%',minHeight:34,padding:'0 10px 0 38px',display:'flex',alignItems:'center',gap:8,border:0,borderRadius:7,background:mainView==='chat'&&activeChannel===channel.id?'#E2E8F0':'transparent',color:mainView==='chat'&&activeChannel===channel.id?'#0F172A':'#64748B',fontSize:13,cursor:'pointer',textAlign:'left'}}><span>{channel.is_private?'🔒':'#'}</span><span style={{overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{channel.name}</span></button>)}
+                            {item.key === 'rooms' && openRooms.map(room => <button key={room.id} type="button" title={room.name} onClick={() => { setMainView('rooms'); setActiveRoomId(room.id); setOpenHeaderMenu(null); }} style={{width:'100%',minHeight:34,padding:'0 10px 0 38px',display:'flex',alignItems:'center',gap:8,border:0,borderRadius:7,background:mainView==='rooms'&&activeRoom?.id===room.id?'#E2E8F0':'transparent',color:mainView==='rooms'&&activeRoom?.id===room.id?'#0F172A':'#64748B',fontSize:13,cursor:'pointer',textAlign:'left'}}><Video size={14}/><span style={{overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap',flex:1}}>{room.name}</span>{room.status==='active'&&<span style={{width:7,height:7,borderRadius:'50%',background:'#10B981'}}/>}</button>)}
+                          </div>
                         );
                     })}
                 </nav>
@@ -1214,19 +1213,13 @@ export function StudyGroupDetail() {
                 <div style={{flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column', background: 'white'}}>
 
                     <WorkspaceTabs
-                        title="Kênh chat"
-                        titleIcon={<MessagesSquare size={18} color="#64748B" />}
+                        title={notesHeader}
                         ariaLabel="Kênh chat của nhóm"
-                        tabs={channels.map(channel => ({
-                            id: channel.id,
-                            label: channel.name,
-                            icon: channel.is_private ? <Lock size={14} /> : <Hash size={15} />,
-                            title: channel.description ? `#${channel.name} — ${channel.description}` : `#${channel.name}`,
-                        }))}
-                        activeId={activeChannelObj?.id ?? null}
+                        tabs={[]}
+                        activeId={null}
                         onSelect={id => { setActiveChannel(id); setOpenHeaderMenu(null); }}
-                        loading={isChannelsLoading}
-                        emptyLabel={listErrors.channels ? 'Không tải được danh sách kênh' : 'Chưa có kênh nào'}
+                        loading={false}
+                        emptyLabel=""
                         actions={<>
                             <HeaderIconButton label="Tham gia kênh riêng tư bằng mã" onClick={() => setIsJoinChannelModalOpen(true)}><Ticket size={17} /></HeaderIconButton>
                             {isGroupManager && (
@@ -1413,21 +1406,13 @@ export function StudyGroupDetail() {
             ) : mainView === 'rooms' ? (
                 <div style={{flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column', background: '#F8FAFC'}}>
                     <WorkspaceTabs
-                        title="Phòng học"
-                        titleIcon={<Video size={18} color="#64748B" />}
+                        title={notesHeader}
                         ariaLabel="Phòng học của nhóm"
-                        tabs={openRooms.map(room => ({
-                            id: room.id,
-                            label: room.name,
-                            icon: room.is_private ? <Lock size={15} /> : <Video size={15} />,
-                            indicator: room.status === 'active'
-                                ? <span className="workspace-live-dot" aria-label="Đang diễn ra" style={{width: 7, height: 7, borderRadius: '50%', background: '#10B981', flexShrink: 0}} />
-                                : undefined,
-                        }))}
-                        activeId={activeRoom?.id ?? null}
+                        tabs={[]}
+                        activeId={null}
                         onSelect={id => { setActiveRoomId(id); setOpenHeaderMenu(null); }}
-                        loading={isRoomsLoading}
-                        emptyLabel={listErrors.rooms ? 'Không tải được danh sách phòng học' : 'Chưa có phòng học nào đang mở'}
+                        loading={false}
+                        emptyLabel=""
                         actions={<>
                             <HeaderIconButton label="Tham gia phòng học bằng mã" onClick={() => setIsJoinRoomModalOpen(true)}><Ticket size={17} /></HeaderIconButton>
                             {isGroupManager && (
@@ -1577,11 +1562,11 @@ export function StudyGroupDetail() {
                     </div>
                 </div>
             ) : mainView === 'tasks' ? (
-                <TaskFlowBoard groupId={groupId ?? ''} />
+                <TaskFlowBoard groupId={groupId ?? ""} notesHeader={notesHeader} />
             ) : (
                 <div style={{flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column', background: 'white'}}>
-                    <div style={{height: 56, flexShrink: 0, padding: '0 16px 0 24px', borderBottom: '1px solid #E2E8F0', display: 'flex', alignItems: 'center', justifyContent: 'space-between', color: '#0F172A', fontSize: 15, fontWeight: '700', background: 'white'}}>
-                        <span style={{display: 'flex', alignItems: 'center', gap: 8}}><FileText size={18} color="#64748B" /> Tài liệu nhóm</span>
+                    <div style={{minHeight: 56, flexShrink: 0, padding: '0 16px 0 4px', borderBottom: '1px solid #E2E8F0', display: 'flex', alignItems: 'center', justifyContent: 'space-between', color: '#0F172A', fontSize: 15, fontWeight: '700', background: 'white'}}>
+                        {notesHeader}
                         <button
                             onClick={() => resourceFileInputRef.current?.click()}
                             disabled={isUploadingResource}

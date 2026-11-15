@@ -12,7 +12,7 @@ export interface WorkspaceTab {
 
 interface WorkspaceTabsProps {
   /** Section title shown before the tabs (e.g. "Kênh chat"). */
-  title: string;
+  title: ReactNode;
   titleIcon?: ReactNode;
   tabs: WorkspaceTab[];
   activeId: string | null;
@@ -73,14 +73,14 @@ export function WorkspaceTabs({ title, titleIcon, tabs, activeId, onSelect, acti
     : undefined;
 
   return (
-    <div style={{height: 56, flexShrink: 0, padding: '0 16px 0 24px', borderBottom: '1px solid #E2E8F0', display: 'flex', alignItems: 'center', gap: 16, background: 'white'}}>
-      <div style={{display: 'flex', alignItems: 'center', gap: 8, flexShrink: 0, color: '#0F172A', fontSize: 15, fontWeight: 700}}>
+    <div style={{minHeight: 56, flexShrink: 0, padding: '0 16px 0 4px', borderBottom: '1px solid #E2E8F0', display: 'flex', alignItems: 'center', gap: 12, background: 'white'}}>
+      <div style={{display: 'flex', alignItems: 'center', gap: 8, flex: 1, minWidth: 0, color: '#0F172A', fontSize: 15, fontWeight: 700}}>
         {titleIcon}
-        <span>{title}</span>
+        <div style={{flex: 1, minWidth: 0}}>{title}</div>
       </div>
-      <span aria-hidden="true" style={{width: 1, height: 20, background: '#E2E8F0', flexShrink: 0}} />
+      {tabs.length > 0 && <span aria-hidden="true" style={{width: 1, height: 20, background: '#E2E8F0', flexShrink: 0}} />}
 
-      <div
+      {tabs.length > 0 && <div
         ref={stripRef}
         role="tablist"
         aria-label={ariaLabel}
@@ -124,7 +124,7 @@ export function WorkspaceTabs({ title, titleIcon, tabs, activeId, onSelect, acti
             );
           })
         )}
-      </div>
+      </div>}
 
       {actions && <div style={{display: 'flex', alignItems: 'center', gap: 4, flexShrink: 0}}>{actions}</div>}
     </div>
