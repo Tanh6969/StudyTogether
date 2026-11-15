@@ -312,6 +312,18 @@ async def end_room(
         raise HTTPException(status.HTTP_403_FORBIDDEN, "Only an active group owner or moderator can end this study room")
     try:
         updated = await service.end(session, room)
+        # Ending the session also ends every live in-call activity (game / shared music) --
+        # their clients close on the room status change, and this keeps the one-live-per-kind
+        # index from blocking a new activity if the room were ever reopened.
+        from app.activities.entities.activity_entity import RoomActivity  # local: avoids an import cycle
+        from sqlalchemy import update as sa_update
+        from datetime import datetime as _dt, timezone as _tz
+
+        await session.execute(
+            sa_update(RoomActivity)
+            .where(RoomActivity.room_id == room_id, RoomActivity.ended_at.is_(None))
+            .values(status="ended", ended_at=_dt.now(_tz.utc))
+        )
         await session.commit()
     except Exception as e:
         await session.rollback()

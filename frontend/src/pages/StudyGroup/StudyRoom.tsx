@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
 import {
   Video as VideoIcon,
@@ -38,6 +38,15 @@ import { MeetingControls } from './meeting/MeetingControls';
 import { WhiteboardPanel } from './meeting/WhiteboardPanel';
 import { WhiteboardUnavailableModal } from './meeting/WhiteboardUnavailableModal';
 import { PresentationViewer } from './meeting/PresentationViewer';
+import {
+  ActivitiesButton,
+  GameModeTab,
+  GameStage,
+  MusicMiniBar,
+  MusicSidebarPanel,
+  MusicTabButton,
+  RoomActivitiesProvider,
+} from '../../activities/RoomActivities';
 import { PreJoinLobby } from './meeting/PreJoinLobby';
 import type { MediaJoinChoice } from './meeting/PreJoinLobby';
 import { SessionTasksPanel } from './SessionTasksPanel';
@@ -102,11 +111,18 @@ export function StudyRoom() {
   }, [members, currentUserId]);
 
   // Room states
-  const [activeMode, setActiveMode] = useState<'video' | 'whiteboard'>('video');
-  const [activeSidebarTab, setActiveSidebarTab] = useState<'tasks' | 'chat'>('tasks');
+  const [activeMode, setActiveMode] = useState<'video' | 'whiteboard' | 'game'>('video');
+  const [activeSidebarTab, setActiveSidebarTab] = useState<'tasks' | 'chat' | 'music'>('tasks');
   const [activeBoardTab, setActiveBoardTab] = useState<'whiteboard' | 'presentation'>('whiteboard');
 
   const [isSidebarOpen, setIsSidebarOpen] = useState(true);
+  const showGame = useCallback(() => setActiveMode('game'), []);
+  const showMusic = useCallback(() => {
+    setIsSidebarOpen(true);
+    setActiveSidebarTab('music');
+  }, []);
+  const exitGame = useCallback(() => setActiveMode((m) => (m === 'game' ? 'video' : m)), []);
+  const closeMusicTab = useCallback(() => setActiveSidebarTab((t) => (t === 'music' ? 'tasks' : t)), []);
   const [isJoining, setIsJoining] = useState(false);
   const [isDeleteRoomModalOpen, setIsDeleteRoomModalOpen] = useState(false);
   const [isInviteModalOpen, setIsInviteModalOpen] = useState(false);
@@ -413,6 +429,15 @@ export function StudyRoom() {
       videoDeviceId={mediaChoice.videoDeviceId}
       onSessionEnded={refetchRoom}
     >
+    <RoomActivitiesProvider
+      roomId={room.id}
+      currentUserId={currentUserId}
+      enabled={isCurrentUserMember && !isRoomEnded}
+      isManager={isGroupManager}
+      people={participants}
+      onShowGame={showGame}
+      onShowMusic={showMusic}
+    >
     <div style={{width: '100vw', height: '100vh', background: '#0F172A', display: 'flex', flexDirection: 'column', overflow: 'hidden', fontFamily: 'Inter, sans-serif'}}>
 
       {/* Top Header Bar */}
@@ -477,6 +502,11 @@ export function StudyRoom() {
           >
             <Pencil size={16} /> Bảng Trắng & Ghi Chú
           </button>
+          <GameModeTab
+            active={activeMode === 'game'}
+            onClick={() => setActiveMode('game')}
+            style={(active) => ({padding: '6px 16px', borderRadius: 8, border: 'none', background: active ? '#2563EB' : 'transparent', color: active ? 'white' : '#94A3B8', fontSize: 13, fontWeight: '600', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 8, transition: 'all 0.2s'})}
+          />
         </div>
 
         {/* Right Timer & Status */}
@@ -613,6 +643,9 @@ export function StudyRoom() {
           </div>
         )}
 
+        {/* MODE C: BREAK GAME (Phấn Trắng) -- see src/activities, src/games/chalk */}
+        {activeMode === 'game' && <GameStage onExit={exitGame} />}
+
         {/* MODE B: WHITEBOARD & PRESENTATION VIEW */}
         {activeMode === 'whiteboard' && (
           <div style={{flex: 1, display: 'flex', flexDirection: 'column', background: '#F8FAFC'}}>
@@ -702,6 +735,9 @@ export function StudyRoom() {
               <ChevronRight size={18} />
             </button>
 
+            {/* Shared music: always-visible mini player above the tabs. */}
+            <MusicMiniBar onOpen={showMusic} />
+
             {/* Sidebar navigation: room tasks are the first tab. */}
             <div style={{display: 'flex', borderBottom: '1px solid #334155', background: '#0F172A'}}>
               <button
@@ -730,7 +766,14 @@ export function StudyRoom() {
               >
                 <MessageSquare size={16} /> Trò chuyện
               </button>
+              <MusicTabButton
+                active={activeSidebarTab === 'music'}
+                onClick={() => setActiveSidebarTab('music')}
+                style={(active) => ({flex: 1, padding: '14px 0', border: 'none', background: 'transparent', color: active ? '#38BDF8' : '#94A3B8', borderBottom: active ? '2px solid #38BDF8' : '2px solid transparent', fontWeight: 600, fontSize: 13, cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 6})}
+              />
             </div>
+
+            {activeSidebarTab === 'music' && <MusicSidebarPanel onClosed={closeMusicTab} />}
 
             {activeSidebarTab === 'tasks' && (
               <SessionTasksPanel
@@ -917,6 +960,9 @@ export function StudyRoom() {
           {/* Mic / Camera — real LiveKit track state, see meeting/MeetingControls.tsx. */}
           <MeetingControls disabled={isRoomEnded} />
 
+          {/* In-call activities: break game + shared music (src/activities). */}
+          <ActivitiesButton disabled={isRoomEnded || !isCurrentUserMember} />
+
           {/* Raise Hand — real moderation action (self-service raise_hand/lower_hand). */}
           <button
             onClick={handleToggleHand}
@@ -967,6 +1013,7 @@ export function StudyRoom() {
       </footer>
 
     </div>
+    </RoomActivitiesProvider>
     </MeetingProvider>
   );
 }

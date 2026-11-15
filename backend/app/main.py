@@ -23,6 +23,7 @@ from app.group_tasks.routers.group_task_router import router as group_tasks_rout
 from app.room_tasks.routers.room_task_router import router as room_tasks_router
 from app.rewards.routers.reward_router import router as rewards_router
 from app.roadmaps.routers.roadmap_router import router as roadmaps_router
+from app.activities.routers.activity_router import music_router, router as activities_router
 
 
 @asynccontextmanager
@@ -81,3 +82,5 @@ app.include_router(group_tasks_router)
 app.include_router(room_tasks_router)
 app.include_router(rewards_router)
 app.include_router(roadmaps_router)
+app.include_router(activities_router)
+app.include_router(music_router)
