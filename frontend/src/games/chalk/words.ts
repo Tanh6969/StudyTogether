@@ -16,7 +16,7 @@ export const PACK_INFO: WordPackInfo[] = [
   { id: 'monhoc', label: 'Môn học', hint: 'Khái niệm vẽ được trong các môn học.' },
   { id: 'thanhngu', label: 'Thành ngữ', hint: 'Khó và rất vui.' },
   { id: 'lienquan', label: 'Liên Quân', hint: 'Tướng, đường, mục tiêu và chiến thuật trong game.' },
-  { id: 'hust', label: 'HUST (ĐH Bách khoa Hà Nội)', hint: 'Giảng đường, môn học và đời sống Bách khoa.' },
+  { id: 'hust', label: 'HUST', hint: 'Giảng đường, môn học và đời sống Bách khoa.' },
 ];
 
 export const WORD_PACKS: Record<string, WordEntry[]> = {
