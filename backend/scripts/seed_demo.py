@@ -17,6 +17,9 @@ from pathlib import Path
 import httpx
 import psycopg
 
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+from app.rewards.catalog import REWARDS  # noqa: E402  (frames/cheers granted to demo accounts)
+
 ENV_PATH = Path(__file__).resolve().parent.parent / ".env"
 DEMO_PASSWORD = "123456"  # same as the frontend mock password (MOCK_PASSWORD)
 DEMO_ACCOUNTS = [
@@ -87,6 +90,7 @@ def seed_data(conn: psycopg.Connection, uid: dict[str, uuid.UUID]) -> None:
         cur.execute("delete from tasks where user_id = any(%s)", (demo_ids,))
         cur.execute("delete from roadmaps where user_id = any(%s)", (demo_ids,))
         cur.execute("delete from notifications where user_id = any(%s)", (demo_ids,))
+        cur.execute("delete from user_rewards where user_id = any(%s)", (demo_ids,))
 
         # ---- profiles ----
         for key, _email, username, display_name, org, bio in DEMO_ACCOUNTS:
@@ -97,6 +101,16 @@ def seed_data(conn: psycopg.Connection, uid: dict[str, uuid.UUID]) -> None:
                      organization = excluded.organization, bio = excluded.bio""",
                 (uid[key], username, display_name, org, bio),
             )
+
+        # ---- cosmetic rewards: demo accounts own everything, each wears something different ----
+        for user_id in demo_ids:
+            for reward in REWARDS:
+                cur.execute(
+                    "insert into user_rewards (user_id, reward_id) values (%s, %s) on conflict do nothing",
+                    (user_id, reward.id),
+                )
+        for user_id, frame, cheer in ((me, "galaxy", "sparkle"), (nam, "dragon", "drum"), (trang, "inferno", "fanfare")):
+            cur.execute("update profiles set avatar_frame = %s, cheer_style = %s where id = %s", (frame, cheer, user_id))
 
         # ---- groups (owner membership comes from the groups_add_owner trigger) ----
         groups = [

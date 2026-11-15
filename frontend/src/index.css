@@ -169,26 +169,120 @@ h1, h2, h3, h4, h5, h6, p {
 .workspace-live-dot { animation: workspace-live-pulse 1.6s ease-in-out infinite; }
 @media (prefers-reduced-motion: reduce) { .workspace-live-dot { animation: none; } }
 
-/* Avatar frames (FramedAvatar + lib/rewards.ts). Pure CSS: no asset per frame. */
+/* Avatar frames (FramedAvatar + lib/rewards.ts + frameArt.tsx). Pure CSS/SVG: no asset per frame.
+   Structure: .avatar-frame (overflow visible, holds the art) > .avatar-frame-ring (clipped circle,
+   ::before paints the ring) > .avatar-frame-inner (the picture). Each frame sets --frame-bg for the
+   ring, optional --frame-glow, and the two art colours (color + --frame-art-accent). */
 :root {
+  --frame-text: #FFFFFF;
   --frame-sky: #38BDF8;
   --frame-sunset: linear-gradient(135deg, #F97316, #EC4899);
   --frame-aurora: conic-gradient(from 0deg, #34D399, #38BDF8, #A78BFA, #F472B6, #34D399);
   --frame-gold: linear-gradient(135deg, #FDE68A, #F59E0B 55%, #FDE68A);
   --frame-gold-glow: rgba(245, 158, 11, 0.45);
-  --frame-text: #FFFFFF;
+  --frame-shadow: conic-gradient(from 220deg, #1C1B29, #5B5478, #2A2740, #6D5F9E, #1C1B29);
+  --frame-shadow-glow: rgba(109, 95, 158, 0.5);
+  --frame-shadow-art: #7C72A6;
+  --frame-shadow-accent: #B8B0D6;
+  --frame-frost: conic-gradient(from 200deg, #E0F2FE, #67E8F9, #FFFFFF, #7DD3FC, #E0F2FE);
+  --frame-frost-glow: rgba(103, 232, 249, 0.5);
+  --frame-frost-art: #CFFAFE;
+  --frame-frost-accent: #22D3EE;
+  --frame-storm: linear-gradient(135deg, #1E3A8A, #3B82F6 50%, #DBEAFE);
+  --frame-storm-glow: rgba(96, 165, 250, 0.6);
+  --frame-storm-art: #1D4ED8;
+  --frame-storm-accent: #FDE047;
+  --frame-void: radial-gradient(circle at 50% 50%, #000000 55%, #4C1D95 80%, #A855F7 100%);
+  --frame-void-glow: rgba(168, 85, 247, 0.55);
+  --frame-void-art: #A855F7;
+  --frame-void-accent: #E9D5FF;
+  --frame-neon: conic-gradient(from 90deg, #22D3EE, #F0ABFC, #22D3EE);
+  --frame-neon-glow: rgba(240, 171, 252, 0.6);
+  --frame-neon-art: #22D3EE;
+  --frame-neon-accent: #F0ABFC;
+  --frame-inferno: conic-gradient(from 180deg, #7F1D1D, #F97316, #FDE047, #F97316, #7F1D1D);
+  --frame-inferno-glow: rgba(249, 115, 22, 0.6);
+  --frame-inferno-art: #F97316;
+  --frame-inferno-accent: #FEF08A;
+  --frame-crown: linear-gradient(135deg, #FDE68A, #D97706 50%, #FDE68A);
+  --frame-crown-glow: rgba(217, 119, 6, 0.45);
+  --frame-crown-art: #F59E0B;
+  --frame-crown-accent: #EF4444;
+  --frame-galaxy: conic-gradient(from 0deg, #0F172A, #4C1D95, #1E3A8A, #0F172A);
+  --frame-galaxy-glow: rgba(99, 102, 241, 0.5);
+  --frame-galaxy-art: #818CF8;
+  --frame-galaxy-accent: #FFFFFF;
+  --frame-toxic: linear-gradient(160deg, #14532D, #84CC16 55%, #BEF264);
+  --frame-toxic-glow: rgba(132, 204, 22, 0.55);
+  --frame-toxic-art: #84CC16;
+  --frame-toxic-accent: #D9F99D;
+  --frame-bloodmoon: radial-gradient(circle at 50% 50%, #450A0A 55%, #7F1D1D 80%, #DC2626 100%);
+  --frame-bloodmoon-glow: rgba(220, 38, 38, 0.55);
+  --frame-bloodmoon-art: #DC2626;
+  --frame-bloodmoon-accent: #F87171;
+  --frame-dragon: conic-gradient(from 45deg, #064E3B, #10B981, #FDE68A, #10B981, #064E3B);
+  --frame-dragon-glow: rgba(16, 185, 129, 0.5);
+  --frame-dragon-art: #065F46;
+  --frame-dragon-accent: #FCD34D;
 }
-.avatar-frame { position: relative; display: inline-grid; place-items: center; box-sizing: border-box; border-radius: 50%; overflow: hidden; isolation: isolate; flex-shrink: 0; }
-.avatar-frame::before { content: ''; position: absolute; inset: -45%; border-radius: 50%; background: var(--frame-bg, transparent); z-index: -1; }
+.avatar-frame { position: relative; display: inline-block; box-sizing: border-box; flex-shrink: 0; vertical-align: middle; }
+.avatar-frame-ring { position: relative; width: 100%; height: 100%; box-sizing: border-box; border-radius: 50%; overflow: hidden; isolation: isolate; display: grid; place-items: center; box-shadow: 0 0 0 0 transparent; }
+.avatar-frame-ring::before { content: ''; position: absolute; inset: -45%; border-radius: 50%; background: var(--frame-bg, transparent); z-index: -1; }
 .avatar-frame-inner { width: 100%; height: 100%; border-radius: 50%; overflow: hidden; display: grid; place-items: center; color: var(--frame-text); font-weight: 700; line-height: 1; }
+.avatar-frame-art { position: absolute; left: -30%; top: -30%; width: 160%; height: 160%; pointer-events: none; overflow: visible; color: var(--frame-art, currentColor); }
 .avatar-frame--ring-sky { --frame-bg: var(--frame-sky); }
 .avatar-frame--ring-sunset { --frame-bg: var(--frame-sunset); }
 .avatar-frame--ring-aurora { --frame-bg: var(--frame-aurora); }
-.avatar-frame--ring-aurora::before { animation: avatar-frame-spin 6s linear infinite; }
-.avatar-frame--ring-gold { --frame-bg: var(--frame-gold); box-shadow: 0 0 10px var(--frame-gold-glow); }
+.avatar-frame--ring-aurora .avatar-frame-ring::before { animation: avatar-frame-spin 6s linear infinite; }
+.avatar-frame--ring-gold { --frame-bg: var(--frame-gold); }
+.avatar-frame--ring-gold .avatar-frame-ring { box-shadow: 0 0 10px var(--frame-gold-glow); }
+.avatar-frame--shadow { --frame-bg: var(--frame-shadow); --frame-art: var(--frame-shadow-art); --frame-art-accent: var(--frame-shadow-accent); }
+.avatar-frame--shadow .avatar-frame-ring { box-shadow: 0 0 12px var(--frame-shadow-glow); }
+.avatar-frame--shadow .avatar-frame-ring::before { animation: avatar-frame-spin 12s linear infinite; }
+.avatar-frame--frost { --frame-bg: var(--frame-frost); --frame-art: var(--frame-frost-art); --frame-art-accent: var(--frame-frost-accent); }
+.avatar-frame--frost .avatar-frame-ring { box-shadow: 0 0 12px var(--frame-frost-glow); }
+.avatar-frame--storm { --frame-bg: var(--frame-storm); --frame-art: var(--frame-storm-art); --frame-art-accent: var(--frame-storm-accent); }
+.avatar-frame--storm .avatar-frame-ring { box-shadow: 0 0 12px var(--frame-storm-glow); animation: avatar-frame-flash 3s steps(1) infinite; }
+.avatar-frame--void { --frame-bg: var(--frame-void); --frame-art: var(--frame-void-art); --frame-art-accent: var(--frame-void-accent); }
+.avatar-frame--void .avatar-frame-ring { box-shadow: 0 0 14px var(--frame-void-glow); animation: avatar-frame-pulse 3.5s ease-in-out infinite; }
+.avatar-frame--neon { --frame-bg: var(--frame-neon); --frame-art: var(--frame-neon-art); --frame-art-accent: var(--frame-neon-accent); }
+.avatar-frame--neon .avatar-frame-ring { box-shadow: 0 0 12px var(--frame-neon-glow); }
+.avatar-frame--inferno { --frame-bg: var(--frame-inferno); --frame-art: var(--frame-inferno-art); --frame-art-accent: var(--frame-inferno-accent); }
+.avatar-frame--inferno .avatar-frame-ring { box-shadow: 0 0 14px var(--frame-inferno-glow); }
+.avatar-frame--inferno .avatar-frame-ring::before { animation: avatar-frame-spin 5s linear infinite; }
+.avatar-frame--crown { --frame-bg: var(--frame-crown); --frame-art: var(--frame-crown-art); --frame-art-accent: var(--frame-crown-accent); }
+.avatar-frame--crown .avatar-frame-ring { box-shadow: 0 0 10px var(--frame-crown-glow); }
+.avatar-frame--galaxy { --frame-bg: var(--frame-galaxy); --frame-art: var(--frame-galaxy-art); --frame-art-accent: var(--frame-galaxy-accent); }
+.avatar-frame--galaxy .avatar-frame-ring { box-shadow: 0 0 12px var(--frame-galaxy-glow); }
+.avatar-frame--galaxy .avatar-frame-ring::before { animation: avatar-frame-spin 14s linear infinite; }
+.avatar-frame--toxic { --frame-bg: var(--frame-toxic); --frame-art: var(--frame-toxic-art); --frame-art-accent: var(--frame-toxic-accent); }
+.avatar-frame--toxic .avatar-frame-ring { box-shadow: 0 0 12px var(--frame-toxic-glow); }
+.avatar-frame--bloodmoon { --frame-bg: var(--frame-bloodmoon); --frame-art: var(--frame-bloodmoon-art); --frame-art-accent: var(--frame-bloodmoon-accent); }
+.avatar-frame--bloodmoon .avatar-frame-ring { box-shadow: 0 0 14px var(--frame-bloodmoon-glow); animation: avatar-frame-pulse 4s ease-in-out infinite; }
+.avatar-frame--dragon { --frame-bg: var(--frame-dragon); --frame-art: var(--frame-dragon-art); --frame-art-accent: var(--frame-dragon-accent); }
+.avatar-frame--dragon .avatar-frame-ring { box-shadow: 0 0 12px var(--frame-dragon-glow); }
+.avatar-frame--dragon .avatar-frame-ring::before { animation: avatar-frame-spin 8s linear infinite; }
+/* Art motion: transform/opacity only. */
+.fa-flicker { animation: fa-flicker 0.9s ease-in-out infinite alternate; }
+.fa-flicker-fast { animation: fa-flicker-fast 1.6s steps(1) infinite; }
+.fa-spin { animation: avatar-frame-spin 7s linear infinite; }
+.fa-spin-rev { animation: avatar-frame-spin 9s linear infinite reverse; }
+.fa-rise { animation: fa-rise 2.4s ease-in infinite; }
+.fa-twinkle { animation: fa-twinkle 2.2s ease-in-out infinite; }
+.fa-drift { animation: fa-drift 3.2s ease-in-out infinite; }
 @keyframes avatar-frame-spin { to { transform: rotate(1turn); } }
-@media (prefers-reduced-motion: reduce) { .avatar-frame--ring-aurora::before { animation: none; } }
-.rewards-section button:focus-visible { outline: 2px solid #3B82F6; outline-offset: 2px; }
+@keyframes avatar-frame-pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.75; } }
+@keyframes avatar-frame-flash { 0%, 88%, 92%, 100% { opacity: 1; } 90% { opacity: 0.55; } }
+@keyframes fa-flicker { from { transform: scale(1) translateY(0); opacity: 0.95; } to { transform: scale(1.12, 1.25) translateY(-2px); opacity: 1; } }
+@keyframes fa-flicker-fast { 0%, 100% { opacity: 1; } 10% { opacity: 0.15; } 14% { opacity: 1; } 55% { opacity: 1; } 60% { opacity: 0.3; } 63% { opacity: 1; } }
+@keyframes fa-rise { 0% { transform: translateY(0); opacity: 0; } 20% { opacity: 1; } 100% { transform: translateY(-16px); opacity: 0; } }
+@keyframes fa-twinkle { 0%, 100% { opacity: 0.35; transform: scale(0.8); } 50% { opacity: 1; transform: scale(1.15); } }
+@keyframes fa-drift { 0%, 100% { transform: translateY(0); opacity: 0.45; } 50% { transform: translateY(-6px); opacity: 0.7; } }
+@media (prefers-reduced-motion: reduce) {
+  .avatar-frame-ring, .avatar-frame-ring::before, .fa-flicker, .fa-flicker-fast, .fa-spin, .fa-spin-rev, .fa-rise, .fa-twinkle, .fa-drift { animation: none !important; }
+  .fa-rise { opacity: 0.8; }
+}
+.rewards-section button:focus-visible { outline: 2px solid var(--session-accent); outline-offset: 2px; }
 .rewards-section button:not([aria-disabled="true"]):active { transform: scale(0.98); }
 
 /* Study room: "Buổi học hôm nay" panel (SessionTasksPanel). Colours mirror the panel's
