@@ -493,7 +493,7 @@ export function StudyRoom() {
               transition: 'all 0.2s'
             }}
           >
-            <Pencil size={16} /> Bảng Trắng & Ghi Chú
+            <Pencil size={16} /> Bảng Trắng
           </button>
           <GameModeTab
             active={activeMode === 'game'}
