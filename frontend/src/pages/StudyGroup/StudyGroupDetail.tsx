@@ -50,6 +50,7 @@ import { GroupSettingsModal } from '../../components/groups/GroupSettingsModal';
 import { GroupMembersPanel } from '../../components/groups/GroupMembersPanel';
 import { createChannel, deleteChannel, getChannel, listChannelMembers, listChannelsByGroup, removeChannelMember } from '../../lib/channel.api';
 import { createStudyRoom, deleteStudyRoom, getStudyRoom, listStudyRoomMembers, listStudyRoomsByGroup } from '../../lib/studyRoom.api';
+import { preloadStudyRoomPage } from './studyRoomPage';
 import { useStudyRoomMembersRealtime } from '../../hooks/useStudyRoomMembersRealtime';
 import { listConversationMessages, sendConversationMessage } from '../../lib/message.api';
 import { chatCache } from '../../lib/chatCache';
@@ -263,7 +264,10 @@ export function StudyGroupDetail() {
         jobs.push(
           listStudyRoomsByGroup(groupId)
             .then((data) => {
-              if (!stale()) setStudyRooms(data);
+              if (!stale()) {
+                setStudyRooms(data);
+                if (data.length > 0) preloadStudyRoomPage();
+              }
             })
             .catch((err) => {
               if (!stale()) setListErrors((prev) => ({ ...prev, rooms: message(err, 'Không tải được danh sách phòng học.') }));
@@ -1566,6 +1570,8 @@ export function StudyGroupDetail() {
 
                                     <button
                                         type="button"
+                                        onPointerEnter={preloadStudyRoomPage}
+                                        onFocus={preloadStudyRoomPage}
                                         onClick={() => handleJoinRoom(activeRoom.id)}
                                         style={{width: '100%', padding: '13px 0', border: 'none', borderRadius: 10, background: activeRoom.status === 'active' ? '#059669' : '#00236F', color: 'white', fontSize: 15, fontWeight: 600, cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8}}
                                     >

@@ -8,16 +8,6 @@ import { Avatar } from '../ui/Avatar';
 import { NotificationBell } from '../notifications/NotificationBell';
 import { USE_MOCK } from '../../mocks/config';
 
-const navLinkStyle = ({ isActive }: { isActive: boolean }): React.CSSProperties => ({
-  paddingBottom: 4,
-  borderBottom: isActive ? '2px #00236F solid' : '2px transparent solid',
-  justifyContent: 'center', display: 'flex', flexDirection: 'column',
-  color: isActive ? '#00236F' : '#444651',
-  fontSize: 16, fontFamily: 'Inter', fontWeight: isActive ? '600' : '400',
-  lineHeight: '24px', textDecoration: 'none', cursor: 'pointer',
-  transition: 'all 0.2s',
-});
-
 export function Header() {
   const { isLoggedIn, currentUser } = useAuth();
   const { setDevSession, profile } = useAuthContext();
