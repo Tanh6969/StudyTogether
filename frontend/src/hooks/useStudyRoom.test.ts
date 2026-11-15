@@ -52,6 +52,7 @@ function makeRoom(overrides: Partial<StudyRoom> = {}): StudyRoom {
     host_id: 'host-1',
     status: 'active',
     max_participants: 50,
+    is_private: false,
     created_at: '2026-08-19T00:00:00Z',
     started_at: null,
     ended_at: null,
