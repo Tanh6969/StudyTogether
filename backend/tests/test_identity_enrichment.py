@@ -70,7 +70,7 @@ def _profile(user_id, *, username=None, display_name=None, avatar_url=None) -> P
     )
 
 
-EXPECTED_USER_SUMMARY_KEYS = {"id", "username", "display_name", "avatar_url", "role"}
+EXPECTED_USER_SUMMARY_KEYS = {"id", "username", "display_name", "avatar_url", "role", "avatar_frame", "cheer_style"}  # + cosmetic rewards (migration 006)
 
 
 # --- Group members ---

@@ -6,10 +6,25 @@ import type { MyRewards } from '../../lib/rewards';
 import { playCheer } from '../../utils/cheerSounds';
 import { FramedAvatar } from '../ui/FramedAvatar';
 
-const cardStyle: React.CSSProperties = { background: '#FFF', border: '1px solid #DCE4F0', borderRadius: 9, padding: 24 };
-const sectionTitle: React.CSSProperties = { margin: 0, color: '#151E34', fontSize: 20, lineHeight: 1.35, fontWeight: 700 };
-const mutedText: React.CSSProperties = { margin: '3px 0 0', color: '#51596B', fontSize: 14, lineHeight: 1.45 };
-const groupLabel: React.CSSProperties = { margin: '0 0 10px', color: '#172139', fontSize: 14, fontWeight: 650 };
+/* Colour tokens for this component (the settings page's light palette). */
+const T = {
+  surface: '#FFF',
+  line: '#DCE4F0',
+  ink: '#151E34',
+  text: '#172139',
+  muted: '#51596B',
+  faint: '#8A94A8',
+  accent: '#062A78',
+  accentSoft: '#EEF3FF',
+  link: '#0A347F',
+  chip: '#F1F5F9',
+  danger: '#B91C1C',
+} as const;
+
+const cardStyle: React.CSSProperties = { background: T.surface, border: `1px solid ${T.line}`, borderRadius: 9, padding: 24 };
+const sectionTitle: React.CSSProperties = { margin: 0, color: T.ink, fontSize: 20, lineHeight: 1.35, fontWeight: 700 };
+const mutedText: React.CSSProperties = { margin: '3px 0 0', color: T.muted, fontSize: 14, lineHeight: 1.45 };
+const groupLabel: React.CSSProperties = { margin: '0 0 10px', color: T.text, fontSize: 14, fontWeight: 650 };
 
 function optionStyle(selected: boolean, locked: boolean): React.CSSProperties {
   return {
@@ -19,9 +34,9 @@ function optionStyle(selected: boolean, locked: boolean): React.CSSProperties {
     gap: 8,
     padding: '14px 8px 10px',
     borderRadius: 8,
-    border: `1.5px solid ${selected ? '#062A78' : '#DCE4F0'}`,
-    background: selected ? '#EEF3FF' : '#FFF',
-    color: locked ? '#8A94A8' : '#172139',
+    border: `1.5px solid ${selected ? T.accent : T.line}`,
+    background: selected ? T.accentSoft : T.surface,
+    color: locked ? T.faint : T.text,
     cursor: locked ? 'not-allowed' : 'pointer',
     fontSize: 13,
     fontWeight: 600,
@@ -64,7 +79,7 @@ export function RewardsSection() {
       <h2 id="rewards-title" style={sectionTitle}>Phần thưởng</h2>
       <p style={mutedText}>Nhóm giữ chuỗi tuần càng dài, cả nhóm mở khóa càng nhiều. Chọn khung viền và kiểu cổ vũ bạn muốn dùng.</p>
 
-      {error && <p role="alert" style={{ ...mutedText, color: '#B91C1C', marginTop: 12 }}>{error}</p>}
+      {error && <p role="alert" style={{ ...mutedText, color: T.danger, marginTop: 12 }}>{error}</p>}
 
       <div style={{ marginTop: 20 }}>
         <p style={groupLabel}>Khung viền avatar</p>
@@ -93,7 +108,7 @@ export function RewardsSection() {
                 {locked ? (
                   <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4, fontSize: 11, fontWeight: 500 }}><Lock size={11} /> {frame.tier} tuần</span>
                 ) : selected ? (
-                  <span style={{ position: 'absolute', top: 6, right: 6, color: '#062A78', display: 'inline-flex' }}><Check size={14} /></span>
+                  <span style={{ position: 'absolute', top: 6, right: 6, color: T.accent, display: 'inline-flex' }}><Check size={14} /></span>
                 ) : null}
               </button>
             );
@@ -109,7 +124,7 @@ export function RewardsSection() {
             const selected = (mine?.cheer_style ?? DEFAULT_CHEER) === cheer.id;
             const Icon = cheer.icon;
             return (
-              <li key={cheer.id} style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '8px 10px', borderRadius: 8, border: `1.5px solid ${selected ? '#062A78' : '#DCE4F0'}`, background: selected ? '#EEF3FF' : '#FFF', color: locked ? '#8A94A8' : '#172139' }}>
+              <li key={cheer.id} style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '8px 10px', borderRadius: 8, border: `1.5px solid ${selected ? T.accent : T.line}`, background: selected ? T.accentSoft : T.surface, color: locked ? T.faint : T.text }}>
                 <button
                   type="button"
                   onClick={() => !locked && void save({ cheer_style: cheer.id })}
@@ -117,13 +132,13 @@ export function RewardsSection() {
                   aria-disabled={locked}
                   style={{ flex: 1, display: 'flex', alignItems: 'center', gap: 10, border: 0, background: 'transparent', color: 'inherit', cursor: locked ? 'not-allowed' : 'pointer', textAlign: 'left', padding: 0, fontSize: 14 }}
                 >
-                  <span style={{ width: 32, height: 32, borderRadius: 8, display: 'grid', placeItems: 'center', background: selected ? '#062A78' : '#F1F5F9', color: selected ? '#FFF' : 'inherit', flexShrink: 0 }}><Icon size={16} /></span>
+                  <span style={{ width: 32, height: 32, borderRadius: 8, display: 'grid', placeItems: 'center', background: selected ? T.accent : T.chip, color: selected ? T.surface : 'inherit', flexShrink: 0 }}><Icon size={16} /></span>
                   <span style={{ display: 'grid' }}>
                     <span style={{ fontWeight: 650 }}>{cheer.label}</span>
-                    <span style={{ fontSize: 12, color: locked ? '#8A94A8' : '#51596B' }}>{locked ? `Mở khi nhóm giữ chuỗi ${cheer.tier} tuần` : cheer.hint}</span>
+                    <span style={{ fontSize: 12, color: locked ? T.faint : T.muted }}>{locked ? `Mở khi nhóm giữ chuỗi ${cheer.tier} tuần` : cheer.hint}</span>
                   </span>
                 </button>
-                <button type="button" onClick={() => playCheer(cheer.id)} aria-label={`Nghe thử ${cheer.label}`} title="Nghe thử" style={{ width: 32, height: 32, borderRadius: 6, border: '1px solid #DCE4F0', background: '#FFF', color: '#0A347F', display: 'grid', placeItems: 'center', cursor: 'pointer', flexShrink: 0 }}>
+                <button type="button" onClick={() => playCheer(cheer.id)} aria-label={`Nghe thử ${cheer.label}`} title="Nghe thử" style={{ width: 32, height: 32, borderRadius: 6, border: `1px solid ${T.line}`, background: T.surface, color: T.link, display: 'grid', placeItems: 'center', cursor: 'pointer', flexShrink: 0 }}>
                   <Volume2 size={15} />
                 </button>
                 {locked && <Lock size={14} aria-hidden />}

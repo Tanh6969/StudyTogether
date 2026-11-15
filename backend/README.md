@@ -33,8 +33,9 @@ Plain SQL in `db/migrations/`, applied manually (psql or Supabase SQL editor), i
 | `003_group_tasks.sql` | `group_tasks` table for the group task flow board (new in the MVP). |
 | `004_private_study_rooms.sql` | `study_rooms.is_private` (hidden rooms, join by invite code only) + updated `can_access_room` / RLS. |
 | `005_room_tasks.sql` | `room_tasks` (per-person session tasks shown to the whole room) + Realtime/RLS for `room_moderation_actions` (hand raise). |
+| `006_rewards.sql` | `group_milestones` (one per group per ISO week → streak), `user_rewards`, and `profiles.avatar_frame` / `cheer_style`. |
 
-New schema changes go in `006_*.sql`, `007_*.sql`, … Don't regenerate 001 on a live DB.
+New schema changes go in `007_*.sql`, `008_*.sql`, … Don't regenerate 001 on a live DB.
 
 ## Demo data
 
@@ -58,6 +59,12 @@ The frontend login page shows quick-login buttons for these (`frontend/src/lib/d
   `PATCH/DELETE /study-rooms/{id}/tasks/{taskId}`. Each participant keeps their own list
   (`todo` / `doing` / `done`, one `doing` at a time); everyone who can see the room reads all
   lists. Claps are a Supabase Realtime broadcast on the same channel, never stored.
+- **Group streak + cosmetic rewards** — `app/rewards`. A group manager records this week's
+  milestone (`POST /groups/{id}/milestones`, one per ISO week); consecutive weeks form the
+  streak (`GET /groups/{id}/streak`). Each tier in `app/rewards/catalog.py` (1, 2, 3, 5 weeks)
+  grants an avatar frame + a cheer style to every active member. `GET/PUT /rewards/me` picks
+  what to wear; frames are pure CSS and cheers are synthesized on the frontend
+  (`frontend/src/lib/rewards.ts` mirrors the catalog — keep both in step).
 - **Roadmaps without a 20-phase cap** — `MAX_PHASES = 200` is only an abuse guard.
 
 Access model: the backend connects as `postgres` (bypasses RLS) and does all writes. RLS is
