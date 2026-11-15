@@ -22,7 +22,8 @@ import {
     MessagesSquare,
     Users,
     Clock,
-    Globe
+    Globe,
+    X
 } from 'lucide-react';
 import { useAuth } from '../../hooks/useAuth';
 import { useChannelMessagesRealtime } from '../../hooks/useChannelMessagesRealtime';
@@ -1181,7 +1182,7 @@ export function StudyGroupDetail() {
                                 <span style={{flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap'}}>{item.label}</span>
                                 {item.meta}
                             </button>
-                            {item.key === 'chat' && channels.map(channel => <button key={channel.id} type="button" title={channel.description || channel.name} onClick={() => { setMainView('chat'); setActiveChannel(channel.id); setOpenHeaderMenu(null); }} style={{width:'100%',minHeight:34,padding:'0 10px 0 38px',display:'flex',alignItems:'center',gap:8,border:0,borderRadius:7,background:mainView==='chat'&&activeChannel===channel.id?'#E2E8F0':'transparent',color:mainView==='chat'&&activeChannel===channel.id?'#0F172A':'#64748B',fontSize:13,cursor:'pointer',textAlign:'left'}}><span>{channel.is_private?'🔒':'#'}</span><span style={{overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{channel.name}</span></button>)}
+                            {item.key === 'chat' && channels.map(channel => <button key={channel.id} type="button" title={channel.description || channel.name} onClick={() => { setMainView('chat'); setActiveChannel(channel.id); setOpenHeaderMenu(null); }} style={{width:'100%',minHeight:34,padding:'0 10px 0 38px',display:'flex',alignItems:'center',gap:8,border:0,borderRadius:7,background:mainView==='chat'&&activeChannel===channel.id?'#E2E8F0':'transparent',color:mainView==='chat'&&activeChannel===channel.id?'#0F172A':'#64748B',fontSize:13,cursor:'pointer',textAlign:'left'}}>{channel.is_private ? <Lock size={14}/> : <Hash size={14}/>}<span style={{overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{channel.name}</span></button>)}
                             {item.key === 'rooms' && openRooms.map(room => <button key={room.id} type="button" title={room.name} onClick={() => { setMainView('rooms'); setActiveRoomId(room.id); setOpenHeaderMenu(null); }} style={{width:'100%',minHeight:34,padding:'0 10px 0 38px',display:'flex',alignItems:'center',gap:8,border:0,borderRadius:7,background:mainView==='rooms'&&activeRoom?.id===room.id?'#E2E8F0':'transparent',color:mainView==='rooms'&&activeRoom?.id===room.id?'#0F172A':'#64748B',fontSize:13,cursor:'pointer',textAlign:'left'}}><Video size={14}/><span style={{overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap',flex:1}}>{room.name}</span>{room.status==='active'&&<span style={{width:7,height:7,borderRadius:'50%',background:'#10B981'}}/>}</button>)}
                           </div>
                         );
@@ -1753,7 +1754,7 @@ export function StudyGroupDetail() {
                         disabled={isCreatingRoom}
                         style={{ position: 'absolute', top: 16, right: 16, background: 'none', border: 'none', cursor: isCreatingRoom ? 'not-allowed' : 'pointer', color: '#64748B', fontSize: 18 }}
                     >
-                        ✕
+                        <X size={18} />
                     </button>
 
                     <h2 style={{ fontSize: 18, fontWeight: 600, color: '#0F172A', marginBottom: 20, fontFamily: 'Inter' }}>Tạo phòng học mới</h2>
@@ -1844,7 +1845,7 @@ export function StudyGroupDetail() {
                         disabled={isCreatingChannel}
                         style={{ position: 'absolute', top: 16, right: 16, background: 'none', border: 'none', cursor: isCreatingChannel ? 'not-allowed' : 'pointer', color: '#64748B', fontSize: 18 }}
                     >
-                        ✕
+                        <X size={18} />
                     </button>
 
                     <h2 style={{ fontSize: 18, fontWeight: 600, color: '#0F172A', marginBottom: 20, fontFamily: 'Inter' }}>Tạo kênh chat mới</h2>
@@ -1923,7 +1924,7 @@ export function StudyGroupDetail() {
                         disabled={isDeletingChannel}
                         style={{ position: 'absolute', top: 16, right: 16, background: 'none', border: 'none', cursor: isDeletingChannel ? 'not-allowed' : 'pointer', color: '#64748B', fontSize: 18 }}
                     >
-                        ✕
+                        <X size={18} />
                     </button>
 
                     <h2 style={{ fontSize: 18, fontWeight: 600, color: '#0F172A', marginBottom: 12, fontFamily: 'Inter' }}>
@@ -1972,7 +1973,7 @@ export function StudyGroupDetail() {
                         disabled={isDeletingRoom}
                         style={{ position: 'absolute', top: 16, right: 16, background: 'none', border: 'none', cursor: isDeletingRoom ? 'not-allowed' : 'pointer', color: '#64748B', fontSize: 18 }}
                     >
-                        ✕
+                        <X size={18} />
                     </button>
 
                     <h2 style={{ fontSize: 18, fontWeight: 600, color: '#0F172A', marginBottom: 12, fontFamily: 'Inter' }}>
@@ -2021,7 +2022,7 @@ export function StudyGroupDetail() {
                         disabled={!!pendingDeleteResourceId}
                         style={{ position: 'absolute', top: 16, right: 16, background: 'none', border: 'none', cursor: pendingDeleteResourceId ? 'not-allowed' : 'pointer', color: '#64748B', fontSize: 18 }}
                     >
-                        ✕
+                        <X size={18} />
                     </button>
 
                     <h2 style={{ fontSize: 18, fontWeight: 600, color: '#0F172A', marginBottom: 12, fontFamily: 'Inter' }}>
