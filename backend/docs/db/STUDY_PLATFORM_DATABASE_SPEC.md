@@ -613,6 +613,7 @@ Contract (005) Xóa messages.channel_id, FK, index cũ, và trigger compatibilit
 | `005_contract_messages_to_conversations.sql` | ✅ Đã áp dụng live | `messages.channel_id`, FK, index cũ, và trigger `messages_sync_conversation_id` đã bị xóa. `messages.conversation_id` là cột duy nhất còn lại, backend (SQLAlchemy + routers) đã refactor và test khớp trước khi chạy |
 | `006_direct_conversation_pair_uniqueness.sql` | ✅ Đã áp dụng live | Thêm `conversations.direct_user_min_id`/`direct_user_max_id` + CHECK + partial unique index, đảm bảo một cặp user chỉ có tối đa một `conversation` type=direct — xem § 15 |
 | `007_fix_room_moderation_select_policy.sql` | ✅ Đã áp dụng live | Sửa tautology `srm.room_id = srm.room_id` trong policy `room_moderation_select` trên `room_moderation_actions` thành `srm.room_id = room_moderation_actions.room_id` — xem § 37 |
+| `009_increase_message_attachments_limit_to_20mb.sql` | ⏳ Chưa áp dụng live | Nâng giới hạn bucket `message-attachments` từ 10 MB lên 20 MB; cần chạy migration để áp dụng trên Supabase |
 
 Các mục § 13–15 dưới đây mô tả schema **đã live thật** trên Supabase kể từ khi 006 chạy — không còn là "đích đến" nữa.
 

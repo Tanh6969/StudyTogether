@@ -5,6 +5,7 @@ import { usePresentationSync } from '../../../hooks/usePresentationSync';
 import { getWhiteboardAssetDownloadUrl } from '../../../lib/whiteboardAsset.api';
 import { loadPdfDocument } from '../../../lib/pdf';
 import type { PresentationState } from '../../../lib/studyRoom.types';
+import { getPresentationFitScale } from './presentationLayout';
 
 interface PresentationViewerProps {
   roomId: string;
@@ -15,9 +16,11 @@ interface PresentationViewerProps {
 export function PresentationViewer({ roomId, initialState, isReadonly }: PresentationViewerProps) {
   const { presentation, isUploading, uploadError, canControl, uploadDeck, goToPage, clearDeck } =
     usePresentationSync(roomId, initialState, isReadonly);
+  const pageContainerRef = useRef<HTMLDivElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const [loadedDoc, setLoadedDoc] = useState<{ path: string; doc: PDFDocumentProxy } | null>(null);
   const [renderError, setRenderError] = useState<string | null>(null);
+  const [containerSize, setContainerSize] = useState({ width: 0, height: 0 });
   // Mirrors `loadedDoc` for reading the previous value inside the effect below without adding
   // it as a dependency (which would re-trigger the effect every time the effect itself calls
   // setLoadedDoc) -- a plain ref, not a functional setState updater, so the actual
@@ -68,32 +71,62 @@ export function PresentationViewer({ roomId, initialState, isReadonly }: Present
     };
   }, []);
 
+  useEffect(() => {
+    if (!presentation) return;
+    const container = pageContainerRef.current;
+    if (!container) return;
+
+    const updateSize = (width: number, height: number) => {
+      setContainerSize((previous) =>
+        previous.width === width && previous.height === height ? previous : { width, height }
+      );
+    };
+    const bounds = container.getBoundingClientRect();
+    updateSize(bounds.width, bounds.height);
+
+    const observer = new ResizeObserver((entries) => {
+      const entry = entries[0];
+      if (entry) updateSize(entry.contentRect.width, entry.contentRect.height);
+    });
+    observer.observe(container);
+    return () => observer.disconnect();
+  }, [!!presentation]);
+
   // Render the current page onto the canvas.
   useEffect(() => {
-    if (!loadedDoc || !presentation) return;
+    if (!loadedDoc || !presentation || containerSize.width <= 0 || containerSize.height <= 0) return;
     let cancelled = false;
+    let cancelRender: (() => void) | null = null;
     (async () => {
       try {
         const page = await loadedDoc.doc.getPage(presentation.page);
         if (cancelled) return;
         const canvas = canvasRef.current;
         if (!canvas) return;
-        const containerWidth = canvas.parentElement?.clientWidth ?? 800;
         const baseViewport = page.getViewport({ scale: 1 });
-        const scale = containerWidth > 0 ? containerWidth / baseViewport.width : 1;
+        const scale = getPresentationFitScale(
+          baseViewport.width,
+          baseViewport.height,
+          containerSize.width,
+          containerSize.height
+        );
         const viewport = page.getViewport({ scale });
         canvas.width = viewport.width;
         canvas.height = viewport.height;
-        await page.render({ canvas, viewport }).promise;
+        const renderTask = page.render({ canvas, viewport });
+        cancelRender = () => renderTask.cancel();
+        await renderTask.promise;
       } catch (err) {
+        if (cancelled) return;
         console.error('Failed to render presentation page', err);
-        if (!cancelled) setRenderError('Không thể hiển thị trang slide này.');
+        setRenderError('Không thể hiển thị trang slide này.');
       }
     })();
     return () => {
       cancelled = true;
+      cancelRender?.();
     };
-  }, [loadedDoc, presentation]);
+  }, [loadedDoc, presentation, containerSize]);
 
   const handleFileChange = (event: ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0];
@@ -161,13 +194,18 @@ export function PresentationViewer({ roomId, initialState, isReadonly }: Present
         padding: 20,
       }}
     >
-      <div style={{ flex: 1, width: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center', overflow: 'auto' }}>
+      <div
+        ref={pageContainerRef}
+        style={{ flex: 1, width: '100%', minHeight: 0, minWidth: 0, display: 'flex', alignItems: 'center', justifyContent: 'center', overflow: 'hidden' }}
+      >
         <canvas
           ref={canvasRef}
-          style={{ maxWidth: '100%', maxHeight: '100%', boxShadow: '0 8px 20px rgba(0,0,0,0.08)', background: 'white' }}
+          style={{ maxWidth: '100%', maxHeight: '100%', display: 'block', boxShadow: '0 8px 20px rgba(0,0,0,0.08)', background: 'white' }}
         />
       </div>
-      {renderError && <p style={{ margin: 0, color: '#DC2626', fontSize: 13 }}>{renderError}</p>}
+      {(renderError || uploadError) && (
+        <p style={{ margin: 0, color: '#DC2626', fontSize: 13 }}>{renderError ?? uploadError}</p>
+      )}
       <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
         <button
           onClick={() => goToPage(presentation.page - 1)}

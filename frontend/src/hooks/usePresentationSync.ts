@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from 'react';
 import { useMaybeRoomContext } from '@livekit/components-react';
 import { RoomEvent } from 'livekit-client';
 import { getStudyRoom, updatePresentationState } from '../lib/studyRoom.api';
+import { ApiError } from '../lib/apiClient';
 import type { PresentationState } from '../lib/studyRoom.types';
 // Reuses the whiteboard's room-scoped asset upload/download endpoints -- a presentation deck
 // is just another file in the same room storage namespace (see study_room_router's
@@ -10,6 +11,25 @@ import { createWhiteboardAssetUploadUrl, uploadWhiteboardAssetFile } from '../li
 import { countPdfPages } from '../lib/pdf';
 
 const PRESENTATION_UPDATE_TYPE = 'presentation_update';
+const MAX_PRESENTATION_SIZE_BYTES = 20 * 1024 * 1024;
+
+function uploadErrorMessage(err: unknown): string {
+  if (err instanceof ApiError && err.status === 403) {
+    return 'Bạn không có quyền tải slide lên phòng học này.';
+  }
+  if (err instanceof ApiError && err.status === 422) {
+    return 'PDF không hợp lệ hoặc vượt quá giới hạn 20 MB.';
+  }
+  if (err instanceof Error && /HTTP 413/.test(err.message)) {
+    return 'PDF vượt quá giới hạn 20 MB của kho lưu trữ.';
+  }
+  if (err instanceof Error && /HTTP 415/.test(err.message)) {
+    return 'Kho lưu trữ không chấp nhận định dạng PDF này.';
+  }
+  return err instanceof Error
+    ? `Không thể tải lên slide: ${err.message}`
+    : 'Không thể tải lên slide bài giảng.';
+}
 
 export interface UsePresentationSyncResult {
   presentation: PresentationState | null;
@@ -60,20 +80,35 @@ export function usePresentationSync(
   const uploadDeck = useCallback(
     async (file: File) => {
       if (isReadonly) return;
-      setIsUploading(true);
       setUploadError(null);
+      if (!file.name.toLowerCase().endsWith('.pdf') || (file.type && file.type !== 'application/pdf')) {
+        setUploadError('Vui lòng chọn tệp PDF có đuôi .pdf.');
+        return;
+      }
+      if (file.size > MAX_PRESENTATION_SIZE_BYTES) {
+        setUploadError('PDF slide không được vượt quá 20 MB.');
+        return;
+      }
+
+      setIsUploading(true);
       try {
+        let pageCount: number;
+        try {
+          pageCount = await countPdfPages(file);
+        } catch {
+          throw new Error('Không đọc được tệp PDF. Hãy kiểm tra tệp có bị hỏng không.');
+        }
+        const contentType = file.type || 'application/pdf';
         const { path, upload_url } = await createWhiteboardAssetUploadUrl(roomId, {
           file_name: file.name,
-          content_type: file.type || 'application/pdf',
+          content_type: contentType,
           file_size: file.size,
         });
-        await uploadWhiteboardAssetFile(upload_url, file, file.type);
-        const pageCount = await countPdfPages(file);
+        await uploadWhiteboardAssetFile(upload_url, file, contentType);
         applyLocalChange({ asset_path: path, file_name: file.name, page: 1, page_count: pageCount });
       } catch (err) {
         console.error('Failed to upload presentation deck', err);
-        setUploadError('Không thể tải lên slide bài giảng.');
+        setUploadError(uploadErrorMessage(err));
       } finally {
         setIsUploading(false);
       }

@@ -5,6 +5,7 @@ import { usePresentationSync } from './usePresentationSync';
 import { getStudyRoom, updatePresentationState } from '../lib/studyRoom.api';
 import { createWhiteboardAssetUploadUrl, uploadWhiteboardAssetFile } from '../lib/whiteboardAsset.api';
 import { countPdfPages } from '../lib/pdf';
+import { ApiError } from '../lib/apiClient';
 import type { PresentationState } from '../lib/studyRoom.types';
 
 vi.mock('../lib/studyRoom.api', () => ({
@@ -154,7 +155,50 @@ describe('usePresentationSync', () => {
     expect(result.current.uploadError).toBeNull();
   });
 
-  it('surfaces a user-facing error and resets isUploading when the upload fails', async () => {
+  it('uses the PDF MIME type when the browser does not report one', async () => {
+    mockedCreateUploadUrl.mockResolvedValue({ path: 'study-rooms/room-1/user-1/uuid/new.pdf', upload_url: 'https://x/upload', token: 'tok' });
+    mockedCountPdfPages.mockResolvedValue(1);
+    const { result } = renderHook(() => usePresentationSync('room-1', null, false));
+    const file = new File([new Uint8Array([1])], 'new.pdf');
+
+    await act(async () => {
+      await result.current.uploadDeck(file);
+    });
+
+    expect(mockedCreateUploadUrl).toHaveBeenCalledWith('room-1', {
+      file_name: 'new.pdf',
+      content_type: 'application/pdf',
+      file_size: file.size,
+    });
+    expect(mockedUploadFile).toHaveBeenCalledWith('https://x/upload', file, 'application/pdf');
+  });
+
+  it('rejects PDFs larger than the Storage limit before requesting an upload URL', async () => {
+    const { result } = renderHook(() => usePresentationSync('room-1', null, false));
+    const file = new File([new Uint8Array(20 * 1024 * 1024 + 1)], 'large.pdf', { type: 'application/pdf' });
+
+    await act(async () => {
+      await result.current.uploadDeck(file);
+    });
+
+    expect(mockedCreateUploadUrl).not.toHaveBeenCalled();
+    expect(result.current.uploadError).toBe('PDF slide không được vượt quá 20 MB.');
+    expect(result.current.isUploading).toBe(false);
+  });
+
+  it('explains authorization errors from the upload endpoint', async () => {
+    mockedCreateUploadUrl.mockRejectedValue(new ApiError(403, 'Only the host can upload'));
+    const { result } = renderHook(() => usePresentationSync('room-1', null, false));
+    const file = new File([new Uint8Array([1])], 'x.pdf', { type: 'application/pdf' });
+
+    await act(async () => {
+      await result.current.uploadDeck(file);
+    });
+
+    expect(result.current.uploadError).toBe('Bạn không có quyền tải slide lên phòng học này.');
+  });
+
+  it('surfaces the upload failure detail and resets isUploading', async () => {
     mockedCreateUploadUrl.mockRejectedValue(new Error('network down'));
     const { result } = renderHook(() => usePresentationSync('room-1', null, false));
     const file = new File([new Uint8Array([1])], 'x.pdf', { type: 'application/pdf' });
@@ -165,7 +209,7 @@ describe('usePresentationSync', () => {
 
     expect(result.current.presentation).toBeNull();
     expect(result.current.isUploading).toBe(false);
-    expect(result.current.uploadError).toBe('Không thể tải lên slide bài giảng.');
+    expect(result.current.uploadError).toBe('Không thể tải lên slide: network down');
   });
 
   it('clears the deck, broadcasting null', () => {

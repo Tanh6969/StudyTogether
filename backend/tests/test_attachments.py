@@ -504,10 +504,19 @@ async def test_upload_url_rejects_invalid_content_type(async_client, as_fake_use
 async def test_upload_url_rejects_oversized_file(async_client, as_fake_user):
     response = await async_client.post(
         f"/conversations/{uuid.uuid4()}/attachments/upload-url",
-        json={"file_name": "big.pdf", "content_type": "application/pdf", "file_size": 100 * 1024 * 1024},
+        json={"file_name": "big.pdf", "content_type": "application/pdf", "file_size": 20 * 1024 * 1024 + 1},
         headers=AUTH_HEADERS,
     )
     assert response.status_code == 422
+
+
+def test_upload_url_request_accepts_a_20mb_file():
+    request = UploadUrlRequest(
+        file_name="lesson.pdf",
+        content_type="application/pdf",
+        file_size=20 * 1024 * 1024,
+    )
+    assert request.file_size == 20 * 1024 * 1024
 
 
 # --- Download-url endpoint ---

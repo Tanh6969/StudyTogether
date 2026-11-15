@@ -10,4 +10,4 @@ ALLOWED_ATTACHMENT_CONTENT_TYPES: dict[str, set[str]] = {
     "text/plain": {".txt"},
 }
 
-MAX_ATTACHMENT_SIZE_BYTES = 10 * 1024 * 1024  # 10 MB
+MAX_ATTACHMENT_SIZE_BYTES = 20 * 1024 * 1024  # 20 MB
