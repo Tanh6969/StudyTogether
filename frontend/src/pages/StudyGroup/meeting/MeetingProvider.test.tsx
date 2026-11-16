@@ -12,6 +12,7 @@ vi.mock('../../../lib/meeting.api', () => ({
 }));
 
 let lastLiveKitRoomProps: LiveKitRoomProps | null = null;
+let fakeParticipants: Array<{ identity: string; name: string }> = [];
 
 // LiveKit's real Room/WebRTC connection is out of scope for a unit test -- this fake stands in
 // for `<LiveKitRoom>`, calling the same lifecycle callbacks the real component would, so
@@ -28,6 +29,7 @@ vi.mock('@livekit/components-react', () => ({
     }, [props.token, props.serverUrl]);
     return <div data-testid="livekit-room">{props.children}</div>;
   },
+  useParticipants: () => fakeParticipants,
   RoomAudioRenderer: () => null,
   StartAudio: () => null,
 }));
@@ -49,6 +51,27 @@ describe('MeetingProvider', () => {
   beforeEach(() => {
     mockedCreateMeetingToken.mockReset();
     lastLiveKitRoomProps = null;
+    fakeParticipants = [];
+  });
+
+  it('uses the LiveKit roster for connected user updates and clears it on disconnect', async () => {
+    mockedCreateMeetingToken.mockResolvedValue({ server_url: 'wss://x', participant_token: 'tok' });
+    fakeParticipants = [{ identity: 'real-call-user', name: 'Online' }];
+    const onParticipantsChange = vi.fn();
+    const view = (enabled: boolean) => (
+      <MeetingProvider roomId="room-1" enabled={enabled} onParticipantsChange={onParticipantsChange}>
+        <StatusProbe />
+      </MeetingProvider>
+    );
+    const { rerender } = render(view(true));
+
+    await waitFor(() => expect(onParticipantsChange).toHaveBeenLastCalledWith([{ identity: 'real-call-user', name: 'Online' }]));
+    fakeParticipants = [{ identity: 'other-user', name: 'New joiner' }];
+    rerender(view(true));
+    await waitFor(() => expect(onParticipantsChange).toHaveBeenLastCalledWith([{ identity: 'other-user', name: 'New joiner' }]));
+
+    rerender(view(false));
+    await waitFor(() => expect(onParticipantsChange).toHaveBeenLastCalledWith([]));
   });
 
   it('exposes a loading status while the token request is in flight, without connecting yet', async () => {

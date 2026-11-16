@@ -14,6 +14,8 @@ export function Header() {
   const navigate = useNavigate();
   const [searchParams] = useSearchParams();
   const [headerSearch, setHeaderSearch] = useState(searchParams.get('q') || '');
+  const [isSigningOut, setIsSigningOut] = useState(false);
+  const [signOutError, setSignOutError] = useState<string | null>(null);
 
   function handleKeyDown(e: React.KeyboardEvent<HTMLInputElement>) {
     if (e.key === 'Enter') {
@@ -23,9 +25,23 @@ export function Header() {
   }
 
   const handleLogout = async () => {
-    navigate('/login');
-    setDevSession(null);
-    if (!USE_MOCK) await supabase.auth.signOut().catch(() => {});
+    if (isSigningOut) return;
+    setIsSigningOut(true);
+    setSignOutError(null);
+    try {
+      // Supabase owns the real session. Never show a successful logout while its API failed.
+      // Local scope signs out this browser without unexpectedly revoking other devices.
+      if (!USE_MOCK) {
+        const { error } = await supabase.auth.signOut({ scope: 'local' });
+        if (error) throw error;
+      }
+      setDevSession(null);
+      navigate('/login', { replace: true });
+    } catch {
+      setSignOutError('Đăng xuất chưa thành công. Vui lòng thử lại.');
+    } finally {
+      setIsSigningOut(false);
+    }
   };
 
   return (
@@ -80,12 +96,15 @@ export function Header() {
                         <Link to="/settings" aria-label="Trang cài đặt">
                           <Avatar name={currentUser.name} src={profile?.avatarUrl} size="sm" style={{ cursor: 'pointer' }} />
                         </Link>
-                        <div
+                        <button
+                          type="button"
                           onClick={handleLogout}
-                          style={{color: '#EF4444', fontSize: 14, fontWeight: '600', cursor: 'pointer'}}
+                          disabled={isSigningOut}
+                          style={{color: '#EF4444', fontSize: 14, fontWeight: '600', cursor: isSigningOut ? 'wait' : 'pointer', border: 'none', background: 'none'}}
                         >
-                          Đăng xuất
-                        </div>
+                          {isSigningOut ? 'Đang đăng xuất...' : 'Đăng xuất'}
+                        </button>
+                        {signOutError && <span role="alert" style={{ color: '#DC2626', fontSize: 12 }}>{signOutError}</span>}
                     </div>
                   </>
                 ) : (

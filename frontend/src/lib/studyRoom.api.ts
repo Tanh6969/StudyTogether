@@ -47,8 +47,14 @@ export function leaveStudyRoom(roomId: string): Promise<StudyRoomMember> {
  * already left), and the caller can't observe the outcome anyway since the page is on its
  * way out — errors are deliberately swallowed.
  */
-export function leaveStudyRoomOnUnload(roomId: string): void {
-  apiClient.post<StudyRoomMember>(`/study-rooms/${roomId}/leave`, undefined, { keepalive: true }).catch(() => {});
+export function leaveStudyRoomOnUnload(roomId: string, joinedAt: string): void {
+  // Version the request by membership join time: a delayed unload must never revoke
+  // a new login's session. The server also skips LiveKit eviction for this path.
+  apiClient.post<StudyRoomMember>(
+    `/study-rooms/${roomId}/leave?expected_joined_at=${encodeURIComponent(joinedAt)}`,
+    undefined,
+    { keepalive: true },
+  ).catch(() => {});
 }
 
 export function startStudyRoom(roomId: string): Promise<StudyRoom> {

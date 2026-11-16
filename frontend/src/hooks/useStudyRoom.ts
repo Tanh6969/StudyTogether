@@ -192,18 +192,18 @@ export function useStudyRoom(roomId: string | undefined) {
   // A ref (not `isCurrentUserMember` in the cleanup's closure) is required for the second
   // case: effect cleanups close over the render they were created in, so without it the
   // cleanup could act on a stale membership flag from whenever the effect last re-ran.
-  const isCurrentUserMemberRef = useRef(isCurrentUserMember);
-  isCurrentUserMemberRef.current = isCurrentUserMember;
+  const activeJoinGenerationRef = useRef(isCurrentUserMember ? currentMember?.joined_at ?? null : null);
+  activeJoinGenerationRef.current = isCurrentUserMember ? currentMember?.joined_at ?? null : null;
 
   useEffect(() => {
     if (!roomId) return;
     const handlePageHide = () => {
-      if (isCurrentUserMemberRef.current) leaveStudyRoomOnUnload(roomId);
+      if (activeJoinGenerationRef.current) leaveStudyRoomOnUnload(roomId, activeJoinGenerationRef.current);
     };
     window.addEventListener('pagehide', handlePageHide);
     return () => {
       window.removeEventListener('pagehide', handlePageHide);
-      if (isCurrentUserMemberRef.current) leaveStudyRoomOnUnload(roomId);
+      if (activeJoinGenerationRef.current) leaveStudyRoomOnUnload(roomId, activeJoinGenerationRef.current);
     };
   }, [roomId]);
 

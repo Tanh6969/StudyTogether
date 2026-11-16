@@ -1,5 +1,6 @@
 import logging
 import uuid
+from datetime import datetime
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -432,9 +433,10 @@ async def join_room(
 async def leave_room(
     room_id: uuid.UUID,
     current_user: CurrentUser = Depends(get_current_user),
-    session: AsyncSession = Depends(get_db_session)
+    session: AsyncSession = Depends(get_db_session),
+    expected_joined_at: datetime | None = None,
 ):
-    """Leave a study room, ending the caller's own membership in it."""
+    """Leave current membership. Unload cleanup is conditional on the join generation."""
     # A deleted room must behave as if it no longer exists here too -- the soft-delete
     # invariant (deleted_at set -> normal operations stop) applies to leave just like every
     # other mutation, even though leaving only touches the caller's own membership row.
@@ -449,8 +451,30 @@ async def leave_room(
             detail="Membership not found"
         )
     try:
+        if expected_joined_at is not None:
+            # Atomic compare-and-leave: prevents a new join that commits after the
+            # membership read from being overwritten by an old tab's pagehide.
+            closed_at = await service.leave_if_join_generation(
+                session, room_id, current_user.id, expected_joined_at
+            )
+            if closed_at is None:
+                await session.rollback()
+                return member
+            # Build the DTO before committing: validation errors must not turn a
+            # committed leave into an apparent request failure.
+            response = StudyRoomMemberResponse.model_validate(member).model_copy(
+                update={'left_at': closed_at}
+            )
+            await session.commit()
+            return response
         updated = await service.leave(session, member)
         await session.commit()
+        # Only deliberate leave evicts by LiveKit identity. Delayed background
+        # cleanup does not reach this block and cannot kick a replacement session.
+        try:
+            await livekit_service.remove_participant(room_id, current_user.id)
+        except Exception:
+            logger.exception('Could not disconnect LiveKit participant after study-room leave')
         return updated
     except Exception as e:
         await session.rollback()
