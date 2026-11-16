@@ -3,7 +3,7 @@ import { render, screen, fireEvent, waitFor } from '@testing-library/react';
 import { ApiError } from '../../lib/apiClient';
 import { updateGroup } from '../../lib/group.api';
 import { GroupSettingsModal } from './GroupSettingsModal';
-import type { Group } from '../../lib/group.types';
+import type { Group, GroupMember } from '../../lib/group.types';
 
 vi.mock('../../lib/group.api', () => ({
   updateGroup: vi.fn(),
@@ -12,6 +12,20 @@ vi.mock('../../lib/group.api', () => ({
 }));
 
 const mockedUpdateGroup = vi.mocked(updateGroup);
+
+function member(overrides: Partial<GroupMember> = {}): GroupMember {
+  const userId = overrides.user_id ?? 'user-2';
+  return {
+    id: 'member-2',
+    group_id: 'group-1',
+    user_id: userId,
+    role: 'member',
+    status: 'active',
+    joined_at: new Date().toISOString(),
+    user: { id: userId, username: 'student', display_name: 'Student', avatar_url: null, role: 'user' },
+    ...overrides,
+  };
+}
 
 function baseGroup(overrides: Partial<Group> = {}): Group {
   return {
@@ -35,14 +49,58 @@ describe('GroupSettingsModal', () => {
   });
 
   function renderModal(group = baseGroup(), onUpdated = vi.fn(), onClose = vi.fn(), isOwner = true) {
-    render(<GroupSettingsModal isOpen group={group} onClose={onClose} onUpdated={onUpdated} isOwner={isOwner} />);
-    return { onUpdated, onClose };
+    const onPromote = vi.fn();
+    const onDemote = vi.fn();
+    render(
+      <GroupSettingsModal
+        isOpen
+        group={group}
+        members={[member()]}
+        onClose={onClose}
+        onUpdated={onUpdated}
+        isOwner={isOwner}
+        pendingMemberId={null}
+        memberActionError={null}
+        onPromote={onPromote}
+        onDemote={onDemote}
+      />
+    );
+    return { onUpdated, onClose, onPromote, onDemote };
   }
 
   it('loads current values into the form', () => {
     renderModal(baseGroup({ name: 'Nhóm Toán', description: 'Ôn thi', is_public: false }));
     expect(screen.getByDisplayValue('Nhóm Toán')).toBeInTheDocument();
     expect(screen.getByDisplayValue('Ôn thi')).toBeInTheDocument();
+  });
+
+  it('lets the group owner grant moderator permissions from group settings', () => {
+    const { onPromote } = renderModal();
+
+    fireEvent.click(screen.getByRole('tab', { name: 'Thành viên & vai trò' }));
+    fireEvent.click(screen.getByTitle('Cấp quyền điều hành viên'));
+
+    expect(onPromote).toHaveBeenCalledWith(expect.objectContaining({ user_id: 'user-2', role: 'member' }));
+  });
+
+  it('does not expose role controls to a moderator viewing group settings', () => {
+    renderModal(baseGroup(), vi.fn(), vi.fn(), false);
+    fireEvent.click(screen.getByRole('tab', { name: 'Thành viên & vai trò' }));
+
+    expect(screen.queryByTitle('Cấp quyền điều hành viên')).not.toBeInTheDocument();
+    expect(screen.getByText('Chỉ trưởng nhóm mới có thể cấp hoặc thu hồi quyền moderator.')).toBeInTheDocument();
+  });
+
+  it('shows only the selected settings category', () => {
+    renderModal();
+
+    expect(screen.getByLabelText('Tên nhóm *')).toBeInTheDocument();
+    expect(screen.queryByText('Hình nền nhóm')).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('tab', { name: 'Giao diện' }));
+
+    expect(screen.getByText('Hình nền nhóm')).toBeInTheDocument();
+    expect(screen.queryByLabelText('Tên nhóm *')).not.toBeInTheDocument();
   });
 
   it('saves edited fields and reports the updated group', async () => {

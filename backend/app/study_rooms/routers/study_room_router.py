@@ -162,10 +162,8 @@ async def update_whiteboard_state(
 ):
     """Update the persisted whiteboard state for a study room. Only the room's host or a moderator may edit the whiteboard."""
     room = await _get_active_room_or_404(session, room_id)
-    # Only the host or a moderator may write the persisted board -- mirrors the
-    # can_publish_data LiveKit grant (see can_edit_whiteboard's docstring); a plain
-    # PARTICIPANT still reads the board live via LiveKit DataReceived/GET, just can't push
-    # state here.
+    # LiveKit data publishing is needed by room activities, so authorization for persisted
+    # whiteboard state is checked independently of the participant token.
     if not await can_edit_whiteboard(session, room, current_user.id):
         raise HTTPException(
             status.HTTP_403_FORBIDDEN, "Only the host or a moderator can edit this study room's whiteboard"
@@ -632,7 +630,12 @@ async def create_meeting_token(
     current_user: CurrentUser = Depends(get_current_user),
     session: AsyncSession = Depends(get_db_session),
 ):
-    """Issue a LiveKit access token for joining this study room's live meeting. Requires permission to join the room's meeting; only the host or a moderator is granted data-publish rights (e.g. for the whiteboard)."""
+    """Issue a LiveKit access token for an authorized study-room participant.
+
+    Every participant can publish data so room activities (games and shared music) work for
+    regular members too. Whiteboard edits remain role-gated by editorIds on receiving clients
+    and by can_edit_whiteboard on the persistence and asset endpoints.
+    """
     room = await _get_active_room_or_404(session, room_id)
     if not await can_join_room_meeting(session, room, current_user.id):
         raise HTTPException(
@@ -646,13 +649,7 @@ async def create_meeting_token(
     profile = await profiles_service.get_by_id(session, current_user.id)
     participant_name = (profile.display_name or profile.username) if profile else None
 
-    # Whiteboard live-sync (useWhiteboardSync.ts) broadcasts over this same LiveKit
-    # connection's data channel -- can_publish_data must match can_edit_whiteboard's
-    # host/moderator gate, or a PARTICIPANT could bypass the read-only board by publishing
-    # data directly, even though the REST /whiteboard PUT above is separately gated too.
-    can_publish_data = await can_edit_whiteboard(session, room, current_user.id)
-
     token = livekit_service.create_participant_token(
-        room_id=room.id, identity=current_user.id, name=participant_name, can_publish_data=can_publish_data
+        room_id=room.id, identity=current_user.id, name=participant_name, can_publish_data=True
     )
     return MeetingTokenResponse(server_url=settings.livekit_url, participant_token=token)

@@ -1707,7 +1707,12 @@ export function StudyGroupDetail() {
                 isOpen={isSettingsModalOpen}
                 onClose={() => setIsSettingsModalOpen(false)}
                 group={group}
+                members={activeMembers}
                 isOwner={isOwner}
+                pendingMemberId={memberActionPendingId}
+                memberActionError={memberActionError}
+                onPromote={handlePromoteMember}
+                onDemote={handleDemoteMember}
                 onUpdated={(updated) => setGroup(updated)}
             />
         )}

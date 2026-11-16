@@ -13,6 +13,7 @@ import {
   Sparkles,
   Download,
   UserPlus,
+  UsersRound,
   Pencil,
   Trash2,
   Image as ImageIcon
@@ -34,6 +35,7 @@ import { InviteModal } from '../../components/invitations/InviteModal';
 import { MeetingProvider } from './meeting/MeetingProvider';
 import { MeetingVideoGrid } from './meeting/MeetingVideoGrid';
 import { MeetingControls } from './meeting/MeetingControls';
+import { WhiteboardPermissionsModal } from './meeting/WhiteboardPermissionsModal';
 import { WhiteboardPanel } from './meeting/WhiteboardPanel';
 import { PresentationViewer } from './meeting/PresentationViewer';
 import {
@@ -101,6 +103,7 @@ export function StudyRoom() {
     end,
     deleteRoom,
     moderate,
+    changeMemberRole,
     refetchRoom,
   } = useStudyRoom(roomId);
 
@@ -125,6 +128,8 @@ export function StudyRoom() {
   const [isJoining, setIsJoining] = useState(false);
   const [isDeleteRoomModalOpen, setIsDeleteRoomModalOpen] = useState(false);
   const [isInviteModalOpen, setIsInviteModalOpen] = useState(false);
+  const [isWhiteboardPermissionsOpen, setIsWhiteboardPermissionsOpen] = useState(false);
+  const [pendingRoomRoleUserId, setPendingRoomRoleUserId] = useState<string | null>(null);
   const [isDeletingRoom, setIsDeletingRoom] = useState(false);
   const [isLifecycleBusy, setIsLifecycleBusy] = useState(false);
   const [lobbyConfirmed, setLobbyConfirmed] = useState(false);
@@ -156,6 +161,18 @@ export function StudyRoom() {
       // Best-effort: still navigate away even if the leave call failed (e.g. already left).
     }
     navigate(room ? `/groups/${room.group_id}` : '/groups');
+  };
+
+  const handleWhiteboardRoleChange = async (userId: string, role: 'moderator' | 'participant') => {
+    if (pendingRoomRoleUserId || !isGroupManager) return;
+    setPendingRoomRoleUserId(userId);
+    try {
+      await changeMemberRole(userId, role);
+    } catch {
+      // changeMemberRole records actionError for the permissions dialog.
+    } finally {
+      setPendingRoomRoleUserId(null);
+    }
   };
 
   const handleStartRoom = async () => {
@@ -552,6 +569,20 @@ export function StudyRoom() {
           )}
           {isGroupManager && (
             <button
+              onClick={() => {
+                clearActionError();
+                setIsWhiteboardPermissionsOpen(true);
+              }}
+              title="Cấp quyền vẽ bảng trắng"
+              style={{background: 'transparent', border: '1px solid #475569', color: '#94A3B8', padding: '8px 10px', borderRadius: 8, cursor: 'pointer', fontSize: 13, fontWeight: '600', display: 'flex', alignItems: 'center', gap: 6}}
+              onMouseOver={e => { e.currentTarget.style.borderColor = '#2563EB'; e.currentTarget.style.color = '#93C5FD'; }}
+              onMouseOut={e => { e.currentTarget.style.borderColor = '#475569'; e.currentTarget.style.color = '#94A3B8'; }}
+            >
+              <UsersRound size={16} /> Quyền bảng
+            </button>
+          )}
+          {isGroupManager && (
+            <button
               onClick={() => setIsDeleteRoomModalOpen(true)}
               title="Xóa phòng học"
               style={{background: 'transparent', border: '1px solid #475569', color: '#94A3B8', padding: '8px 10px', borderRadius: 8, cursor: 'pointer', fontSize: 13, fontWeight: '600', display: 'flex', alignItems: 'center'}}
@@ -573,6 +604,19 @@ export function StudyRoom() {
         target={{ roomId: room.id }}
         targetLabel={room.name}
       />
+      {isGroupManager && (
+        <WhiteboardPermissionsModal
+          isOpen={isWhiteboardPermissionsOpen}
+          members={members}
+          pendingUserId={pendingRoomRoleUserId}
+          error={actionError?.message ?? null}
+          onClose={() => {
+            setIsWhiteboardPermissionsOpen(false);
+            clearActionError();
+          }}
+          onRoleChange={handleWhiteboardRoleChange}
+        />
+      )}
 
       {/* Modal: Xác nhận xóa phòng học */}
       {isDeleteRoomModalOpen && (

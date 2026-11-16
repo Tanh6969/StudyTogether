@@ -41,10 +41,9 @@ class LiveKitService:
             room=study_room_livekit_name(room_id),
             can_publish=True,
             can_subscribe=True,
-            # Data-channel publish is the transport for live whiteboard sync
-            # (useWhiteboardSync.ts) -- gated by the caller's room role
-            # (can_edit_whiteboard: HOST/MODERATOR only), never unconditionally true, so a
-            # PARTICIPANT can't forge whiteboard_update packets even with a patched client.
+            # Authorized room participants need data-channel publishing for activities.
+            # Whiteboard packets are role-filtered by the receiving clients; persisted state
+            # and uploaded assets have separate server-side can_edit_whiteboard checks.
             can_publish_data=can_publish_data,
         )
         token = (

@@ -182,9 +182,8 @@ async def can_access_room(session: AsyncSession, room: StudyRoom, user_id: uuid.
 
 
 async def can_edit_whiteboard(session: AsyncSession, room: StudyRoom, user_id: uuid.UUID) -> bool:
-    """Whiteboard write authority (persisted-state PUT, adding image/document assets, and
-    whether the LiveKit token grants `can_publish_data` for live drawing broadcast) is scoped
-    tighter than plain room participation: the room's HOST, a room MODERATOR, or an active
+    """Whiteboard write authority (persisted-state PUT and adding image/document assets) is
+    scoped tighter than plain room participation: the room's HOST, a room MODERATOR, or an active
     Group owner/moderator may edit -- a plain PARTICIPANT who is not also a Group manager gets
     a live, synced, view-only board. The Group-manager branch matters because a Group
     owner/moderator's `study_room_members.role` defaults to PARTICIPANT on join (only
@@ -194,9 +193,9 @@ async def can_edit_whiteboard(session: AsyncSession, room: StudyRoom, user_id: u
     having full management authority over the room itself (`can_manage_room`, same
     `is_group_manager` check: start/end/delete/kick/mute). Mirrors the frontend's own
     `isGroupManager || currentUserRole === 'host' || currentUserRole === 'moderator'` gate for
-    its local `isReadonly` flag (StudyRoom.tsx) -- this is the server-side enforcement of the
-    same rule, closing the gap where a participant could otherwise call the REST endpoint or
-    publish LiveKit data directly, bypassing the UI. Requires `can_access_room` first (active
+    its local `isReadonly` flag (StudyRoom.tsx). LiveKit data publishing is granted to every
+    active room member for in-call activities; the whiteboard receiver filters edit packets by
+    the same editor list. Requires `can_access_room` first (active
     Group + Room membership, non-deleted room); no branch here bypasses that."""
     if not await can_access_room(session, room, user_id):
         return False
