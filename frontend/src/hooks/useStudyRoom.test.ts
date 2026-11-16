@@ -104,7 +104,7 @@ describe('useStudyRoom -- leave-on-unload cleanup', () => {
 
     window.dispatchEvent(new Event('pagehide'));
 
-    expect(mockedLeaveOnUnload).toHaveBeenCalledWith('room-1');
+    expect(mockedLeaveOnUnload).toHaveBeenCalledWith('room-1', '2026-08-19T00:00:00Z');
   });
 
   it('does not fire a beacon leave on pagehide when the caller has no active membership', async () => {
@@ -128,7 +128,7 @@ describe('useStudyRoom -- leave-on-unload cleanup', () => {
 
     unmount();
 
-    expect(mockedLeaveOnUnload).toHaveBeenCalledWith('room-1');
+    expect(mockedLeaveOnUnload).toHaveBeenCalledWith('room-1', '2026-08-19T00:00:00Z');
   });
 
   it('does not fire a leave on unmount when the caller was never an active member', async () => {

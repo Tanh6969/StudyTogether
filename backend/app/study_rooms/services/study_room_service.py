@@ -1,6 +1,6 @@
 import uuid
 from datetime import datetime, timezone
-from sqlalchemy import select
+from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -156,6 +156,29 @@ class StudyRoomsService:
         member.left_at = datetime.now(timezone.utc)
         await session.flush()
         return member
+
+    async def leave_if_join_generation(
+        self, session: AsyncSession, room_id: uuid.UUID, user_id: uuid.UUID, joined_at: datetime
+    ) -> datetime | None:
+        """Atomically close exactly the membership generation that initiated pagehide.
+
+        A new join can race with the browser's delayed unload request. An UPDATE with
+        the join timestamp in its WHERE clause prevents a stale ORM read and later
+        unconditional flush from marking a newly rejoined user as departed.
+        """
+        closed_at = datetime.now(timezone.utc)
+        result = await session.execute(
+            update(StudyRoomMember)
+            .where(
+                StudyRoomMember.room_id == room_id,
+                StudyRoomMember.user_id == user_id,
+                StudyRoomMember.joined_at == joined_at,
+                StudyRoomMember.left_at.is_(None),
+            )
+            .values(left_at=closed_at)
+            .execution_options(synchronize_session=False)
+        )
+        return closed_at if result.rowcount == 1 else None
 
     async def list_members(self, session: AsyncSession, room_id: uuid.UUID) -> list[StudyRoomMember]:
         result = await session.execute(

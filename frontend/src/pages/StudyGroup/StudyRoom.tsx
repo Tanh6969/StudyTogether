@@ -33,6 +33,7 @@ import { getAvatarInitials, getAvatarColor } from '../../utils/avatarUtils';
 import { getDisplayName } from '../../utils/userDisplay';
 import { InviteModal } from '../../components/invitations/InviteModal';
 import { MeetingProvider } from './meeting/MeetingProvider';
+import type { ConnectedCallParticipant } from './meeting/MeetingProvider';
 import { MeetingVideoGrid } from './meeting/MeetingVideoGrid';
 import { MeetingControls } from './meeting/MeetingControls';
 import { WhiteboardPermissionsModal } from './meeting/WhiteboardPermissionsModal';
@@ -133,6 +134,13 @@ export function StudyRoom() {
   const [isDeletingRoom, setIsDeletingRoom] = useState(false);
   const [isLifecycleBusy, setIsLifecycleBusy] = useState(false);
   const [lobbyConfirmed, setLobbyConfirmed] = useState(false);
+  const [callParticipants, setCallParticipants] = useState<ConnectedCallParticipant[]>([]);
+  const handleCallParticipantsChange = useCallback((next: ConnectedCallParticipant[]) => {
+    setCallParticipants((previous) =>
+      previous.length === next.length && previous.every((p, index) => p.identity === next[index].identity && p.name === next[index].name)
+        ? previous : next
+    );
+  }, []);
   const [mediaChoice, setMediaChoice] = useState<MediaJoinChoice>({ audioEnabled: true, videoEnabled: true });
 
   // Whiteboard editors: room host/moderator or an active group owner/moderator -- the same
@@ -259,35 +267,35 @@ export function StudyRoom() {
     return `${hrs.toString().padStart(2, '0')}:${mins.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`;
   };
 
-  // Real active member roster from the Study Room membership API. `isMuted` here reflects
-  // Study Room moderation-mute state (audit log) for the sidebar member list -- it is NOT the
-  // real LiveKit microphone state, which the video call grid (MeetingVideoGrid) renders
-  // separately from the actual LiveKit track/participant state. Hand-raise is likewise derived
-  // from the real moderation audit log, not fabricated.
+  // The call counter, task roster and game roster must match the camera tile identities:
+  // LiveKit supplies PRESENCE, while study_room_members supplies profiles and permissions.
+  // A stale membership row is never counted as an active call participant.
   const participants = useMemo(() => {
-    return members
-      .filter((m) => !m.left_at)
-      .map((m) => {
-        const isSelf = m.user_id === currentUserId;
-        const name = isSelf ? `${currentUser.name} (Bạn)` : getDisplayName(m.user);
-        return {
-          id: m.user_id,
-          userId: m.user_id,
-          role: m.role,
-          name,
-          initial: isSelf ? currentUser.initials : getAvatarInitials(name),
-          color: isSelf ? currentUser.color : getAvatarColor(name),
-          avatarUrl: isSelf ? currentUser.avatarUrl : m.user.avatar_url,
-          frame: m.user.avatar_frame ?? null,
-          cheerStyle: m.user.cheer_style ?? 'clap',
-          isHost: m.role === 'host',
-          isModerator: m.role === 'moderator',
-          isSelf,
-          isMuted: moderationMutedUserIds.has(m.user_id),
-          handRaised: isSelf ? currentUserHandRaised : handRaisedUserIds.has(m.user_id),
-        };
-      });
-  }, [members, currentUserId, currentUser, moderationMutedUserIds, handRaisedUserIds, currentUserHandRaised]);
+    const membersById = new Map(members.map((member) => [member.user_id, member]));
+    return callParticipants.map((callParticipant) => {
+      const member = membersById.get(callParticipant.identity);
+      const isSelf = callParticipant.identity === currentUserId;
+      const name = isSelf
+        ? `${currentUser.name} (Bạn)`
+        : member ? getDisplayName(member.user) : callParticipant.name || 'Người dùng';
+      return {
+        id: callParticipant.identity,
+        userId: callParticipant.identity,
+        role: member?.role ?? 'participant',
+        name,
+        initial: isSelf ? currentUser.initials : getAvatarInitials(name),
+        color: isSelf ? currentUser.color : getAvatarColor(name),
+        avatarUrl: isSelf ? currentUser.avatarUrl : member?.user.avatar_url ?? null,
+        frame: member?.user.avatar_frame ?? null,
+        cheerStyle: member?.user.cheer_style ?? 'clap',
+        isHost: member?.role === 'host',
+        isModerator: member?.role === 'moderator',
+        isSelf,
+        isMuted: moderationMutedUserIds.has(callParticipant.identity),
+        handRaised: isSelf ? currentUserHandRaised : handRaisedUserIds.has(callParticipant.identity),
+      };
+    });
+  }, [callParticipants, members, currentUserId, currentUser, moderationMutedUserIds, handRaisedUserIds, currentUserHandRaised]);
 
   // Real persisted messages for this room's ROOM Conversation (reuses the same
   // /conversations/{id}/messages REST API + Realtime subscription as Channel chat --
@@ -446,6 +454,7 @@ export function StudyRoom() {
       audioDeviceId={mediaChoice.audioDeviceId}
       videoDeviceId={mediaChoice.videoDeviceId}
       onSessionEnded={refetchRoom}
+      onParticipantsChange={handleCallParticipantsChange}
     >
     <RoomActivitiesProvider
       roomId={room.id}

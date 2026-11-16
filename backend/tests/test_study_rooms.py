@@ -1,6 +1,6 @@
 import uuid
-from datetime import datetime, timezone
-from unittest.mock import AsyncMock, MagicMock
+from datetime import datetime, timedelta, timezone
+from unittest.mock import ANY, AsyncMock, MagicMock
 
 import pytest
 from sqlalchemy.exc import IntegrityError
@@ -882,6 +882,12 @@ async def test_rejoin_room_denied_for_left_group_member_with_stale_room_membersh
 # --- Leave: self-leave only, no user_id spoofing possible ---
 
 
+@pytest.fixture(autouse=True)
+def no_real_livekit_rpc_in_study_room_tests(monkeypatch):
+    # Route tests must not call the real media server; dedicated LiveKitService tests cover RPCs.
+    monkeypatch.setattr(study_room_router.livekit_service, "remove_participant", AsyncMock())
+
+
 async def test_leave_room_requires_auth(async_client):
     response = await async_client.post(f"/study-rooms/{uuid.uuid4()}/leave")
     assert response.status_code == 401
@@ -932,6 +938,96 @@ async def test_leave_room_still_works_for_ended_but_not_deleted_room(async_clien
 
     response = await async_client.post(f"/study-rooms/{room.id}/leave", headers=AUTH_HEADERS)
     assert response.status_code == 200
+
+
+
+async def test_leave_disconnects_livekit_participant_after_membership_commit(
+    async_client, monkeypatch, as_fake_user
+):
+    """A deliberate leave must revoke the corresponding LiveKit connection as well."""
+    room = _make_room()
+    own_member = _room_member(room.id, as_fake_user.id)
+    monkeypatch.setattr(study_room_router.service, "get_by_id", AsyncMock(return_value=room))
+    monkeypatch.setattr(study_room_router.service, "get_member", AsyncMock(return_value=own_member))
+    monkeypatch.setattr(study_room_router.service, "leave", AsyncMock(return_value=own_member))
+    remove = AsyncMock()
+    monkeypatch.setattr(study_room_router.livekit_service, "remove_participant", remove)
+
+    response = await async_client.post(f"/study-rooms/{room.id}/leave", headers=AUTH_HEADERS)
+    assert response.status_code == 200
+    remove.assert_awaited_once_with(room.id, as_fake_user.id)
+
+
+async def test_leave_preserves_committed_membership_if_livekit_unavailable(
+    async_client, monkeypatch, as_fake_user
+):
+    """LiveKit's temporary outage must not convert a successful database leave into 400."""
+    room = _make_room()
+    own_member = _room_member(room.id, as_fake_user.id)
+    monkeypatch.setattr(study_room_router.service, "get_by_id", AsyncMock(return_value=room))
+    monkeypatch.setattr(study_room_router.service, "get_member", AsyncMock(return_value=own_member))
+    monkeypatch.setattr(study_room_router.service, "leave", AsyncMock(return_value=own_member))
+    monkeypatch.setattr(
+        study_room_router.livekit_service,
+        "remove_participant",
+        AsyncMock(side_effect=RuntimeError("LiveKit temporarily unavailable")),
+    )
+
+    response = await async_client.post(f"/study-rooms/{room.id}/leave", headers=AUTH_HEADERS)
+    assert response.status_code == 200
+
+
+async def test_old_tab_cleanup_cannot_leave_newly_rejoined_session(
+    async_client, monkeypatch, as_fake_user
+):
+    room = _make_room()
+    latest_member = _room_member(room.id, as_fake_user.id)
+    old_joined_at = latest_member.joined_at - timedelta(minutes=1)
+    monkeypatch.setattr(study_room_router.service, "get_by_id", AsyncMock(return_value=room))
+    monkeypatch.setattr(study_room_router.service, "get_member", AsyncMock(return_value=latest_member))
+    leave = AsyncMock()
+    remove = AsyncMock()
+    conditional_leave = AsyncMock(return_value=None)
+    monkeypatch.setattr(study_room_router.service, "leave", leave)
+    monkeypatch.setattr(study_room_router.service, "leave_if_join_generation", conditional_leave)
+    monkeypatch.setattr(study_room_router.livekit_service, "remove_participant", remove)
+
+    response = await async_client.post(
+        f"/study-rooms/{room.id}/leave",
+        params={"expected_joined_at": old_joined_at.isoformat()},
+        headers=AUTH_HEADERS,
+    )
+
+    assert response.status_code == 200
+    conditional_leave.assert_awaited_once_with(ANY, room.id, as_fake_user.id, old_joined_at)
+    leave.assert_not_awaited()
+    remove.assert_not_awaited()
+
+
+async def test_unload_cleanup_does_not_evict_replacement_livekit_session(
+    async_client, monkeypatch, as_fake_user
+):
+    room = _make_room()
+    member = _room_member(room.id, as_fake_user.id)
+    monkeypatch.setattr(study_room_router.service, "get_by_id", AsyncMock(return_value=room))
+    monkeypatch.setattr(study_room_router.service, "get_member", AsyncMock(return_value=member))
+    leave = AsyncMock(return_value=member)
+    remove = AsyncMock()
+    conditional_leave = AsyncMock(return_value=member.joined_at)
+    monkeypatch.setattr(study_room_router.service, "leave", leave)
+    monkeypatch.setattr(study_room_router.service, "leave_if_join_generation", conditional_leave)
+    monkeypatch.setattr(study_room_router.livekit_service, "remove_participant", remove)
+
+    response = await async_client.post(
+        f"/study-rooms/{room.id}/leave",
+        params={"expected_joined_at": member.joined_at.isoformat()},
+        headers=AUTH_HEADERS,
+    )
+
+    assert response.status_code == 200
+    conditional_leave.assert_awaited_once_with(ANY, room.id, as_fake_user.id, member.joined_at)
+    leave.assert_not_awaited()
+    remove.assert_not_awaited()
 
 
 async def test_leave_deleted_room_denied(async_client, monkeypatch, as_fake_user):

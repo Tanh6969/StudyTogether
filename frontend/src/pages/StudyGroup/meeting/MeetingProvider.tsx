@@ -1,8 +1,24 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import type { ReactNode } from 'react';
-import { LiveKitRoom, RoomAudioRenderer, StartAudio } from '@livekit/components-react';
+import { LiveKitRoom, RoomAudioRenderer, StartAudio, useParticipants } from '@livekit/components-react';
 import { useMeetingToken } from '../../../hooks/useMeetingToken';
 import { MeetingContext } from './MeetingContext';
+
+/** LiveKit session roster. Study-room DB membership is authorization, not call presence. */
+export interface ConnectedCallParticipant {
+  identity: string;
+  name: string;
+}
+
+/** Read the same LiveKit participant list as MeetingVideoGrid, not study_room_members. */
+function LiveKitRosterObserver({ onChange }: { onChange: (participants: ConnectedCallParticipant[]) => void }) {
+  const participants = useParticipants();
+  useEffect(() => {
+    onChange(participants.map((participant) => ({ identity: participant.identity, name: participant.name ?? '' })));
+  }, [participants, onChange]);
+  useEffect(() => () => onChange([]), [onChange]);
+  return null;
+}
 
 interface MeetingProviderProps {
   roomId: string;
@@ -24,6 +40,8 @@ interface MeetingProviderProps {
    * the UI can show *why* (e.g. "phòng học đã kết thúc") instead of just going dark with no
    * explanation -- see StudyRoom.tsx. */
   onSessionEnded?: () => void;
+  /** The current LiveKit roster, including people with camera/microphone disabled. */
+  onParticipantsChange?: (participants: ConnectedCallParticipant[]) => void;
   children: ReactNode;
 }
 
@@ -40,6 +58,7 @@ export function MeetingProvider({
   audioDeviceId,
   videoDeviceId,
   onSessionEnded,
+  onParticipantsChange,
   children,
 }: MeetingProviderProps) {
   const { status, data, error, retry } = useMeetingToken(roomId, enabled);
@@ -81,6 +100,7 @@ export function MeetingProvider({
         }}
         style={{ display: 'contents' }}
       >
+        {onParticipantsChange && <LiveKitRosterObserver onChange={onParticipantsChange} />}
         <RoomAudioRenderer />
         <StartAudio
           label="Bấm để bật âm thanh cuộc gọi"
