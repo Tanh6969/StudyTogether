@@ -369,7 +369,7 @@ async def test_meeting_token_grants_are_minimal_for_participant(async_client, mo
     assert not grants.recorder
 
 
-@pytest.mark.parametrize("role", [StudyRoomMemberRole.HOST, StudyRoomMemberRole.MODERATOR])
+@pytest.mark.parametrize("role", [StudyRoomMemberRole.HOST, StudyRoomMemberRole.EDITOR])
 async def test_meeting_token_grants_publish_data_for_editors(async_client, monkeypatch, as_fake_user, role):
     """Room hosts and moderators can publish data for activities and whiteboard sync."""
     room = _make_room(host_id=uuid.uuid4())

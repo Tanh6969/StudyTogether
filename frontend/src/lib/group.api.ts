@@ -70,9 +70,15 @@ export function joinGroup(groupId: string): Promise<GroupMember> {
   return apiClient.post<GroupMember>(`/groups/${groupId}/members`, body);
 }
 
-/** Self-leave: the caller's own membership status becomes `left`. Cannot affect another member. */
+/** Self-leave: the caller's own membership status becomes `left`. Cannot affect another member.
+ * The group owner gets a 409 here -- they must use leaveGroupAsOwner with a successor. */
 export function leaveGroup(groupId: string, userId: string): Promise<GroupMember> {
   return apiClient.put<GroupMember>(`/groups/${groupId}/members/${userId}/status?member_status=left`);
+}
+
+/** The owner leaves and hands the group to `successorId` (an active member) in one step. */
+export function leaveGroupAsOwner(groupId: string, successorId: string): Promise<GroupMember> {
+  return apiClient.post<GroupMember>(`/groups/${groupId}/owner/leave`, { successor_id: successorId });
 }
 
 /** Owner-only; promotes/demotes a member between `member` and `moderator`. The backend
@@ -85,4 +91,10 @@ export function updateMemberRole(groupId: string, userId: string, role: GroupMem
  * must go through leaveGroup instead) -- see group_router.remove_member. */
 export function removeMember(groupId: string, userId: string): Promise<void> {
   return apiClient.delete<void>(`/groups/${groupId}/members/${userId}`);
+}
+
+/** Owner-only. Used when the owner is the group's last active member and wants to leave --
+ * there is nobody to hand the group to, so leaving means deleting it. */
+export function deleteGroup(groupId: string): Promise<void> {
+  return apiClient.delete<void>(`/groups/${groupId}`);
 }

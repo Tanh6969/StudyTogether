@@ -78,6 +78,17 @@ def _group_member(
     return member
 
 
+
+def _mock_active_owner(monkeypatch, group: Group, user_id: uuid.UUID) -> None:
+    """is_group_owner now also requires the owner to still hold an ACTIVE membership (an owner
+    who had left kept owner powers before). It reads through permissions.groups_service, which
+    is a different instance from group_router.service."""
+    monkeypatch.setattr(
+        permissions.groups_service,
+        "get_member",
+        AsyncMock(return_value=_group_member(group.id, user_id, role=GroupMemberRole.OWNER)),
+    )
+
 def _fake_session() -> AsyncMock:
     """`Session.add` is synchronous even on SQLAlchemy's AsyncSession -- override the
     auto-mocked async attribute so it isn't left as an un-awaited coroutine."""
@@ -214,6 +225,7 @@ async def test_update_group_requires_auth(async_client):
 
 async def test_update_group_allowed_for_owner(async_client, monkeypatch, as_fake_user):
     group = _make_group(owner_id=as_fake_user.id)
+    _mock_active_owner(monkeypatch, group, as_fake_user.id)
     monkeypatch.setattr(group_router.service, "get_by_id", AsyncMock(return_value=group))
     monkeypatch.setattr(group_router.service, "update", AsyncMock(return_value=group))
 
@@ -269,6 +281,7 @@ async def test_delete_group_requires_auth(async_client):
 
 async def test_delete_group_allowed_for_owner(async_client, monkeypatch, as_fake_user):
     group = _make_group(owner_id=as_fake_user.id)
+    _mock_active_owner(monkeypatch, group, as_fake_user.id)
     monkeypatch.setattr(group_router.service, "get_by_id", AsyncMock(return_value=group))
     monkeypatch.setattr(group_router.service, "delete", AsyncMock(return_value=None))
 
@@ -430,6 +443,7 @@ async def test_update_member_role_requires_auth(async_client):
 
 async def test_update_member_role_allowed_for_owner(async_client, monkeypatch, as_fake_user):
     group = _make_group(owner_id=as_fake_user.id)
+    _mock_active_owner(monkeypatch, group, as_fake_user.id)
     target_id = uuid.uuid4()
     member = _group_member(group.id, target_id)
     monkeypatch.setattr(group_router.service, "get_by_id", AsyncMock(return_value=group))
@@ -481,6 +495,7 @@ async def test_update_member_role_rejects_owner_role(async_client, monkeypatch, 
     """Ownership transfer is not supported by this task -- role=owner must be rejected
     even when requested by the real owner."""
     group = _make_group(owner_id=as_fake_user.id)
+    _mock_active_owner(monkeypatch, group, as_fake_user.id)
     target_id = uuid.uuid4()
     monkeypatch.setattr(group_router.service, "get_by_id", AsyncMock(return_value=group))
 
@@ -492,6 +507,7 @@ async def test_update_member_role_rejects_owner_role(async_client, monkeypatch, 
 
 async def test_update_member_role_cannot_change_owners_role(async_client, monkeypatch, as_fake_user):
     group = _make_group(owner_id=as_fake_user.id)
+    _mock_active_owner(monkeypatch, group, as_fake_user.id)
     owner_member = _group_member(group.id, as_fake_user.id, role=GroupMemberRole.OWNER)
     monkeypatch.setattr(group_router.service, "get_by_id", AsyncMock(return_value=group))
     monkeypatch.setattr(group_router.service, "get_member", AsyncMock(return_value=owner_member))
@@ -552,6 +568,7 @@ async def test_member_cannot_self_reactivate(async_client, monkeypatch, as_fake_
 
 async def test_owner_can_ban_a_member(async_client, monkeypatch, as_fake_user):
     group = _make_group(owner_id=as_fake_user.id)
+    _mock_active_owner(monkeypatch, group, as_fake_user.id)
     target_id = uuid.uuid4()
     member = _group_member(group.id, target_id)
     monkeypatch.setattr(group_router.service, "get_by_id", AsyncMock(return_value=group))
@@ -586,6 +603,7 @@ async def test_remove_member_requires_auth(async_client):
 
 async def test_remove_member_allowed_for_owner(async_client, monkeypatch, as_fake_user):
     group = _make_group(owner_id=as_fake_user.id)
+    _mock_active_owner(monkeypatch, group, as_fake_user.id)
     target_id = uuid.uuid4()
     member = _group_member(group.id, target_id)
     monkeypatch.setattr(group_router.service, "get_by_id", AsyncMock(return_value=group))
@@ -664,9 +682,119 @@ async def test_list_members_private_group_allowed_for_active_member(async_client
 
 async def test_list_members_private_group_allowed_for_owner(async_client, monkeypatch, as_fake_user):
     group = _make_group(is_public=False, owner_id=as_fake_user.id)
+    _mock_active_owner(monkeypatch, group, as_fake_user.id)
     monkeypatch.setattr(group_router.service, "get_by_id", AsyncMock(return_value=group))
     monkeypatch.setattr(group_router.service, "get_member", AsyncMock(return_value=None))
     monkeypatch.setattr(group_router.service, "list_members", AsyncMock(return_value=[]))
 
     response = await async_client.get(f"/groups/{group.id}/members", headers=AUTH_HEADERS)
     assert response.status_code == 200
+
+
+# --- Owner leaving: must hand the group to a successor ---
+
+
+async def test_owner_plain_self_leave_is_refused_with_409(async_client, monkeypatch, as_fake_user):
+    group = _make_group(owner_id=as_fake_user.id)
+    owner = _group_member(group.id, as_fake_user.id, role=GroupMemberRole.OWNER)
+    monkeypatch.setattr(group_router.service, "get_by_id", AsyncMock(return_value=group))
+    monkeypatch.setattr(group_router.service, "get_member", AsyncMock(return_value=owner))
+    update_status = AsyncMock()
+    monkeypatch.setattr(group_router.service, "update_member_status", update_status)
+
+    response = await async_client.put(
+        f"/groups/{group.id}/members/{as_fake_user.id}/status",
+        params={"member_status": "left"},
+        headers=AUTH_HEADERS,
+    )
+    assert response.status_code == 409
+    update_status.assert_not_awaited()
+
+
+async def test_owner_cannot_ban_or_remove_themselves(async_client, monkeypatch, as_fake_user):
+    group = _make_group(owner_id=as_fake_user.id)
+    _mock_active_owner(monkeypatch, group, as_fake_user.id)
+    owner = _group_member(group.id, as_fake_user.id, role=GroupMemberRole.OWNER)
+    monkeypatch.setattr(group_router.service, "get_by_id", AsyncMock(return_value=group))
+    monkeypatch.setattr(group_router.service, "get_member", AsyncMock(return_value=owner))
+
+    banned = await async_client.put(
+        f"/groups/{group.id}/members/{as_fake_user.id}/status",
+        params={"member_status": "banned"},
+        headers=AUTH_HEADERS,
+    )
+    removed = await async_client.delete(f"/groups/{group.id}/members/{as_fake_user.id}", headers=AUTH_HEADERS)
+    assert banned.status_code == 400
+    assert removed.status_code == 400
+
+
+async def test_owner_who_already_left_has_no_owner_powers(async_client, monkeypatch, as_fake_user):
+    """Legacy rows: groups.owner_id still points at someone whose membership is `left`."""
+    group = _make_group(owner_id=as_fake_user.id)
+    monkeypatch.setattr(
+        permissions.groups_service,
+        "get_member",
+        AsyncMock(return_value=_group_member(group.id, as_fake_user.id, role=GroupMemberRole.OWNER, status=MemberStatus.LEFT)),
+    )
+    monkeypatch.setattr(group_router.service, "get_by_id", AsyncMock(return_value=group))
+    response = await async_client.delete(f"/groups/{group.id}", headers=AUTH_HEADERS)
+    assert response.status_code == 403
+
+
+async def test_owner_leave_with_successor_hands_over_the_group(async_client, monkeypatch, as_fake_user):
+    group = _make_group(owner_id=as_fake_user.id)
+    _mock_active_owner(monkeypatch, group, as_fake_user.id)
+    successor_id = uuid.uuid4()
+    owner = _group_member(group.id, as_fake_user.id, role=GroupMemberRole.OWNER)
+    successor = _group_member(group.id, successor_id, role=GroupMemberRole.MODERATOR)
+    monkeypatch.setattr(group_router.service, "get_by_id", AsyncMock(return_value=group))
+    monkeypatch.setattr(
+        group_router.service,
+        "get_member",
+        AsyncMock(side_effect=lambda _s, _g, uid: successor if uid == successor_id else owner),
+    )
+
+    response = await async_client.post(
+        f"/groups/{group.id}/owner/leave", json={"successor_id": str(successor_id)}, headers=AUTH_HEADERS
+    )
+    assert response.status_code == 200
+    assert group.owner_id == successor_id
+    assert successor.role == GroupMemberRole.OWNER
+    assert owner.role == GroupMemberRole.MEMBER
+    assert owner.status == MemberStatus.LEFT
+
+
+async def test_owner_leave_rejects_inactive_successor(async_client, monkeypatch, as_fake_user):
+    group = _make_group(owner_id=as_fake_user.id)
+    _mock_active_owner(monkeypatch, group, as_fake_user.id)
+    successor_id = uuid.uuid4()
+    banned = _group_member(group.id, successor_id, status=MemberStatus.BANNED)
+    monkeypatch.setattr(group_router.service, "get_by_id", AsyncMock(return_value=group))
+    monkeypatch.setattr(group_router.service, "get_member", AsyncMock(return_value=banned))
+
+    response = await async_client.post(
+        f"/groups/{group.id}/owner/leave", json={"successor_id": str(successor_id)}, headers=AUTH_HEADERS
+    )
+    assert response.status_code == 400
+
+
+async def test_owner_leave_rejects_self_as_successor(async_client, monkeypatch, as_fake_user):
+    group = _make_group(owner_id=as_fake_user.id)
+    _mock_active_owner(monkeypatch, group, as_fake_user.id)
+    monkeypatch.setattr(group_router.service, "get_by_id", AsyncMock(return_value=group))
+
+    response = await async_client.post(
+        f"/groups/{group.id}/owner/leave", json={"successor_id": str(as_fake_user.id)}, headers=AUTH_HEADERS
+    )
+    assert response.status_code == 400
+
+
+async def test_owner_leave_forbidden_for_non_owner(async_client, monkeypatch, as_fake_user):
+    group = _make_group(owner_id=uuid.uuid4())
+    monkeypatch.setattr(group_router.service, "get_by_id", AsyncMock(return_value=group))
+
+    response = await async_client.post(
+        f"/groups/{group.id}/owner/leave", json={"successor_id": str(uuid.uuid4())}, headers=AUTH_HEADERS
+    )
+    assert response.status_code == 403
+

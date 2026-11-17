@@ -15,6 +15,7 @@ from app.groups.dto.group_dto import (
     GroupMemberResponse,
     GroupResponse,
     GroupUpdate,
+    OwnerLeaveRequest,
 )
 from app.groups.entities.group_entity import Group
 from app.groups.services.group_service import GroupsService
@@ -116,7 +117,7 @@ async def update_group(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Group not found"
         )
-    if not is_group_owner(group, current_user.id):
+    if not await is_group_owner(session, group, current_user.id):
         raise HTTPException(status.HTTP_403_FORBIDDEN, "Only the group owner can update this group")
     try:
         updated = await service.update(session, group, data)
@@ -201,7 +202,7 @@ async def delete_group(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Group not found"
         )
-    if not is_group_owner(group, current_user.id):
+    if not await is_group_owner(session, group, current_user.id):
         raise HTTPException(status.HTTP_403_FORBIDDEN, "Only the group owner can delete this group")
     try:
         await service.delete(session, group)
@@ -320,7 +321,7 @@ async def _require_member_list_access(session: AsyncSession, group: Group, curre
         raise HTTPException(
             status.HTTP_401_UNAUTHORIZED, "Missing bearer token", headers={"WWW-Authenticate": "Bearer"}
         )
-    if is_group_owner(group, current_user.id):
+    if await is_group_owner(session, group, current_user.id):
         return
     if await is_active_group_member(session, group.id, current_user.id):
         return
@@ -339,7 +340,7 @@ async def update_member_role(
     group = await service.get_by_id(session, group_id)
     if not group:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Group not found")
-    if not is_group_owner(group, current_user.id):
+    if not await is_group_owner(session, group, current_user.id):
         raise HTTPException(status.HTTP_403_FORBIDDEN, "Only the group owner can change member roles")
     if role == GroupMemberRole.OWNER:
         # Ownership transfer is out of scope for this task (spec §42 leaves it unresolved).
@@ -386,13 +387,20 @@ async def update_member_status(
         )
 
     is_self_leave = user_id == current_user.id and member_status == MemberStatus.LEFT
-    if not is_self_leave and not is_group_owner(group, current_user.id):
+    if is_self_leave and member.role == GroupMemberRole.OWNER:
+        # The owner must pick a successor first (POST /groups/{id}/owner/leave), otherwise the
+        # group would be left without anyone able to manage it. 409 is the frontend's cue to
+        # open the "choose a successor" dialog.
+        raise HTTPException(status.HTTP_409_CONFLICT, "The group owner must choose a successor before leaving")
+    if not is_self_leave and not await is_group_owner(session, group, current_user.id):
         # Ban/reactivate/any status change on another member is deliberately owner-only
         # (conservative default -- spec §42 explicitly leaves moderator ban/kick powers
         # unresolved, so they are not granted here). Self-leave is always allowed.
         raise HTTPException(
             status.HTTP_403_FORBIDDEN, "Only the group owner can change another member's status"
         )
+    if member.role == GroupMemberRole.OWNER:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "Cannot change the owner's status")
 
     try:
         updated = await service.update_member_status(session, member, member_status)
@@ -426,8 +434,10 @@ async def remove_member(
     # Hard removal ("kick") is the conservative owner-only operation -- self-leave should
     # go through PUT .../status (status=left) instead, which preserves membership history
     # per the spec's recommendation.
-    if not is_group_owner(group, current_user.id):
+    if not await is_group_owner(session, group, current_user.id):
         raise HTTPException(status.HTTP_403_FORBIDDEN, "Only the group owner can remove members")
+    if member.role == GroupMemberRole.OWNER:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "Cannot remove the group owner")
     try:
         await service.remove_member(session, member)
         await session.commit()
@@ -437,3 +447,33 @@ async def remove_member(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=f"Could not remove member: {str(e)}"
         )
+
+
+@router.post("/{group_id}/owner/leave", response_model=GroupMemberResponse)
+async def leave_as_owner(
+    group_id: uuid.UUID,
+    data: OwnerLeaveRequest,
+    current_user: CurrentUser = Depends(get_current_user),
+    session: AsyncSession = Depends(get_db_session),
+):
+    """The owner leaves the group and hands it to an active member in the same step. This is
+    the only way an owner can leave (a plain self-leave is refused with 409). If the owner is
+    the only active member, there is nobody to hand over to -- they delete the group instead."""
+    group = await service.get_by_id(session, group_id)
+    if not group:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Group not found")
+    if not await is_group_owner(session, group, current_user.id):
+        raise HTTPException(status.HTTP_403_FORBIDDEN, "Only the group owner can do this")
+    if data.successor_id == current_user.id:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "Choose another member as the new owner")
+    successor = await service.get_member(session, group_id, data.successor_id)
+    if successor is None or successor.status != MemberStatus.ACTIVE:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "The new owner must be an active member of the group")
+    owner = await service.get_member(session, group_id, current_user.id)
+    try:
+        updated = await service.leave_as_owner(session, group, owner, successor)
+        await session.commit()
+        return updated
+    except Exception as e:
+        await session.rollback()
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, f"Could not leave the group: {str(e)}")

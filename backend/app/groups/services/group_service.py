@@ -155,6 +155,20 @@ class GroupsService:
         await session.flush()
         return member
 
+    async def leave_as_owner(
+        self, session: AsyncSession, group: Group, owner: GroupMember, successor: GroupMember
+    ) -> GroupMember:
+        """The owner leaves and hands the group to `successor` in one transaction (the caller
+        commits). The old owner's row becomes a plain `member` with status `left`, so if they
+        come back later they return as an ordinary member."""
+        owner.role = GroupMemberRole.MEMBER
+        owner.status = MemberStatus.LEFT
+        await session.flush()
+        successor.role = GroupMemberRole.OWNER
+        group.owner_id = successor.user_id
+        await session.flush()
+        return owner
+
     async def remove_member(self, session: AsyncSession, member: GroupMember) -> None:
         await session.delete(member)
         await session.flush()

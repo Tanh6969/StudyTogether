@@ -43,6 +43,20 @@ def override_db_session():
 
 
 
+@pytest.fixture(autouse=True)
+def no_room_scoped_roles(monkeypatch):
+    """Default for permissions.room_rank: nobody holds a room-scoped role. Tests that need a
+    host / editor set it with _mock_room_roles (or their own mock) inside the test body."""
+    monkeypatch.setattr(permissions.study_rooms_service, "get_member", AsyncMock(return_value=None))
+
+
+@pytest.fixture(autouse=True)
+def no_active_member_counts(monkeypatch):
+    """list/get now attach `active_member_count` via one grouped query; the fake session can't
+    answer it, so default it to "nobody inside"."""
+    monkeypatch.setattr(study_room_router.service, "active_member_counts", AsyncMock(return_value={}))
+
+
 @pytest.fixture
 def fake_user():
     return CurrentUser(id=uuid.uuid4(), email="user@example.com", role="authenticated")
@@ -99,9 +113,32 @@ def _group_member(group_id, user_id, role=GroupMemberRole.MEMBER, status=MemberS
 
 
 def _mock_group_membership(monkeypatch, member: GroupMember | None):
-    """is_active_group_member reads via permissions.groups_service.get_member --
-    mirrors how test_channels.py mocks the same shared permissions module instance."""
-    monkeypatch.setattr(permissions.groups_service, "get_member", AsyncMock(return_value=member))
+    """is_active_group_member / room_rank read via permissions.groups_service.get_member --
+    mirrors how test_channels.py mocks the same shared permissions module instance.
+
+    `member` is the ACTOR's membership. Any other user (e.g. a kick/mute target) is an
+    ordinary active group member, so rank comparisons between actor and target are real.
+    `None` means nobody is a group member at all."""
+    if member is None:
+        monkeypatch.setattr(permissions.groups_service, "get_member", AsyncMock(return_value=None))
+        return
+
+    async def get_member(_session, group_id, user_id):
+        if user_id == member.user_id:
+            return member
+        return _group_member(group_id, user_id)
+
+    monkeypatch.setattr(permissions.groups_service, "get_member", get_member)
+
+
+def _mock_room_roles(monkeypatch, room, roles: dict) -> None:
+    """Room-scoped roles as seen by permissions.room_rank: {user_id: StudyRoomMemberRole}."""
+
+    async def get_member(_session, _room_id, user_id):
+        role = roles.get(user_id)
+        return None if role is None else _room_member(room.id, user_id, role=role)
+
+    monkeypatch.setattr(permissions.study_rooms_service, "get_member", get_member)
 
 
 def _moderation_action(room_id, moderator_id, target_user_id, action, reason=None) -> RoomModerationAction:
@@ -626,12 +663,27 @@ async def test_update_room_ignores_whiteboard_and_presentation_state_fields(asyn
     assert room.presentation_state == {"original": True}
 
 
-async def test_update_room_allowed_for_active_group_moderator(async_client, monkeypatch, as_fake_user):
+async def test_update_room_forbidden_for_group_moderator(async_client, monkeypatch, as_fake_user):
+    """Room settings belong to the group owner and the room host -- a group moderator who is
+    not the host may not change them."""
     room = _make_room(host_id=uuid.uuid4())
     monkeypatch.setattr(study_room_router.service, "get_by_id", AsyncMock(return_value=room))
     _mock_group_membership(
         monkeypatch, _group_member(room.group_id, as_fake_user.id, role=GroupMemberRole.MODERATOR)
     )
+    update = AsyncMock(return_value=room)
+    monkeypatch.setattr(study_room_router.service, "update", update)
+
+    response = await async_client.put(f"/study-rooms/{room.id}", json={"name": "New"}, headers=AUTH_HEADERS)
+    assert response.status_code == 403
+    update.assert_not_awaited()
+
+
+async def test_update_room_allowed_for_room_host(async_client, monkeypatch, as_fake_user):
+    room = _make_room(host_id=as_fake_user.id)
+    monkeypatch.setattr(study_room_router.service, "get_by_id", AsyncMock(return_value=room))
+    _mock_group_membership(monkeypatch, _group_member(room.group_id, as_fake_user.id))
+    _mock_room_roles(monkeypatch, room, {as_fake_user.id: StudyRoomMemberRole.HOST})
     monkeypatch.setattr(study_room_router.service, "update", AsyncMock(return_value=room))
 
     response = await async_client.put(f"/study-rooms/{room.id}", json={"name": "New"}, headers=AUTH_HEADERS)
@@ -650,97 +702,6 @@ async def test_update_room_forbidden_for_demoted_former_host(async_client, monke
     assert response.status_code == 403
 
 
-# --- Lifecycle: start/end require an active Group owner/moderator ---
-
-
-async def test_start_room_requires_auth(async_client):
-    response = await async_client.post(f"/study-rooms/{uuid.uuid4()}/start")
-    assert response.status_code == 401
-
-
-async def test_start_room_forbidden_for_plain_member(async_client, monkeypatch, as_fake_user):
-    room = _make_room(host_id=uuid.uuid4())
-    monkeypatch.setattr(study_room_router.service, "get_by_id", AsyncMock(return_value=room))
-    _mock_group_membership(monkeypatch, _group_member(room.group_id, as_fake_user.id, role=GroupMemberRole.MEMBER))
-
-    response = await async_client.post(f"/study-rooms/{room.id}/start", headers=AUTH_HEADERS)
-    assert response.status_code == 403
-
-
-async def test_start_room_allowed_for_active_group_owner(async_client, monkeypatch, as_fake_user):
-    room = _make_room(status=StudyRoomStatus.WAITING, host_id=uuid.uuid4())
-    monkeypatch.setattr(study_room_router.service, "get_by_id", AsyncMock(return_value=room))
-    _mock_group_membership(monkeypatch, _group_member(room.group_id, as_fake_user.id, role=GroupMemberRole.OWNER))
-    monkeypatch.setattr(study_room_router.service, "start", AsyncMock(return_value=room))
-
-    response = await async_client.post(f"/study-rooms/{room.id}/start", headers=AUTH_HEADERS)
-    assert response.status_code == 200
-
-
-async def test_start_room_allowed_for_active_group_moderator(async_client, monkeypatch, as_fake_user):
-    room = _make_room(status=StudyRoomStatus.WAITING, host_id=uuid.uuid4())
-    monkeypatch.setattr(study_room_router.service, "get_by_id", AsyncMock(return_value=room))
-    _mock_group_membership(
-        monkeypatch, _group_member(room.group_id, as_fake_user.id, role=GroupMemberRole.MODERATOR)
-    )
-    monkeypatch.setattr(study_room_router.service, "start", AsyncMock(return_value=room))
-
-    response = await async_client.post(f"/study-rooms/{room.id}/start", headers=AUTH_HEADERS)
-    assert response.status_code == 200
-
-
-async def test_start_room_forbidden_for_demoted_former_host(async_client, monkeypatch, as_fake_user):
-    room = _make_room(status=StudyRoomStatus.WAITING, host_id=as_fake_user.id)
-    monkeypatch.setattr(study_room_router.service, "get_by_id", AsyncMock(return_value=room))
-    _mock_group_membership(monkeypatch, _group_member(room.group_id, as_fake_user.id, role=GroupMemberRole.MEMBER))
-
-    response = await async_client.post(f"/study-rooms/{room.id}/start", headers=AUTH_HEADERS)
-    assert response.status_code == 403
-
-
-async def test_end_room_requires_auth(async_client):
-    response = await async_client.post(f"/study-rooms/{uuid.uuid4()}/end")
-    assert response.status_code == 401
-
-
-async def test_end_room_forbidden_for_plain_member(async_client, monkeypatch, as_fake_user):
-    room = _make_room(host_id=uuid.uuid4())
-    monkeypatch.setattr(study_room_router.service, "get_by_id", AsyncMock(return_value=room))
-    _mock_group_membership(monkeypatch, _group_member(room.group_id, as_fake_user.id, role=GroupMemberRole.MEMBER))
-
-    response = await async_client.post(f"/study-rooms/{room.id}/end", headers=AUTH_HEADERS)
-    assert response.status_code == 403
-
-
-async def test_end_room_allowed_for_active_group_owner(async_client, monkeypatch, as_fake_user):
-    room = _make_room(host_id=uuid.uuid4())
-    monkeypatch.setattr(study_room_router.service, "get_by_id", AsyncMock(return_value=room))
-    _mock_group_membership(monkeypatch, _group_member(room.group_id, as_fake_user.id, role=GroupMemberRole.OWNER))
-    monkeypatch.setattr(study_room_router.service, "end", AsyncMock(return_value=room))
-
-    response = await async_client.post(f"/study-rooms/{room.id}/end", headers=AUTH_HEADERS)
-    assert response.status_code == 200
-
-
-async def test_end_room_allowed_for_active_group_moderator(async_client, monkeypatch, as_fake_user):
-    room = _make_room(host_id=uuid.uuid4())
-    monkeypatch.setattr(study_room_router.service, "get_by_id", AsyncMock(return_value=room))
-    _mock_group_membership(
-        monkeypatch, _group_member(room.group_id, as_fake_user.id, role=GroupMemberRole.MODERATOR)
-    )
-    monkeypatch.setattr(study_room_router.service, "end", AsyncMock(return_value=room))
-
-    response = await async_client.post(f"/study-rooms/{room.id}/end", headers=AUTH_HEADERS)
-    assert response.status_code == 200
-
-
-async def test_end_room_forbidden_for_demoted_former_host(async_client, monkeypatch, as_fake_user):
-    room = _make_room(host_id=as_fake_user.id)
-    monkeypatch.setattr(study_room_router.service, "get_by_id", AsyncMock(return_value=room))
-    _mock_group_membership(monkeypatch, _group_member(room.group_id, as_fake_user.id, role=GroupMemberRole.MEMBER))
-
-    response = await async_client.post(f"/study-rooms/{room.id}/end", headers=AUTH_HEADERS)
-    assert response.status_code == 403
 
 
 # --- Join: identity always from auth, role always PARTICIPANT, ENDED denied ---
@@ -1130,7 +1091,7 @@ async def test_list_members_allowed_for_host(async_client, monkeypatch, as_fake_
 
 async def test_update_member_role_requires_auth(async_client):
     response = await async_client.put(
-        f"/study-rooms/{uuid.uuid4()}/members/{uuid.uuid4()}/role", params={"role": "moderator"}
+        f"/study-rooms/{uuid.uuid4()}/members/{uuid.uuid4()}/role", params={"role": "editor"}
     )
     assert response.status_code == 401
 
@@ -1142,7 +1103,7 @@ async def test_update_member_role_forbidden_for_plain_member(async_client, monke
     _mock_group_membership(monkeypatch, _group_member(room.group_id, as_fake_user.id, role=GroupMemberRole.MEMBER))
 
     response = await async_client.put(
-        f"/study-rooms/{room.id}/members/{target_id}/role", params={"role": "moderator"}, headers=AUTH_HEADERS
+        f"/study-rooms/{room.id}/members/{target_id}/role", params={"role": "editor"}, headers=AUTH_HEADERS
     )
     assert response.status_code == 403
 
@@ -1157,7 +1118,7 @@ async def test_update_member_role_allowed_for_active_group_owner(async_client, m
     monkeypatch.setattr(study_room_router.service, "update_member_role", AsyncMock(return_value=member))
 
     response = await async_client.put(
-        f"/study-rooms/{room.id}/members/{target_id}/role", params={"role": "moderator"}, headers=AUTH_HEADERS
+        f"/study-rooms/{room.id}/members/{target_id}/role", params={"role": "editor"}, headers=AUTH_HEADERS
     )
     assert response.status_code == 200
 
@@ -1174,7 +1135,7 @@ async def test_update_member_role_allowed_for_active_group_moderator(async_clien
     monkeypatch.setattr(study_room_router.service, "update_member_role", AsyncMock(return_value=member))
 
     response = await async_client.put(
-        f"/study-rooms/{room.id}/members/{target_id}/role", params={"role": "moderator"}, headers=AUTH_HEADERS
+        f"/study-rooms/{room.id}/members/{target_id}/role", params={"role": "editor"}, headers=AUTH_HEADERS
     )
     assert response.status_code == 200
 
@@ -1188,7 +1149,7 @@ async def test_update_member_role_forbidden_for_demoted_former_host(async_client
     _mock_group_membership(monkeypatch, _group_member(room.group_id, as_fake_user.id, role=GroupMemberRole.MEMBER))
 
     response = await async_client.put(
-        f"/study-rooms/{room.id}/members/{target_id}/role", params={"role": "moderator"}, headers=AUTH_HEADERS
+        f"/study-rooms/{room.id}/members/{target_id}/role", params={"role": "editor"}, headers=AUTH_HEADERS
     )
     assert response.status_code == 403
 
@@ -1266,7 +1227,7 @@ async def test_log_moderation_kick_by_room_scoped_moderator_role_alone_denied(
     (2026-08-18 policy change, closes the same class of stale-authority bug as host_id)."""
     room = _make_room()
     target_id = uuid.uuid4()
-    actor_member = _room_member(room.id, as_fake_user.id, role=StudyRoomMemberRole.MODERATOR)
+    actor_member = _room_member(room.id, as_fake_user.id, role=StudyRoomMemberRole.EDITOR)
     monkeypatch.setattr(study_room_router.service, "get_by_id", AsyncMock(return_value=room))
     monkeypatch.setattr(study_room_router.service, "get_member", AsyncMock(return_value=actor_member))
     _mock_group_membership(monkeypatch, _group_member(room.group_id, as_fake_user.id, role=GroupMemberRole.MEMBER))
@@ -1575,13 +1536,27 @@ async def test_delete_room_allowed_for_active_group_owner(async_client, monkeypa
     assert response.status_code == 204
 
 
-async def test_delete_room_allowed_for_active_group_moderator(async_client, monkeypatch, as_fake_user):
+async def test_delete_room_forbidden_for_group_moderator(async_client, monkeypatch, as_fake_user):
     room = _make_room(host_id=uuid.uuid4())
     monkeypatch.setattr(study_room_router.service, "get_by_id", AsyncMock(return_value=room))
     _mock_group_membership(
         monkeypatch, _group_member(room.group_id, as_fake_user.id, role=GroupMemberRole.MODERATOR)
     )
+    soft_delete = AsyncMock(return_value=room)
+    monkeypatch.setattr(study_room_router.service, "soft_delete", soft_delete)
+
+    response = await async_client.delete(f"/study-rooms/{room.id}", headers=AUTH_HEADERS)
+    assert response.status_code == 403
+    soft_delete.assert_not_awaited()
+
+
+async def test_delete_room_allowed_for_room_host(async_client, monkeypatch, as_fake_user):
+    room = _make_room(host_id=as_fake_user.id)
+    monkeypatch.setattr(study_room_router.service, "get_by_id", AsyncMock(return_value=room))
+    _mock_group_membership(monkeypatch, _group_member(room.group_id, as_fake_user.id))
+    _mock_room_roles(monkeypatch, room, {as_fake_user.id: StudyRoomMemberRole.HOST})
     monkeypatch.setattr(study_room_router.service, "soft_delete", AsyncMock(return_value=room))
+    monkeypatch.setattr(study_room_router.livekit_service, "close_room", AsyncMock())
 
     response = await async_client.delete(f"/study-rooms/{room.id}", headers=AUTH_HEADERS)
     assert response.status_code == 204
@@ -1746,22 +1721,6 @@ async def test_rejoin_deleted_room_denied(async_client, monkeypatch, as_fake_use
     assert response.status_code == 404
 
 
-async def test_start_deleted_room_denied_even_for_host(async_client, monkeypatch, as_fake_user):
-    room = _make_room(host_id=as_fake_user.id, deleted_at=datetime.now(timezone.utc))
-    monkeypatch.setattr(study_room_router.service, "get_by_id", AsyncMock(return_value=room))
-
-    response = await async_client.post(f"/study-rooms/{room.id}/start", headers=AUTH_HEADERS)
-    assert response.status_code == 404
-
-
-async def test_end_deleted_room_denied_even_for_host(async_client, monkeypatch, as_fake_user):
-    room = _make_room(host_id=as_fake_user.id, deleted_at=datetime.now(timezone.utc))
-    monkeypatch.setattr(study_room_router.service, "get_by_id", AsyncMock(return_value=room))
-
-    response = await async_client.post(f"/study-rooms/{room.id}/end", headers=AUTH_HEADERS)
-    assert response.status_code == 404
-
-
 async def test_update_deleted_room_denied_even_for_host(async_client, monkeypatch, as_fake_user):
     room = _make_room(host_id=as_fake_user.id, deleted_at=datetime.now(timezone.utc))
     monkeypatch.setattr(study_room_router.service, "get_by_id", AsyncMock(return_value=room))
@@ -1776,7 +1735,7 @@ async def test_update_member_role_deleted_room_denied_even_for_host(async_client
     monkeypatch.setattr(study_room_router.service, "get_by_id", AsyncMock(return_value=room))
 
     response = await async_client.put(
-        f"/study-rooms/{room.id}/members/{target_id}/role", params={"role": "moderator"}, headers=AUTH_HEADERS
+        f"/study-rooms/{room.id}/members/{target_id}/role", params={"role": "editor"}, headers=AUTH_HEADERS
     )
     assert response.status_code == 404
 
@@ -1894,7 +1853,7 @@ async def test_update_whiteboard_forbidden_for_non_member(async_client, monkeypa
     assert response.status_code == 403
 
 
-@pytest.mark.parametrize("role", [StudyRoomMemberRole.HOST, StudyRoomMemberRole.MODERATOR])
+@pytest.mark.parametrize("role", [StudyRoomMemberRole.HOST, StudyRoomMemberRole.EDITOR])
 async def test_update_whiteboard_allowed_for_editors(async_client, monkeypatch, as_fake_user, role):
     room = _make_room()
     monkeypatch.setattr(study_room_router.service, "get_by_id", AsyncMock(return_value=room))
@@ -2142,7 +2101,7 @@ async def test_update_presentation_forbidden_for_non_member(async_client, monkey
     assert response.status_code == 403
 
 
-@pytest.mark.parametrize("role", [StudyRoomMemberRole.HOST, StudyRoomMemberRole.MODERATOR])
+@pytest.mark.parametrize("role", [StudyRoomMemberRole.HOST, StudyRoomMemberRole.EDITOR])
 async def test_update_presentation_allowed_for_editors(async_client, monkeypatch, as_fake_user, role):
     room = _make_room()
     monkeypatch.setattr(study_room_router.service, "get_by_id", AsyncMock(return_value=room))
@@ -2392,34 +2351,6 @@ async def test_unmute_succeeds_even_if_livekit_unmute_fails(async_client, monkey
     assert response.status_code == 200
 
 
-async def test_end_room_closes_the_livekit_room(async_client, monkeypatch, as_fake_user):
-    room = _make_room(host_id=uuid.uuid4())
-    monkeypatch.setattr(study_room_router.service, "get_by_id", AsyncMock(return_value=room))
-    _mock_group_membership(monkeypatch, _group_member(room.group_id, as_fake_user.id, role=GroupMemberRole.OWNER))
-    monkeypatch.setattr(study_room_router.service, "end", AsyncMock(return_value=room))
-    close_room_mock = AsyncMock()
-    monkeypatch.setattr(study_room_router.livekit_service, "close_room", close_room_mock)
-
-    response = await async_client.post(f"/study-rooms/{room.id}/end", headers=AUTH_HEADERS)
-
-    assert response.status_code == 200
-    close_room_mock.assert_awaited_once_with(room.id)
-
-
-async def test_end_room_succeeds_even_if_livekit_close_fails(async_client, monkeypatch, as_fake_user):
-    room = _make_room(host_id=uuid.uuid4())
-    monkeypatch.setattr(study_room_router.service, "get_by_id", AsyncMock(return_value=room))
-    _mock_group_membership(monkeypatch, _group_member(room.group_id, as_fake_user.id, role=GroupMemberRole.OWNER))
-    monkeypatch.setattr(study_room_router.service, "end", AsyncMock(return_value=room))
-    monkeypatch.setattr(
-        study_room_router.livekit_service, "close_room", AsyncMock(side_effect=RuntimeError("boom"))
-    )
-
-    response = await async_client.post(f"/study-rooms/{room.id}/end", headers=AUTH_HEADERS)
-
-    assert response.status_code == 200
-
-
 async def test_delete_room_closes_the_livekit_room(async_client, monkeypatch, as_fake_user):
     room = _make_room(host_id=uuid.uuid4())
     monkeypatch.setattr(study_room_router.service, "get_by_id", AsyncMock(return_value=room))
@@ -2548,3 +2479,209 @@ async def test_private_room_never_sends_group_wide_notifications(monkeypatch):
 
     await service._trigger_room_notifications(MagicMock(), room.id, uuid.uuid4())
     notify.assert_not_called()
+
+
+# --- Rank-based room moderation (owner > host > group moderator > editor > participant) ---
+
+
+def _kick(room, target_id):
+    return {
+        "room_id": str(room.id),
+        "moderator_id": str(uuid.uuid4()),
+        "target_user_id": str(target_id),
+        "action": "kick",
+    }
+
+
+async def test_group_moderator_cannot_kick_another_group_moderator(async_client, monkeypatch, as_fake_user):
+    room = _make_room()
+    other_mod = uuid.uuid4()
+    monkeypatch.setattr(study_room_router.service, "get_by_id", AsyncMock(return_value=room))
+    monkeypatch.setattr(study_room_router.service, "get_member", AsyncMock(return_value=_room_member(room.id, other_mod)))
+    members = {
+        as_fake_user.id: _group_member(room.group_id, as_fake_user.id, role=GroupMemberRole.MODERATOR),
+        other_mod: _group_member(room.group_id, other_mod, role=GroupMemberRole.MODERATOR),
+    }
+    monkeypatch.setattr(permissions.groups_service, "get_member", AsyncMock(side_effect=lambda _s, _g, uid: members.get(uid)))
+    log = AsyncMock()
+    monkeypatch.setattr(study_room_router.service, "log_moderation_action", log)
+
+    response = await async_client.post(f"/study-rooms/{room.id}/moderation", json=_kick(room, other_mod), headers=AUTH_HEADERS)
+    assert response.status_code == 403
+    log.assert_not_awaited()
+
+
+async def test_group_moderator_cannot_mute_the_room_host(async_client, monkeypatch, as_fake_user):
+    room = _make_room()
+    host_id = room.host_id
+    monkeypatch.setattr(study_room_router.service, "get_by_id", AsyncMock(return_value=room))
+    monkeypatch.setattr(study_room_router.service, "get_member", AsyncMock(return_value=_room_member(room.id, host_id)))
+    _mock_group_membership(monkeypatch, _group_member(room.group_id, as_fake_user.id, role=GroupMemberRole.MODERATOR))
+    _mock_room_roles(monkeypatch, room, {host_id: StudyRoomMemberRole.HOST})
+    payload = _kick(room, host_id) | {"action": "mute"}
+
+    response = await async_client.post(f"/study-rooms/{room.id}/moderation", json=payload, headers=AUTH_HEADERS)
+    assert response.status_code == 403
+
+
+async def test_group_moderator_cannot_kick_the_group_owner(async_client, monkeypatch, as_fake_user):
+    room = _make_room()
+    owner_id = uuid.uuid4()
+    monkeypatch.setattr(study_room_router.service, "get_by_id", AsyncMock(return_value=room))
+    monkeypatch.setattr(study_room_router.service, "get_member", AsyncMock(return_value=_room_member(room.id, owner_id)))
+    members = {
+        as_fake_user.id: _group_member(room.group_id, as_fake_user.id, role=GroupMemberRole.MODERATOR),
+        owner_id: _group_member(room.group_id, owner_id, role=GroupMemberRole.OWNER),
+    }
+    monkeypatch.setattr(permissions.groups_service, "get_member", AsyncMock(side_effect=lambda _s, _g, uid: members.get(uid)))
+
+    response = await async_client.post(f"/study-rooms/{room.id}/moderation", json=_kick(room, owner_id), headers=AUTH_HEADERS)
+    assert response.status_code == 403
+
+
+async def test_room_host_can_kick_a_group_moderator(async_client, monkeypatch, as_fake_user):
+    room = _make_room(host_id=as_fake_user.id)
+    mod_id = uuid.uuid4()
+    monkeypatch.setattr(study_room_router.service, "get_by_id", AsyncMock(return_value=room))
+    monkeypatch.setattr(study_room_router.service, "get_member", AsyncMock(return_value=_room_member(room.id, mod_id)))
+    members = {
+        as_fake_user.id: _group_member(room.group_id, as_fake_user.id),
+        mod_id: _group_member(room.group_id, mod_id, role=GroupMemberRole.MODERATOR),
+    }
+    monkeypatch.setattr(permissions.groups_service, "get_member", AsyncMock(side_effect=lambda _s, _g, uid: members.get(uid)))
+    _mock_room_roles(monkeypatch, room, {as_fake_user.id: StudyRoomMemberRole.HOST})
+    action = _moderation_action(room.id, as_fake_user.id, mod_id, ModerationAction.KICK)
+    monkeypatch.setattr(study_room_router.service, "log_moderation_action", AsyncMock(return_value=action))
+    monkeypatch.setattr(study_room_router.livekit_service, "remove_participant", AsyncMock())
+
+    response = await async_client.post(f"/study-rooms/{room.id}/moderation", json=_kick(room, mod_id), headers=AUTH_HEADERS)
+    assert response.status_code == 200
+
+
+async def test_group_moderator_cannot_revoke_drawing_from_another_moderator(async_client, monkeypatch, as_fake_user):
+    room = _make_room()
+    other_mod = uuid.uuid4()
+    monkeypatch.setattr(study_room_router.service, "get_by_id", AsyncMock(return_value=room))
+    monkeypatch.setattr(study_room_router.service, "get_member", AsyncMock(return_value=_room_member(room.id, other_mod)))
+    members = {
+        as_fake_user.id: _group_member(room.group_id, as_fake_user.id, role=GroupMemberRole.MODERATOR),
+        other_mod: _group_member(room.group_id, other_mod, role=GroupMemberRole.MODERATOR),
+    }
+    monkeypatch.setattr(permissions.groups_service, "get_member", AsyncMock(side_effect=lambda _s, _g, uid: members.get(uid)))
+
+    response = await async_client.put(
+        f"/study-rooms/{room.id}/members/{other_mod}/role", params={"role": "participant"}, headers=AUTH_HEADERS
+    )
+    assert response.status_code == 403
+
+
+async def test_room_host_can_grant_drawing_rights(async_client, monkeypatch, as_fake_user):
+    room = _make_room(host_id=as_fake_user.id)
+    target_id = uuid.uuid4()
+    target = _room_member(room.id, target_id)
+    monkeypatch.setattr(study_room_router.service, "get_by_id", AsyncMock(return_value=room))
+    monkeypatch.setattr(study_room_router.service, "get_member", AsyncMock(return_value=target))
+    _mock_group_membership(monkeypatch, _group_member(room.group_id, as_fake_user.id))
+    _mock_room_roles(monkeypatch, room, {as_fake_user.id: StudyRoomMemberRole.HOST})
+    monkeypatch.setattr(
+        study_room_router.service, "update_member_role",
+        AsyncMock(return_value=_room_member(room.id, target_id, role=StudyRoomMemberRole.EDITOR)),
+    )
+
+    response = await async_client.put(
+        f"/study-rooms/{room.id}/members/{target_id}/role", params={"role": "editor"}, headers=AUTH_HEADERS
+    )
+    assert response.status_code == 200
+    assert response.json()["role"] == "editor"
+
+
+async def test_role_endpoint_never_assigns_host(async_client, monkeypatch, as_fake_user):
+    room = _make_room()
+    monkeypatch.setattr(study_room_router.service, "get_by_id", AsyncMock(return_value=room))
+    _mock_group_membership(monkeypatch, _group_member(room.group_id, as_fake_user.id, role=GroupMemberRole.OWNER))
+
+    response = await async_client.put(
+        f"/study-rooms/{room.id}/members/{uuid.uuid4()}/role", params={"role": "host"}, headers=AUTH_HEADERS
+    )
+    assert response.status_code == 400
+
+
+async def test_role_endpoint_cannot_demote_the_host(async_client, monkeypatch, as_fake_user):
+    room = _make_room()
+    host = _room_member(room.id, room.host_id, role=StudyRoomMemberRole.HOST)
+    monkeypatch.setattr(study_room_router.service, "get_by_id", AsyncMock(return_value=room))
+    monkeypatch.setattr(study_room_router.service, "get_member", AsyncMock(return_value=host))
+    _mock_group_membership(monkeypatch, _group_member(room.group_id, as_fake_user.id, role=GroupMemberRole.OWNER))
+
+    response = await async_client.put(
+        f"/study-rooms/{room.id}/members/{room.host_id}/role", params={"role": "participant"}, headers=AUTH_HEADERS
+    )
+    assert response.status_code == 400
+
+
+# --- Host transfer ---
+
+
+def _transfer_setup(monkeypatch, room, actor_group_role, actor_room_role, new_host):
+    monkeypatch.setattr(study_room_router.service, "get_by_id", AsyncMock(return_value=room))
+    monkeypatch.setattr(study_room_router.service, "get_member", AsyncMock(return_value=new_host))
+    old_host = _room_member(room.id, room.host_id, role=StudyRoomMemberRole.HOST)
+    monkeypatch.setattr(study_room_router.service, "get_host_member", AsyncMock(return_value=old_host))
+    return old_host
+
+
+async def test_host_can_transfer_host_role(async_client, monkeypatch, as_fake_user):
+    room = _make_room(host_id=as_fake_user.id)
+    new_id = uuid.uuid4()
+    new_host = _room_member(room.id, new_id)
+    old_host = _transfer_setup(monkeypatch, room, GroupMemberRole.MEMBER, StudyRoomMemberRole.HOST, new_host)
+    _mock_group_membership(monkeypatch, _group_member(room.group_id, as_fake_user.id))
+    _mock_room_roles(monkeypatch, room, {as_fake_user.id: StudyRoomMemberRole.HOST})
+
+    response = await async_client.post(f"/study-rooms/{room.id}/host", json={"user_id": str(new_id)}, headers=AUTH_HEADERS)
+    assert response.status_code == 200
+    assert new_host.role == StudyRoomMemberRole.HOST
+    assert old_host.role == StudyRoomMemberRole.PARTICIPANT
+    assert room.host_id == new_id
+
+
+async def test_group_moderator_cannot_transfer_host(async_client, monkeypatch, as_fake_user):
+    room = _make_room()
+    new_host = _room_member(room.id, uuid.uuid4())
+    _transfer_setup(monkeypatch, room, GroupMemberRole.MODERATOR, None, new_host)
+    _mock_group_membership(monkeypatch, _group_member(room.group_id, as_fake_user.id, role=GroupMemberRole.MODERATOR))
+
+    response = await async_client.post(
+        f"/study-rooms/{room.id}/host", json={"user_id": str(new_host.user_id)}, headers=AUTH_HEADERS
+    )
+    assert response.status_code == 403
+
+
+async def test_host_transfer_requires_target_inside_the_room(async_client, monkeypatch, as_fake_user):
+    room = _make_room()
+    gone = _room_member(room.id, uuid.uuid4(), left_at=datetime.now(timezone.utc))
+    _transfer_setup(monkeypatch, room, GroupMemberRole.OWNER, None, gone)
+    _mock_group_membership(monkeypatch, _group_member(room.group_id, as_fake_user.id, role=GroupMemberRole.OWNER))
+
+    response = await async_client.post(
+        f"/study-rooms/{room.id}/host", json={"user_id": str(gone.user_id)}, headers=AUTH_HEADERS
+    )
+    assert response.status_code == 400
+
+
+async def test_start_and_end_endpoints_are_gone(async_client, as_fake_user):
+    room_id = uuid.uuid4()
+    for path in ("start", "end"):
+        response = await async_client.post(f"/study-rooms/{room_id}/{path}", headers=AUTH_HEADERS)
+        assert response.status_code in (404, 405)
+
+
+async def test_list_rooms_reports_active_member_count(async_client, monkeypatch, as_fake_user):
+    room = _make_room()
+    monkeypatch.setattr(study_room_router.service, "list_by_group", AsyncMock(return_value=[room]))
+    monkeypatch.setattr(study_room_router.service, "active_member_counts", AsyncMock(return_value={room.id: 3}))
+
+    response = await async_client.get("/study-rooms/", params={"group_id": str(room.group_id)}, headers=AUTH_HEADERS)
+    assert response.status_code == 200
+    assert response.json()[0]["active_member_count"] == 3
+

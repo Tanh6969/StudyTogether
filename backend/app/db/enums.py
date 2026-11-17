@@ -73,11 +73,17 @@ class InvitationStatus(str, enum.Enum):
 
 class StudyRoomMemberRole(str, enum.Enum):
     HOST = "host"
-    MODERATOR = "moderator"
+    # "May draw on the board / control slides" -- renamed from "moderator" (migration 010)
+    # so it is no longer confused with a GROUP moderator.
+    EDITOR = "editor"
     PARTICIPANT = "participant"
 
 
 class StudyRoomStatus(str, enum.Enum):
+    """Rooms no longer have a start/end lifecycle (migration 010): every live room is ACTIVE
+    and a room is removed by (soft) deleting it. WAITING/ENDED stay only because the Postgres
+    enum type still has them."""
+
     WAITING = "waiting"
     ACTIVE = "active"
     ENDED = "ended"

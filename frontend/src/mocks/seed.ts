@@ -172,10 +172,10 @@ export function createSeed(): MockDb {
   });
   const rooms: StudyRoom[] = [
     room('r-ielts-speaking', 'g-ielts', 'Luyện Speaking buổi tối', 'u-hoangnam', 'active', 'Part 2 + Part 3, mỗi người 2 đề.', 35 * MIN),
-    room('r-ielts-writing', 'g-ielts', 'Chữa Writing Task 2', 'u-minhanh', 'waiting', 'Mang bài viết tuần này lên chữa chung.', null),
+    room('r-ielts-writing', 'g-ielts', 'Chữa Writing Task 2', 'u-minhanh', 'active', 'Mang bài viết tuần này lên chữa chung.', null),
     room('r-gt-giuaky', 'g-giaitich', 'Chữa đề giữa kỳ 2024', 'u-hoangnam', 'active', 'Tích phân bội và tích phân đường.', 15 * MIN),
-    room('r-react-hooks', 'g-react', 'React Hooks nâng cao', 'u-thutrang', 'waiting', null, null),
-    room('r-n3-kanji', 'g-n3', 'Ôn Kanji tuần 5', 'u-quocbao', 'waiting', null, null),
+    room('r-react-hooks', 'g-react', 'React Hooks nâng cao', 'u-thutrang', 'active', null, null),
+    room('r-n3-kanji', 'g-n3', 'Ôn Kanji tuần 5', 'u-quocbao', 'active', null, null),
   ];
   let rmSeq = 0;
   const rm = (room_id: string, user_id: string, role: MockRoomMember['role'], minsAgo: number): MockRoomMember => ({

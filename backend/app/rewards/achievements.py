@@ -34,7 +34,7 @@ _COUNTERS_SQL = text(
       (select count(*) from room_tasks t where t.user_id = :uid and t.status = 'done'
          and extract(hour from t.done_at at time zone '{TZ}') between 5 and 6) as early_bird,
       (select count(*) from study_room_members m where m.user_id = :uid) as sessions,
-      (select count(*) from study_rooms r where r.host_id = :uid and r.deleted_at is null) as rooms_hosted,
+      (select count(*) from study_rooms r where r.host_id = :uid) as rooms_hosted,
       (select coalesce(floor(extract(epoch from sum(
           least(coalesce(m.left_at, now()) - m.joined_at, interval '6 hours'))) / 3600), 0)
          from study_room_members m where m.user_id = :uid) as study_hours

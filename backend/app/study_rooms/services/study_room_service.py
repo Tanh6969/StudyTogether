@@ -1,6 +1,6 @@
 import uuid
 from datetime import datetime, timezone
-from sqlalchemy import select, update
+from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -31,7 +31,8 @@ class StudyRoomsService:
         A Study Room must never exist without its Conversation (see
         STUDY_PLATFORM_DATABASE_SPEC.md § 16); this is the only creation path, so that
         invariant holds by construction rather than by a later backfill."""
-        room = StudyRoom(**data.model_dump(), host_id=host_id)
+        # No start/end lifecycle any more: a room is live the moment it exists.
+        room = StudyRoom(**data.model_dump(), host_id=host_id, status=StudyRoomStatus.ACTIVE)
         session.add(room)
         await session.flush()
 
@@ -77,18 +78,6 @@ class StudyRoomsService:
         remain in the database (see docs/db/migrations/010_soft_delete_study_rooms.sql)."""
         room.deleted_at = datetime.now(timezone.utc)
         room.deleted_by = deleted_by
-        await session.flush()
-        return room
-
-    async def start(self, session: AsyncSession, room: StudyRoom) -> StudyRoom:
-        room.status = StudyRoomStatus.ACTIVE
-        room.started_at = datetime.now(timezone.utc)
-        await session.flush()
-        return room
-
-    async def end(self, session: AsyncSession, room: StudyRoom) -> StudyRoom:
-        room.status = StudyRoomStatus.ENDED
-        room.ended_at = datetime.now(timezone.utc)
         await session.flush()
         return room
 
@@ -202,6 +191,39 @@ class StudyRoomsService:
         member.role = role
         await session.flush()
         return member
+
+    async def transfer_host(
+        self, session: AsyncSession, room: StudyRoom, current_host: StudyRoomMember | None, new_host: StudyRoomMember
+    ) -> StudyRoomMember:
+        """Moves the single HOST role. The previous host drops to PARTICIPANT (a group
+        owner/moderator keeps their drawing rights through their group role anyway).
+        `study_rooms.host_id` follows, so the room card and "rooms hosted" stay accurate."""
+        if current_host is not None and current_host.id != new_host.id:
+            current_host.role = StudyRoomMemberRole.PARTICIPANT
+        new_host.role = StudyRoomMemberRole.HOST
+        room.host_id = new_host.user_id
+        await session.flush()
+        return new_host
+
+    async def get_host_member(self, session: AsyncSession, room_id: uuid.UUID) -> StudyRoomMember | None:
+        result = await session.execute(
+            select(StudyRoomMember)
+            .options(selectinload(StudyRoomMember.user))
+            .where(StudyRoomMember.room_id == room_id, StudyRoomMember.role == StudyRoomMemberRole.HOST)
+        )
+        return result.scalars().first()
+
+    async def active_member_counts(self, session: AsyncSession, room_ids: list[uuid.UUID]) -> dict[uuid.UUID, int]:
+        """How many people are currently inside each room -- drives the "live" badges on the
+        group page now that rooms have no start/end status."""
+        if not room_ids:
+            return {}
+        result = await session.execute(
+            select(StudyRoomMember.room_id, func.count())
+            .where(StudyRoomMember.room_id.in_(room_ids), StudyRoomMember.left_at.is_(None))
+            .group_by(StudyRoomMember.room_id)
+        )
+        return {room_id: int(count) for room_id, count in result.all()}
 
     # --- moderation ---
 

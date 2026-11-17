@@ -42,13 +42,14 @@ import { NotesStackPanel } from './NotesStackPanel';
 import { TaskFlowBoard } from './TaskFlowBoard';
 import { WorkspaceTabs, HeaderIconButton } from '../../components/groups/WorkspaceTabs';
 import { ApiError } from '../../lib/apiClient';
-import { getGroup, listGroupMembers, leaveGroup, removeMember, updateMemberRole } from '../../lib/group.api';
+import { deleteGroup, getGroup, listGroupMembers, leaveGroup, leaveGroupAsOwner, removeMember, updateMemberRole } from '../../lib/group.api';
 import { InviteModal } from '../../components/invitations/InviteModal';
 import { GroupStreakStrip } from '../../components/groups/GroupStreakStrip';
 import { FramedAvatar } from '../../components/ui/FramedAvatar';
 import { JoinByCodeModal } from '../../components/invitations/JoinByCodeModal';
 import { GroupSettingsModal } from '../../components/groups/GroupSettingsModal';
 import { GroupMembersPanel } from '../../components/groups/GroupMembersPanel';
+import { OwnerLeaveModal } from '../../components/groups/OwnerLeaveModal';
 import { createChannel, deleteChannel, getChannel, listChannelMembers, listChannelsByGroup, removeChannelMember } from '../../lib/channel.api';
 import { createStudyRoom, deleteStudyRoom, getStudyRoom, listStudyRoomMembers, listStudyRoomsByGroup } from '../../lib/studyRoom.api';
 import { preloadStudyRoomPage } from './studyRoomPage';
@@ -160,6 +161,9 @@ export function StudyGroupDetail() {
   // Leave-group mutation state
   const [isLeaving, setIsLeaving] = useState(false);
   const [leaveError, setLeaveError] = useState<string | null>(null);
+  // Owner leaving: they must first pick who becomes the new owner (backend answers a plain
+  // self-leave with 409).
+  const [isOwnerLeaveOpen, setIsOwnerLeaveOpen] = useState(false);
 
   // Group Settings modal state
   const [isSettingsModalOpen, setIsSettingsModalOpen] = useState(false);
@@ -373,7 +377,7 @@ export function StudyGroupDetail() {
         const idx = prev.findIndex((r) => r.id === room.id);
         if (idx === -1) return [...prev, room];
         const next = [...prev];
-        next[idx] = room;
+        next[idx] = { ...room, active_member_count: room.active_member_count ?? prev[idx].active_member_count };
         return next;
       });
     },
@@ -387,11 +391,13 @@ export function StudyGroupDetail() {
   // member, see STUDY_PLATFORM_DATABASE_SPEC.md §16).
   const isGroupManager =
     isOwner || (!!currentUserId && activeMembers.some((m) => m.user_id === currentUserId && m.role === 'moderator'));
-  // Backend rule (DELETE /study-rooms/{id}): only an active group owner/moderator may delete
-  // a room -- being its host is not sufficient on its own (2026-08-18 policy change: host_id
-  // is creator metadata, not an independent authorization grant). This is UX-only; the
-  // backend independently re-checks the same rule (study_room_router.delete_room).
-  const canDeleteRoom = isGroupManager;
+  const isActiveMember = !!currentUserId && activeMembers.some((m) => m.user_id === currentUserId);
+  // Room authority (lib/roomPermissions.ts): settings / delete belong to the group owner and the
+  // room's host; invitations to owner, host and group moderators. UX-only -- the backend
+  // re-checks (study_room_router / invitation_router).
+  const isRoomHost = (room: StudyRoom | null) => !!room && isActiveMember && room.host_id === currentUserId;
+  const canManageRoom = (room: StudyRoom | null) => !!room && (isOwner || isRoomHost(room));
+  const canInviteToRoom = (room: StudyRoom | null) => !!room && (isGroupManager || isRoomHost(room));
 
   const {
     resources,
@@ -441,10 +447,12 @@ export function StudyGroupDetail() {
 
   async function handleLeaveGroup() {
     if (!group || !currentUserId || isLeaving) return;
-    const confirmMessage = isOwner
-      ? `Bạn là trưởng nhóm "${group.name}". Rời nhóm sẽ không chuyển quyền trưởng nhóm cho ai khác. Bạn vẫn muốn rời nhóm?`
-      : `Bạn có chắc muốn rời nhóm "${group.name}"?`;
-    if (!window.confirm(confirmMessage)) return;
+    if (isOwner) {
+      setLeaveError(null);
+      setIsOwnerLeaveOpen(true);
+      return;
+    }
+    if (!window.confirm(`Bạn có chắc muốn rời nhóm "${group.name}"?`)) return;
 
     setIsLeaving(true);
     setLeaveError(null);
@@ -453,6 +461,32 @@ export function StudyGroupDetail() {
       navigate('/groups');
     } catch (err) {
       setLeaveError(err instanceof ApiError ? err.message : 'Không thể rời nhóm học.');
+      setIsLeaving(false);
+    }
+  }
+
+  async function handleOwnerLeave(successorId: string) {
+    if (!group || isLeaving) return;
+    setIsLeaving(true);
+    setLeaveError(null);
+    try {
+      await leaveGroupAsOwner(group.id, successorId);
+      navigate('/groups');
+    } catch (err) {
+      setLeaveError(err instanceof ApiError ? err.message : 'Không thể rời nhóm học.');
+      setIsLeaving(false);
+    }
+  }
+
+  async function handleDeleteGroupAsLastMember() {
+    if (!group || isLeaving) return;
+    setIsLeaving(true);
+    setLeaveError(null);
+    try {
+      await deleteGroup(group.id);
+      navigate('/groups');
+    } catch (err) {
+      setLeaveError(err instanceof ApiError ? err.message : 'Không thể xóa nhóm học.');
       setIsLeaving(false);
     }
   }
@@ -775,10 +809,10 @@ export function StudyGroupDetail() {
     chatEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [messages, activeChannel, mainView]);
 
-  // Study Rooms that can still be joined/watched (mirrors the backend's can_join_room lifecycle gate).
-  const openRooms = studyRooms.filter((r) => r.status !== 'ended');
+  // Rooms have no start/end any more: every listed room is open, and a room is "live" while
+  // somebody is inside it.
+  const openRooms = studyRooms;
   const activeRoom = openRooms.find((r) => r.id === activeRoomId) ?? openRooms[0] ?? null;
-  const liveRoomCount = openRooms.filter((r) => r.status === 'active').length;
   const activeRoomHost = activeRoom ? groupMembers.find((m) => m.user_id === activeRoom.host_id)?.user : undefined;
   const activeRoomIdForMembers = mainView === 'rooms' ? activeRoom?.id ?? null : null;
 
@@ -795,6 +829,11 @@ export function StudyGroupDetail() {
     return () => { cancelled = true; };
   }, [activeRoomIdForMembers, roomPresenceReload]);
   const activeRoomPresence = roomPresence && roomPresence.roomId === activeRoomIdForMembers ? roomPresence.members : null;
+  // The selected room's presence is realtime; the others use the count from the room list.
+  const peopleInRoom = (room: StudyRoom) =>
+    room.id === activeRoom?.id && activeRoomPresence ? activeRoomPresence.length : room.active_member_count ?? 0;
+  const liveRoomCount = openRooms.filter((r) => peopleInRoom(r) > 0).length;
+  const isActiveRoomLive = !!activeRoom && peopleInRoom(activeRoom) > 0;
 
   const countBadge = (count: number) => (
     <span style={{minWidth: 22, padding: '1px 7px', borderRadius: 10, background: '#E2E8F0', color: '#475569', fontSize: 12, fontWeight: 600, textAlign: 'center', boxSizing: 'border-box'}}>{count}</span>
@@ -1156,7 +1195,7 @@ export function StudyGroupDetail() {
                     )}
                 </div>
 
-                {leaveError && (
+                {leaveError && !isOwnerLeaveOpen && (
                     <div style={{ margin: '12px 12px 0 12px', padding: '10px 12px', background: '#FEF2F2', border: '1px solid #FECACA', borderRadius: 8, color: '#B91C1C', fontSize: 12.5 }}>
                         {leaveError}
                     </div>
@@ -1183,7 +1222,7 @@ export function StudyGroupDetail() {
                                 {item.meta}
                             </button>
                             {item.key === 'chat' && channels.map(channel => <button key={channel.id} type="button" title={channel.description || channel.name} onClick={() => { setMainView('chat'); setActiveChannel(channel.id); setOpenHeaderMenu(null); }} style={{width:'100%',minHeight:34,padding:'0 10px 0 38px',display:'flex',alignItems:'center',gap:8,border:0,borderRadius:7,background:mainView==='chat'&&activeChannel===channel.id?'#E2E8F0':'transparent',color:mainView==='chat'&&activeChannel===channel.id?'#0F172A':'#64748B',fontSize:13,cursor:'pointer',textAlign:'left'}}>{channel.is_private ? <Lock size={14}/> : <Hash size={14}/>}<span style={{overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{channel.name}</span></button>)}
-                            {item.key === 'rooms' && openRooms.map(room => <button key={room.id} type="button" title={room.name} onClick={() => { setMainView('rooms'); setActiveRoomId(room.id); setOpenHeaderMenu(null); }} style={{width:'100%',minHeight:34,padding:'0 10px 0 38px',display:'flex',alignItems:'center',gap:8,border:0,borderRadius:7,background:mainView==='rooms'&&activeRoom?.id===room.id?'#E2E8F0':'transparent',color:mainView==='rooms'&&activeRoom?.id===room.id?'#0F172A':'#64748B',fontSize:13,cursor:'pointer',textAlign:'left'}}><Video size={14}/><span style={{overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap',flex:1}}>{room.name}</span>{room.status==='active'&&<span style={{width:7,height:7,borderRadius:'50%',background:'#10B981'}}/>}</button>)}
+                            {item.key === 'rooms' && openRooms.map(room => <button key={room.id} type="button" title={room.name} onClick={() => { setMainView('rooms'); setActiveRoomId(room.id); setOpenHeaderMenu(null); }} style={{width:'100%',minHeight:34,padding:'0 10px 0 38px',display:'flex',alignItems:'center',gap:8,border:0,borderRadius:7,background:mainView==='rooms'&&activeRoom?.id===room.id?'#E2E8F0':'transparent',color:mainView==='rooms'&&activeRoom?.id===room.id?'#0F172A':'#64748B',fontSize:13,cursor:'pointer',textAlign:'left'}}><Video size={14}/><span style={{overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap',flex:1}}>{room.name}</span>{peopleInRoom(room)>0&&<span title={`${peopleInRoom(room)} người đang học`} style={{width:7,height:7,borderRadius:'50%',background:'#10B981'}}/>}</button>)}
                           </div>
                         );
                     })}
@@ -1418,17 +1457,21 @@ export function StudyGroupDetail() {
                             {isGroupManager && (
                                 <HeaderIconButton label="Tạo phòng học mới" onClick={() => { setCreateRoomError(null); setIsCreateRoomModalOpen(true); }}><Plus size={18} /></HeaderIconButton>
                             )}
-                            {canDeleteRoom && activeRoom && (
+                            {activeRoom && (canInviteToRoom(activeRoom) || canManageRoom(activeRoom)) && (
                                 <div data-header-menu style={{position: 'relative'}}>
                                     <HeaderIconButton label={`Tùy chọn phòng ${activeRoom.name}`} active={openHeaderMenu === 'room'} onClick={() => setOpenHeaderMenu(openHeaderMenu === 'room' ? null : 'room')}><MoreVertical size={17} /></HeaderIconButton>
                                     {openHeaderMenu === 'room' && (
                                         <div role="menu" style={headerMenuStyle}>
-                                            <button type="button" role="menuitem" className="workspace-icon-button" style={headerMenuItemStyle(false)} onClick={() => { setOpenHeaderMenu(null); setRoomToInvite(activeRoom); }}>
-                                                <Ticket size={16} color="#475569" /> Mời bằng mã
-                                            </button>
-                                            <button type="button" role="menuitem" className="workspace-icon-button" style={headerMenuItemStyle(true)} onClick={() => { setOpenHeaderMenu(null); setDeleteRoomError(null); setRoomPendingDelete(activeRoom); }}>
-                                                <Trash2 size={16} color="#DC2626" /> Xóa phòng học
-                                            </button>
+                                            {canInviteToRoom(activeRoom) && (
+                                                <button type="button" role="menuitem" className="workspace-icon-button" style={headerMenuItemStyle(false)} onClick={() => { setOpenHeaderMenu(null); setRoomToInvite(activeRoom); }}>
+                                                    <Ticket size={16} color="#475569" /> Mời bằng mã
+                                                </button>
+                                            )}
+                                            {canManageRoom(activeRoom) && (
+                                                <button type="button" role="menuitem" className="workspace-icon-button" style={headerMenuItemStyle(true)} onClick={() => { setOpenHeaderMenu(null); setDeleteRoomError(null); setRoomPendingDelete(activeRoom); }}>
+                                                    <Trash2 size={16} color="#DC2626" /> Xóa phòng học
+                                                </button>
+                                            )}
                                         </div>
                                     )}
                                 </div>
@@ -1453,9 +1496,9 @@ export function StudyGroupDetail() {
                                 <div style={{width: 64, height: 64, margin: '0 auto 16px', borderRadius: 16, background: '#EEF2FF', display: 'grid', placeItems: 'center'}}>
                                     <Video size={28} color="#4338CA" />
                                 </div>
-                                <div style={{fontSize: 18, fontWeight: 700, color: '#0F172A', marginBottom: 6}}>Chưa có phòng học nào đang mở</div>
+                                <div style={{fontSize: 18, fontWeight: 700, color: '#0F172A', marginBottom: 6}}>Chưa có phòng học nào</div>
                                 <div style={{fontSize: 14, color: '#64748B', lineHeight: 1.5, marginBottom: 20}}>
-                                    {isGroupManager ? 'Tạo phòng để cả nhóm học cùng qua video và bảng trắng.' : 'Khi quản trị viên mở phòng, phòng sẽ xuất hiện ở đây.'}
+                                    {isGroupManager ? 'Tạo phòng để cả nhóm học cùng qua video và bảng trắng.' : 'Khi trưởng nhóm hoặc điều hành viên tạo phòng, phòng sẽ xuất hiện ở đây.'}
                                 </div>
                                 <div style={{display: 'flex', justifyContent: 'center', gap: 8, flexWrap: 'wrap'}}>
                                     {isGroupManager && (
@@ -1470,17 +1513,17 @@ export function StudyGroupDetail() {
                             </div>
                         ) : (
                             <article key={activeRoom.id} style={{width: '100%', maxWidth: 680, background: 'white', border: '1px solid #E2E8F0', borderRadius: 16, overflow: 'hidden', boxShadow: '0 1px 3px rgba(15,23,42,0.06)'}}>
-                                <div style={{padding: '28px 28px 24px', display: 'flex', alignItems: 'center', gap: 16, background: activeRoom.status === 'active' ? 'linear-gradient(135deg, #ECFDF5, #D1FAE5)' : 'linear-gradient(135deg, #EFF6FF, #E0E7FF)'}}>
+                                <div style={{padding: '28px 28px 24px', display: 'flex', alignItems: 'center', gap: 16, background: isActiveRoomLive ? 'linear-gradient(135deg, #ECFDF5, #D1FAE5)' : 'linear-gradient(135deg, #EFF6FF, #E0E7FF)'}}>
                                     <div style={{width: 56, height: 56, flexShrink: 0, borderRadius: 14, background: 'white', display: 'grid', placeItems: 'center', boxShadow: '0 1px 3px rgba(15,23,42,0.08)'}}>
-                                        <Video size={26} color={activeRoom.status === 'active' ? '#059669' : '#4338CA'} />
+                                        <Video size={26} color={isActiveRoomLive ? '#059669' : '#4338CA'} />
                                     </div>
                                     <div style={{minWidth: 0}}>
-                                        {activeRoom.status === 'active' ? (
+                                        {isActiveRoomLive ? (
                                             <span style={{display: 'inline-flex', alignItems: 'center', gap: 6, padding: '2px 10px', borderRadius: 999, background: '#10B981', color: 'white', fontSize: 11, fontWeight: 700, letterSpacing: 0.4}}>
-                                                <span className="workspace-live-dot" style={{width: 6, height: 6, borderRadius: '50%', background: 'white'}} /> ĐANG DIỄN RA
+                                                <span className="workspace-live-dot" style={{width: 6, height: 6, borderRadius: '50%', background: 'white'}} /> {peopleInRoom(activeRoom)} NGƯỜI ĐANG HỌC
                                             </span>
                                         ) : (
-                                            <span style={{display: 'inline-flex', padding: '2px 10px', borderRadius: 999, background: '#FEF3C7', color: '#B45309', fontSize: 11, fontWeight: 700, letterSpacing: 0.4}}>CHỜ BẮT ĐẦU</span>
+                                            <span style={{display: 'inline-flex', padding: '2px 10px', borderRadius: 999, background: '#E0E7FF', color: '#3730A3', fontSize: 11, fontWeight: 700, letterSpacing: 0.4}}>ĐANG MỞ · CHƯA CÓ AI</span>
                                         )}
                                         {activeRoom.is_private && (
                                             <span style={{display: 'inline-flex', alignItems: 'center', gap: 4, marginLeft: 6, padding: '2px 10px', borderRadius: 999, background: '#1E293B', color: 'white', fontSize: 11, fontWeight: 700, letterSpacing: 0.4, verticalAlign: 'top'}}>
@@ -1504,10 +1547,8 @@ export function StudyGroupDetail() {
                                                 : { icon: <Globe size={16} color="#64748B" />, label: 'Quyền vào', value: 'Cả nhóm' },
                                             {
                                                 icon: <Clock size={16} color="#64748B" />,
-                                                label: activeRoom.status === 'active' && activeRoom.started_at ? 'Bắt đầu lúc' : 'Tạo ngày',
-                                                value: activeRoom.status === 'active' && activeRoom.started_at
-                                                    ? new Date(activeRoom.started_at).toLocaleTimeString('vi-VN', { hour: '2-digit', minute: '2-digit' })
-                                                    : new Date(activeRoom.created_at).toLocaleDateString('vi-VN'),
+                                                label: 'Tạo ngày',
+                                                value: new Date(activeRoom.created_at).toLocaleDateString('vi-VN'),
                                             },
                                         ].map(item => (
                                             <div key={item.label} style={{padding: '12px 14px', borderRadius: 10, background: '#F8FAFC', border: '1px solid #F1F5F9', minWidth: 0}}>
@@ -1540,7 +1581,7 @@ export function StudyGroupDetail() {
                                                             <FramedAvatar size={32} initials={getAvatarInitials(name)} color={getAvatarColor(name)} avatarUrl={member.user.avatar_url} frame={member.user.avatar_frame ?? null} />
                                                             <span style={{minWidth: 0, display: 'grid'}}>
                                                                 <span style={{fontSize: 13, fontWeight: 600, color: '#0F172A', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap'}}>{name}{isSelf ? ' (Bạn)' : ''}</span>
-                                                                <span style={{fontSize: 11, color: '#64748B'}}>{member.role === 'host' ? 'Chủ phòng' : member.role === 'moderator' ? 'Điều phối' : 'Thành viên'}</span>
+                                                                <span style={{fontSize: 11, color: '#64748B'}}>{member.role === 'host' ? 'Chủ phòng' : member.role === 'editor' ? 'Được vẽ bảng' : 'Thành viên'}</span>
                                                             </span>
                                                         </li>
                                                     );
@@ -1554,9 +1595,9 @@ export function StudyGroupDetail() {
                                         onPointerEnter={preloadStudyRoomPage}
                                         onFocus={preloadStudyRoomPage}
                                         onClick={() => handleJoinRoom(activeRoom.id)}
-                                        style={{width: '100%', padding: '13px 0', border: 'none', borderRadius: 10, background: activeRoom.status === 'active' ? '#059669' : '#00236F', color: 'white', fontSize: 15, fontWeight: 600, cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8}}
+                                        style={{width: '100%', padding: '13px 0', border: 'none', borderRadius: 10, background: isActiveRoomLive ? '#059669' : '#00236F', color: 'white', fontSize: 15, fontWeight: 600, cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8}}
                                     >
-                                        <Video size={18} /> {activeRoom.status === 'active' ? 'Vào phòng ngay' : 'Tham gia phòng'}
+                                        <Video size={18} /> {isActiveRoomLive ? 'Vào học cùng mọi người' : 'Vào phòng'}
                                     </button>
                                 </div>
                             </article>
@@ -1967,6 +2008,19 @@ export function StudyGroupDetail() {
                     </div>
                 </div>
             </div>
+        )}
+
+        {/* Modal: Trưởng nhóm rời nhóm -- chọn người kế nhiệm */}
+        {isOwnerLeaveOpen && group && (
+            <OwnerLeaveModal
+                groupName={group.name}
+                candidates={activeMembers.filter((m) => m.user_id !== currentUserId)}
+                pending={isLeaving}
+                error={leaveError}
+                onCancel={() => { if (!isLeaving) { setIsOwnerLeaveOpen(false); setLeaveError(null); } }}
+                onConfirm={(successorId) => void handleOwnerLeave(successorId)}
+                onDeleteGroup={() => void handleDeleteGroupAsLastMember()}
+            />
         )}
 
         {/* Modal: Xác nhận xóa phòng học */}

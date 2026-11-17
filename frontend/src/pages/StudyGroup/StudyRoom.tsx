@@ -51,6 +51,7 @@ import {
 import { PreJoinLobby } from './meeting/PreJoinLobby';
 import type { MediaJoinChoice } from './meeting/PreJoinLobby';
 import { SessionTasksPanel } from './SessionTasksPanel';
+import { ROOM_RANK_LABEL } from '../../lib/roomPermissions';
 
 
 interface CenteredRoomMessageProps {
@@ -89,29 +90,25 @@ export function StudyRoom() {
     members,
     loading,
     roomError,
-    membersError,
     actionError,
     clearActionError,
     currentUserId,
-    isGroupManager,
-    groupManagerIds,
+    currentMember,
+    rankOf,
+    myRank,
+    permissions,
+    whiteboardEditorIds,
     isCurrentUserMember,
     handRaisedUserIds,
     moderationMutedUserIds,
     join,
     leave,
-    start,
-    end,
     deleteRoom,
     moderate,
     changeMemberRole,
+    transferHost,
     refetchRoom,
   } = useStudyRoom(roomId);
-
-  const currentUserRole = useMemo(() => {
-    const member = members.find((m) => m.user_id === currentUserId && !m.left_at);
-    return member?.role;
-  }, [members, currentUserId]);
 
   // Room states
   const [activeMode, setActiveMode] = useState<'video' | 'whiteboard' | 'game'>('video');
@@ -132,7 +129,6 @@ export function StudyRoom() {
   const [isWhiteboardPermissionsOpen, setIsWhiteboardPermissionsOpen] = useState(false);
   const [pendingRoomRoleUserId, setPendingRoomRoleUserId] = useState<string | null>(null);
   const [isDeletingRoom, setIsDeletingRoom] = useState(false);
-  const [isLifecycleBusy, setIsLifecycleBusy] = useState(false);
   const [lobbyConfirmed, setLobbyConfirmed] = useState(false);
   const [callParticipants, setCallParticipants] = useState<ConnectedCallParticipant[]>([]);
   const handleCallParticipantsChange = useCallback((next: ConnectedCallParticipant[]) => {
@@ -142,14 +138,6 @@ export function StudyRoom() {
     );
   }, []);
   const [mediaChoice, setMediaChoice] = useState<MediaJoinChoice>({ audioEnabled: true, videoEnabled: true });
-
-  // Whiteboard editors: room host/moderator or an active group owner/moderator -- the same
-  // rule as the backend's can_edit_whiteboard. Board packets from anyone else are ignored.
-  const whiteboardEditorIds = useMemo(() => {
-    const ids = new Set<string>(groupManagerIds);
-    for (const m of members) if (!m.left_at && (m.role === 'host' || m.role === 'moderator')) ids.add(m.user_id);
-    return ids;
-  }, [members, groupManagerIds]);
 
   // Once opened, the board stays mounted (hidden) while you switch to video / slides / the game.
   // Unmounting it threw away the live Excalidraw scene, and the remount only had the stale
@@ -171,8 +159,8 @@ export function StudyRoom() {
     navigate(room ? `/groups/${room.group_id}` : '/groups');
   };
 
-  const handleWhiteboardRoleChange = async (userId: string, role: 'moderator' | 'participant') => {
-    if (pendingRoomRoleUserId || !isGroupManager) return;
+  const handleWhiteboardRoleChange = async (userId: string, role: 'editor' | 'participant') => {
+    if (pendingRoomRoleUserId || !permissions.canModerate) return;
     setPendingRoomRoleUserId(userId);
     try {
       await changeMemberRole(userId, role);
@@ -183,25 +171,15 @@ export function StudyRoom() {
     }
   };
 
-  const handleStartRoom = async () => {
-    setIsLifecycleBusy(true);
+  const handleTransferHost = async (userId: string) => {
+    if (pendingRoomRoleUserId || !permissions.canManageRoom) return;
+    setPendingRoomRoleUserId(userId);
     try {
-      await start();
+      await transferHost(userId);
     } catch {
-      // actionError is already populated by the hook.
+      // transferHost records actionError for the permissions dialog.
     } finally {
-      setIsLifecycleBusy(false);
-    }
-  };
-
-  const handleEndRoom = async () => {
-    setIsLifecycleBusy(true);
-    try {
-      await end();
-    } catch {
-      // actionError is already populated by the hook.
-    } finally {
-      setIsLifecycleBusy(false);
+      setPendingRoomRoleUserId(null);
     }
   };
 
@@ -245,20 +223,17 @@ export function StudyRoom() {
     }
   };
 
-  // Real session timer, derived from the backend's started_at/ended_at (no fabricated duration).
+  // The viewer's own study time for this visit, from their membership's joined_at (the same
+  // value the "study hours" achievement is computed from). Rooms have no room-wide start/end.
+  const joinedAt = isCurrentUserMember ? currentMember?.joined_at ?? null : null;
   const [now, setNow] = useState(() => Date.now());
   useEffect(() => {
-    if (room?.status !== 'active') return;
+    if (!joinedAt) return;
     const timer = setInterval(() => setNow(Date.now()), 1000);
     return () => clearInterval(timer);
-  }, [room?.status]);
+  }, [joinedAt]);
 
-  const elapsedSeconds = useMemo(() => {
-    if (!room?.started_at) return null;
-    const startMs = new Date(room.started_at).getTime();
-    const endMs = room.status === 'ended' && room.ended_at ? new Date(room.ended_at).getTime() : now;
-    return Math.max(0, Math.floor((endMs - startMs) / 1000));
-  }, [room, now]);
+  const elapsedSeconds = joinedAt ? Math.max(0, Math.floor((now - new Date(joinedAt).getTime()) / 1000)) : null;
 
   const formatTime = (totalSec: number) => {
     const hrs = Math.floor(totalSec / 3600);
@@ -289,7 +264,6 @@ export function StudyRoom() {
         frame: member?.user.avatar_frame ?? null,
         cheerStyle: member?.user.cheer_style ?? 'clap',
         isHost: member?.role === 'host',
-        isModerator: member?.role === 'moderator',
         isSelf,
         isMuted: moderationMutedUserIds.has(callParticipant.identity),
         handRaised: isSelf ? currentUserHandRaised : handRaisedUserIds.has(callParticipant.identity),
@@ -390,29 +364,13 @@ export function StudyRoom() {
     );
   }
 
-  const statusColor = room.status === 'active' ? '#10B981' : room.status === 'waiting' ? '#F59E0B' : '#64748B';
-  const statusLabel = room.status === 'active' ? 'Đang diễn ra' : room.status === 'waiting' ? 'Chưa bắt đầu' : 'Đã kết thúc';
-  const isRoomEnded = room.status === 'ended';
-
-  if (!isCurrentUserMember && isRoomEnded) {
-    return (
-      <CenteredRoomMessage
-        title={room.name}
-        subtitle={room.description || undefined}
-        onBack={() => navigate(`/groups/${room.group_id}`)}
-      >
-        <div style={{color: '#94A3B8', fontSize: 13, marginBottom: 16}}>
-          {membersError?.status === 403 ? 'Phòng học này đã kết thúc.' : membersError?.message}
-        </div>
-      </CenteredRoomMessage>
-    );
-  }
+  const inRoomCount = participants.length;
 
   // Pre-join lobby: lets the user preview/toggle camera & mic (and pick a device) before the
   // LiveKit connection is made, instead of connecting with audio/video hardcoded on immediately.
   // Also doubles as the room-membership join step for first-time visitors -- "Tham gia phòng học"
   // both joins the room and confirms the media setup in one action, instead of a separate screen.
-  if (!lobbyConfirmed && !isRoomEnded) {
+  if (!lobbyConfirmed) {
     return (
       <PreJoinLobby
         roomName={room.name}
@@ -448,7 +406,7 @@ export function StudyRoom() {
   return (
     <MeetingProvider
       roomId={roomId}
-      enabled={isCurrentUserMember && !isRoomEnded}
+      enabled={isCurrentUserMember}
       initialAudioEnabled={mediaChoice.audioEnabled}
       initialVideoEnabled={mediaChoice.videoEnabled}
       audioDeviceId={mediaChoice.audioDeviceId}
@@ -459,8 +417,8 @@ export function StudyRoom() {
     <RoomActivitiesProvider
       roomId={room.id}
       currentUserId={currentUserId}
-      enabled={isCurrentUserMember && !isRoomEnded}
-      isManager={isGroupManager}
+      enabled={isCurrentUserMember}
+      isManager={permissions.canModerate}
       people={participants}
       onShowGame={showGame}
       onShowMusic={showMusic}
@@ -482,10 +440,13 @@ export function StudyRoom() {
           <div style={{height: 24, width: 1, background: '#475569'}} />
 
           <div style={{display: 'flex', alignItems: 'center', gap: 10}}>
-            <div style={{width: 10, height: 10, borderRadius: '50%', background: statusColor, boxShadow: room.status === 'active' ? `0 0 10px ${statusColor}` : 'none'}} />
+            <div style={{width: 10, height: 10, borderRadius: '50%', background: '#10B981', boxShadow: '0 0 10px #10B981'}} />
             <h1 style={{fontSize: 16, fontWeight: '600', color: 'white', margin: 0, whiteSpace: 'nowrap'}}>
-              {room.name} • <span style={{color: '#94A3B8', fontWeight: '400'}}>{statusLabel}</span>
+              {room.name} • <span style={{color: '#94A3B8', fontWeight: '400'}}>{inRoomCount > 0 ? `${inRoomCount} người đang học` : 'Đang mở'}</span>
             </h1>
+            <span title="Vai trò của bạn trong phòng" style={{padding: '2px 8px', borderRadius: 999, background: '#334155', color: '#CBD5E1', fontSize: 11, fontWeight: 600, whiteSpace: 'nowrap'}}>
+              {ROOM_RANK_LABEL[myRank]}
+            </span>
           </div>
         </div>
 
@@ -547,25 +508,7 @@ export function StudyRoom() {
               {actionError.message}
             </div>
           )}
-          {isGroupManager && room.status === 'waiting' && (
-            <button
-              onClick={handleStartRoom}
-              disabled={isLifecycleBusy}
-              style={{background: '#10B981', border: 'none', color: 'white', padding: '8px 14px', borderRadius: 8, cursor: isLifecycleBusy ? 'default' : 'pointer', fontSize: 13, fontWeight: '600', opacity: isLifecycleBusy ? 0.7 : 1}}
-            >
-              Bắt đầu phòng
-            </button>
-          )}
-          {isGroupManager && room.status === 'active' && (
-            <button
-              onClick={handleEndRoom}
-              disabled={isLifecycleBusy}
-              style={{background: '#DC2626', border: 'none', color: 'white', padding: '8px 14px', borderRadius: 8, cursor: isLifecycleBusy ? 'default' : 'pointer', fontSize: 13, fontWeight: '600', opacity: isLifecycleBusy ? 0.7 : 1}}
-            >
-              Kết thúc phòng
-            </button>
-          )}
-          {isGroupManager && (
+          {permissions.canModerate && (
             <button
               onClick={() => setIsInviteModalOpen(true)}
               title="Mời thêm người"
@@ -576,21 +519,21 @@ export function StudyRoom() {
               <UserPlus size={16} />
             </button>
           )}
-          {isGroupManager && (
+          {permissions.canModerate && (
             <button
               onClick={() => {
                 clearActionError();
                 setIsWhiteboardPermissionsOpen(true);
               }}
-              title="Cấp quyền vẽ bảng trắng"
+              title="Quyền vẽ bảng và chủ phòng"
               style={{background: 'transparent', border: '1px solid #475569', color: '#94A3B8', padding: '8px 10px', borderRadius: 8, cursor: 'pointer', fontSize: 13, fontWeight: '600', display: 'flex', alignItems: 'center', gap: 6}}
               onMouseOver={e => { e.currentTarget.style.borderColor = '#2563EB'; e.currentTarget.style.color = '#93C5FD'; }}
               onMouseOut={e => { e.currentTarget.style.borderColor = '#475569'; e.currentTarget.style.color = '#94A3B8'; }}
             >
-              <UsersRound size={16} /> Quyền bảng
+              <UsersRound size={16} /> Quyền trong phòng
             </button>
           )}
-          {isGroupManager && (
+          {permissions.canManageRoom && (
             <button
               onClick={() => setIsDeleteRoomModalOpen(true)}
               title="Xóa phòng học"
@@ -601,8 +544,8 @@ export function StudyRoom() {
               <Trash2 size={16} />
             </button>
           )}
-          <div style={{background: '#334155', padding: '6px 14px', borderRadius: 8, color: '#38BDF8', fontSize: 14, fontFamily: 'monospace', fontWeight: '600'}}>
-            {elapsedSeconds !== null ? formatTime(elapsedSeconds) : statusLabel}
+          <div title="Thời gian bạn đã học trong phòng lần này" style={{background: '#334155', padding: '6px 14px', borderRadius: 8, color: '#38BDF8', fontSize: 14, fontFamily: 'monospace', fontWeight: '600'}}>
+            {elapsedSeconds !== null ? formatTime(elapsedSeconds) : '00:00:00'}
           </div>
         </div>
       </header>
@@ -613,10 +556,13 @@ export function StudyRoom() {
         target={{ roomId: room.id }}
         targetLabel={room.name}
       />
-      {isGroupManager && (
+      {permissions.canModerate && (
         <WhiteboardPermissionsModal
           isOpen={isWhiteboardPermissionsOpen}
           members={members}
+          currentUserId={currentUserId}
+          myRank={myRank}
+          rankOf={rankOf}
           pendingUserId={pendingRoomRoleUserId}
           error={actionError?.message ?? null}
           onClose={() => {
@@ -624,6 +570,7 @@ export function StudyRoom() {
             clearActionError();
           }}
           onRoleChange={handleWhiteboardRoleChange}
+          onTransferHost={handleTransferHost}
         />
       )}
 
@@ -687,7 +634,6 @@ export function StudyRoom() {
               currentUserId={currentUserId}
               currentUserName={currentUser.name}
               currentUserAvatarUrl={currentUser.avatarUrl}
-              unavailableReason={isRoomEnded ? 'Phòng học này đã kết thúc, cuộc gọi không còn khả dụng.' : undefined}
             />
           </div>
         )}
@@ -734,7 +680,7 @@ export function StudyRoom() {
                 <WhiteboardPanel
                   roomId={room.id}
                   initialState={room.whiteboard_state}
-                  isReadonly={!(isGroupManager || currentUserRole === 'host' || currentUserRole === 'moderator')}
+                  isReadonly={!permissions.canDraw}
                   editorIds={whiteboardEditorIds}
                   selfName={currentUser.name}
                 />
@@ -744,7 +690,7 @@ export function StudyRoom() {
                   <PresentationViewer
                     roomId={room.id}
                     initialState={room.presentation_state}
-                    isReadonly={!(isGroupManager || currentUserRole === 'host' || currentUserRole === 'moderator')}
+                    isReadonly={!permissions.canDraw}
                   />
                 </div>
               )}
@@ -830,7 +776,7 @@ export function StudyRoom() {
                 roomId={room?.id ?? null}
                 currentUserId={currentUserId}
                 participants={participants}
-                canEdit={isCurrentUserMember && !isRoomEnded}
+                canEdit={isCurrentUserMember}
               />
             )}
 
@@ -1008,15 +954,14 @@ export function StudyRoom() {
         <div style={{position: 'absolute', left: '50%', transform: 'translateX(-50%)', display: 'flex', alignItems: 'center', gap: 12}}>
           
           {/* Mic / Camera — real LiveKit track state, see meeting/MeetingControls.tsx. */}
-          <MeetingControls disabled={isRoomEnded} />
+          <MeetingControls disabled={false} />
 
           {/* In-call activities: break game + shared music (src/activities). */}
-          <ActivitiesButton disabled={isRoomEnded || !isCurrentUserMember} />
+          <ActivitiesButton disabled={!isCurrentUserMember} />
 
           {/* Raise Hand — real moderation action (self-service raise_hand/lower_hand). */}
           <button
             onClick={handleToggleHand}
-            disabled={isRoomEnded}
             style={{
               width: 42,
               height: 42,
@@ -1024,8 +969,7 @@ export function StudyRoom() {
               border: 'none',
               background: currentUserHandRaised ? '#F59E0B' : '#334155',
               color: 'white',
-              cursor: isRoomEnded ? 'default' : 'pointer',
-              opacity: isRoomEnded ? 0.5 : 1,
+              cursor: 'pointer',
               display: 'flex',
               alignItems: 'center',
               justifyContent: 'center',

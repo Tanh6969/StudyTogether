@@ -15,10 +15,12 @@ from app.auth.dto.auth_dto import CurrentUser
 from app.core.config import settings
 from app.core.permissions import (
     can_access_room,
+    can_act_on_member,
     can_edit_whiteboard,
     can_join_room,
     can_join_room_meeting,
     can_manage_room,
+    can_moderate_room,
     can_view_room,
     is_active_group_member,
     is_group_manager,
@@ -36,6 +38,7 @@ from app.study_rooms.dto.study_room_dto import (
     StudyRoomMemberResponse,
     StudyRoomResponse,
     StudyRoomUpdate,
+    TransferHostRequest,
 )
 from app.study_rooms.entities.study_room_entity import StudyRoom
 from app.study_rooms.services.study_room_service import StudyRoomsService
@@ -64,6 +67,14 @@ async def _get_active_room_or_404(session: AsyncSession, room_id: uuid.UUID) -> 
     if room is None or room.deleted_at is not None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Study room not found")
     return room
+
+
+async def _with_active_counts(session: AsyncSession, rooms: list[StudyRoom]) -> list[StudyRoomResponse]:
+    counts = await service.active_member_counts(session, [room.id for room in rooms])
+    return [
+        StudyRoomResponse.model_validate(room).model_copy(update={"active_member_count": counts.get(room.id, 0)})
+        for room in rooms
+    ]
 
 
 @router.post("/", response_model=StudyRoomResponse, status_code=status.HTTP_201_CREATED)
@@ -108,11 +119,13 @@ async def list_rooms(
     `can_view_room` -- anyone else must not even learn its name."""
     rooms = await service.list_by_group(session, group_id)
     if current_user is None:
-        return [room for room in rooms if not room.is_private]
-    return [
-        room for room in rooms
-        if not room.is_private or await can_view_room(session, room, current_user.id)
-    ]
+        visible = [room for room in rooms if not room.is_private]
+    else:
+        visible = [
+            room for room in rooms
+            if not room.is_private or await can_view_room(session, room, current_user.id)
+        ]
+    return await _with_active_counts(session, visible)
 
 
 @router.get("/{room_id}", response_model=StudyRoomResponse)
@@ -126,7 +139,7 @@ async def get_room(
     room = await _get_active_room_or_404(session, room_id)
     if room.is_private and (current_user is None or not await can_view_room(session, room, current_user.id)):
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Study room not found")
-    return room
+    return (await _with_active_counts(session, [room]))[0]
 
 
 @router.put("/{room_id}", response_model=StudyRoomResponse)
@@ -136,12 +149,10 @@ async def update_room(
     current_user: CurrentUser = Depends(get_current_user),
     session: AsyncSession = Depends(get_db_session)
 ):
-    """Update a study room's details. Only an active group owner or moderator of the room's group may update it."""
+    """Update a study room's details. Only the group owner or the room's host may update it."""
     room = await _get_active_room_or_404(session, room_id)
-    # Management authority derives from the actor's CURRENT Group role, never from a stale
-    # room.host_id snapshot -- see can_manage_room's docstring.
-    if not await is_group_manager(session, room.group_id, current_user.id):
-        raise HTTPException(status.HTTP_403_FORBIDDEN, "Only an active group owner or moderator can update this study room")
+    if not await can_manage_room(session, room, current_user.id):
+        raise HTTPException(status.HTTP_403_FORBIDDEN, "Only the group owner or the room host can update this study room")
     try:
         updated = await service.update(session, room, data)
         await session.commit()
@@ -277,73 +288,6 @@ async def update_presentation_state(
         )
 
 
-@router.post("/{room_id}/start", response_model=StudyRoomResponse)
-async def start_room(
-    room_id: uuid.UUID,
-    current_user: CurrentUser = Depends(get_current_user),
-    session: AsyncSession = Depends(get_db_session),
-):
-    """Start a study room's live session. Only an active group owner or moderator may start it."""
-    room = await _get_active_room_or_404(session, room_id)
-    if not await is_group_manager(session, room.group_id, current_user.id):
-        raise HTTPException(status.HTTP_403_FORBIDDEN, "Only an active group owner or moderator can start this study room")
-    try:
-        updated = await service.start(session, room)
-        await session.commit()
-        return updated
-    except Exception as e:
-        await session.rollback()
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"Could not start study room: {str(e)}"
-        )
-
-
-@router.post("/{room_id}/end", response_model=StudyRoomResponse)
-async def end_room(
-    room_id: uuid.UUID,
-    current_user: CurrentUser = Depends(get_current_user),
-    session: AsyncSession = Depends(get_db_session),
-):
-    """End a study room's live session. Only an active group owner or moderator may end it."""
-    room = await _get_active_room_or_404(session, room_id)
-    if not await is_group_manager(session, room.group_id, current_user.id):
-        raise HTTPException(status.HTTP_403_FORBIDDEN, "Only an active group owner or moderator can end this study room")
-    try:
-        updated = await service.end(session, room)
-        # Ending the session also ends every live in-call activity (game / shared music) --
-        # their clients close on the room status change, and this keeps the one-live-per-kind
-        # index from blocking a new activity if the room were ever reopened.
-        from app.activities.entities.activity_entity import RoomActivity  # local: avoids an import cycle
-        from sqlalchemy import update as sa_update
-        from datetime import datetime as _dt, timezone as _tz
-
-        await session.execute(
-            sa_update(RoomActivity)
-            .where(RoomActivity.room_id == room_id, RoomActivity.ended_at.is_(None))
-            .values(status="ended", ended_at=_dt.now(_tz.utc))
-        )
-        await session.commit()
-    except Exception as e:
-        await session.rollback()
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"Could not end study room: {str(e)}"
-        )
-
-    # The ended status is already durably committed above -- LiveKit is a separate live
-    # system with no transactional relationship to the DB, so closing its meeting is a
-    # best-effort side effect afterward: an infra failure here must never undo (or be
-    # reported as a failure of) a room-end the DB has already recorded. close_room is
-    # idempotent for "already gone" -- see its docstring.
-    try:
-        await livekit_service.close_room(room.id)
-    except Exception:
-        logger.exception("Failed to close LiveKit room for ended study room %s", room.id)
-
-    return updated
-
-
 @router.delete("/{room_id}", status_code=status.HTTP_204_NO_CONTENT)
 async def delete_room(
     room_id: uuid.UUID,
@@ -351,18 +295,14 @@ async def delete_room(
     session: AsyncSession = Depends(get_db_session),
 ):
     """Soft delete: the StudyRoom row, its Conversation, all historical Messages,
-    StudyRoomMembers, and RoomModerationActions remain in the database (see
-    docs/db/migrations/010_soft_delete_study_rooms.sql). An already-deleted or missing room
-    both 404 via _get_active_room_or_404 -- a deleted room is not re-deletable/re-authorizable
-    through this endpoint. Authorized actors: an active group owner/moderator of the room's
-    group (mirrors ChannelsService's group-manager delete authority) -- an ordinary member, a
-    non-member, or a banned/left group manager (is_group_manager already requires
-    MemberStatus.ACTIVE) may not delete. Being the room's host_id is NOT sufficient on its own
-    (2026-08-18 policy change) -- see can_manage_room's docstring."""
+    StudyRoomMembers, RoomModerationActions and room tasks remain in the database, so
+    achievements computed from them are unaffected. An already-deleted or missing room both 404
+    via _get_active_room_or_404. Only the group owner or the room's host may delete it (the
+    host only while still an active group member -- see permissions.room_rank)."""
     room = await _get_active_room_or_404(session, room_id)
-    if not await is_group_manager(session, room.group_id, current_user.id):
+    if not await can_manage_room(session, room, current_user.id):
         raise HTTPException(
-            status.HTTP_403_FORBIDDEN, "Only an active group owner or moderator can delete this study room"
+            status.HTTP_403_FORBIDDEN, "Only the group owner or the room host can delete this study room"
         )
     try:
         # deleted_by always comes from the authenticated caller, never a client-supplied
@@ -376,9 +316,9 @@ async def delete_room(
             detail=f"Could not delete study room: {str(e)}"
         )
 
-    # Same best-effort, post-commit ordering as end_room above: the soft delete is already
-    # durable, so a LiveKit close_room failure here is logged, never surfaced as a failure of
-    # the delete itself.
+    # LiveKit is a separate live system with no transactional relationship to the DB: the soft
+    # delete is already durable, so a close_room failure here is logged, never surfaced as a
+    # failure of the delete itself. close_room is idempotent for "already gone".
     try:
         await livekit_service.close_room(room.id)
     except Exception:
@@ -394,7 +334,7 @@ async def join_room(
     current_user: CurrentUser = Depends(get_current_user),
     session: AsyncSession = Depends(get_db_session)
 ):
-    """Join a study room as a participant. Requires active membership in the room's group; blocked if the room has ended or the caller is banned from joining rooms."""
+    """Join a study room as a participant. Requires active membership in the room's group."""
     room = await _get_active_room_or_404(session, room_id)
     if not can_join_room(room):
         raise HTTPException(status.HTTP_403_FORBIDDEN, "This study room has ended")
@@ -411,8 +351,8 @@ async def join_room(
         raise HTTPException(status.HTTP_403_FORBIDDEN, "This study room is private -- join with an invitation code")
 
     # Check existing membership. The joining identity is always the caller --
-    # never a client-supplied user_id -- and the role is always PARTICIPANT;
-    # self-assigning HOST/MODERATOR via this endpoint is not permitted.
+    # never a client-supplied user_id. A first join is always PARTICIPANT; a rejoin keeps the
+    # role the row already has (so the host stays host). No self-assigning roles here.
     member = await service.get_member(session, room_id, current_user.id)
     try:
         if member:
@@ -440,9 +380,6 @@ async def leave_room(
     # A deleted room must behave as if it no longer exists here too -- the soft-delete
     # invariant (deleted_at set -> normal operations stop) applies to leave just like every
     # other mutation, even though leaving only touches the caller's own membership row.
-    # Ended-but-not-deleted rooms are deliberately unaffected: no lifecycle gate has ever
-    # applied to leave, only to join (can_join_room) and to messages
-    # (is_room_conversation_open_for_writes).
     await _get_active_room_or_404(session, room_id)
     member = await service.get_member(session, room_id, current_user.id)
     if not member:
@@ -502,6 +439,9 @@ async def list_members(
     return await service.list_members(session, room_id)
 
 
+_ASSIGNABLE_ROOM_ROLES = {StudyRoomMemberRole.PARTICIPANT, StudyRoomMemberRole.EDITOR}
+
+
 @router.put("/{room_id}/members/{user_id}/role", response_model=StudyRoomMemberResponse)
 async def update_member_role(
     room_id: uuid.UUID,
@@ -510,17 +450,30 @@ async def update_member_role(
     current_user: CurrentUser = Depends(get_current_user),
     session: AsyncSession = Depends(get_db_session)
 ):
-    """Change a study room member's role. Only an active group owner or moderator may change member roles."""
+    """Grant (role=editor) or revoke (role=participant) drawing rights. The caller must be the
+    group owner, the room host or a group moderator AND strictly outrank the target -- so a
+    moderator can never touch another moderator, the host or the owner. HOST is not assignable
+    here: use POST /{room_id}/host to hand the room over."""
     room = await _get_active_room_or_404(session, room_id)
-    if not await is_group_manager(session, room.group_id, current_user.id):
+    if not await can_moderate_room(session, room, current_user.id):
         raise HTTPException(
-            status.HTTP_403_FORBIDDEN, "Only an active group owner or moderator can change member roles"
+            status.HTTP_403_FORBIDDEN, "Only the group owner, the room host or a group moderator can change drawing rights"
+        )
+    if role not in _ASSIGNABLE_ROOM_ROLES:
+        raise HTTPException(
+            status.HTTP_400_BAD_REQUEST, "Only drawing rights can be changed here; use host transfer to change the host"
         )
     member = await service.get_member(session, room_id, user_id)
     if not member:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Membership not found"
+        )
+    if member.role == StudyRoomMemberRole.HOST:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "The room host always has drawing rights")
+    if not await can_act_on_member(session, room, current_user.id, user_id):
+        raise HTTPException(
+            status.HTTP_403_FORBIDDEN, "You can only change drawing rights for members ranked below you"
         )
     try:
         updated = await service.update_member_role(session, member, role)
@@ -534,6 +487,38 @@ async def update_member_role(
         )
 
 
+@router.post("/{room_id}/host", response_model=StudyRoomMemberResponse)
+async def transfer_host(
+    room_id: uuid.UUID,
+    data: TransferHostRequest,
+    current_user: CurrentUser = Depends(get_current_user),
+    session: AsyncSession = Depends(get_db_session),
+):
+    """Hand the room's host role to someone currently inside the room. Only the group owner or
+    the current host may do this; the previous host becomes a participant. Keeps the invariant
+    of exactly one host per room."""
+    room = await _get_active_room_or_404(session, room_id)
+    if not await can_manage_room(session, room, current_user.id):
+        raise HTTPException(
+            status.HTTP_403_FORBIDDEN, "Only the group owner or the room host can transfer the host role"
+        )
+    new_host = await service.get_member(session, room_id, data.user_id)
+    if new_host is None or new_host.left_at is not None:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "The new host must be inside the room")
+    if new_host.role == StudyRoomMemberRole.HOST:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "This member is already the host")
+    if not await is_active_group_member(session, room.group_id, data.user_id):
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "The new host must be an active group member")
+    current_host = await service.get_host_member(session, room_id)
+    try:
+        updated = await service.transfer_host(session, room, current_host, new_host)
+        await session.commit()
+        return updated
+    except Exception as e:
+        await session.rollback()
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, f"Could not transfer host: {str(e)}")
+
+
 # --- Moderation ---
 
 
@@ -544,7 +529,7 @@ async def log_moderation(
     current_user: CurrentUser = Depends(get_current_user),
     session: AsyncSession = Depends(get_db_session)
 ):
-    """Log a moderation action in a study room (e.g. kick, mute, unmute, raise/lower hand). Self-service hand actions require room access; kick/mute/unmute require an active group owner or moderator."""
+    """Log a moderation action in a study room (e.g. kick, mute, unmute, raise/lower hand). Self-service hand actions require room access; kick/mute/unmute require the caller to strictly outrank the target (owner > host > group moderator > everyone else)."""
     room = await _get_active_room_or_404(session, room_id)
 
     # The acting moderator is always the authenticated caller -- data.moderator_id
@@ -560,17 +545,17 @@ async def log_moderation(
         if not await can_access_room(session, room, current_user.id):
             raise HTTPException(status.HTTP_403_FORBIDDEN, "You do not have access to this study room")
     else:
-        # KICK/MUTE/UNMUTE require the actor to be an active group owner/moderator of this
-        # room's group (can_manage_room) -- no separate "host protection" carve-out for the
-        # target: once the actor is confirmed to be a current group manager, they have full
-        # authority over every member of the room, including whoever holds the HOST role
-        # (2026-08-18 policy change -- the old carve-out only made sense when room-scoped
-        # moderators, not just group managers, could reach this branch).
-        if not await can_manage_room(session, room, current_user.id):
+        # KICK/MUTE/UNMUTE: the actor must strictly outrank the target (permissions.RoomRank)
+        # -- a moderator can't act on another moderator, the host or the owner, and nobody
+        # can act on themselves. The caller's own authority is checked before looking the
+        # target up, so an unauthorised caller can't probe who is in the room.
+        if not await can_moderate_room(session, room, current_user.id):
             raise HTTPException(status.HTTP_403_FORBIDDEN, "You do not have permission to moderate this study room")
         target_member = await service.get_member(session, room_id, data.target_user_id)
         if target_member is None:
             raise HTTPException(status.HTTP_404_NOT_FOUND, "Target is not a member of this study room")
+        if not await can_act_on_member(session, room, current_user.id, data.target_user_id):
+            raise HTTPException(status.HTTP_403_FORBIDDEN, "You can only moderate members ranked below you")
 
     try:
         action = await service.log_moderation_action(session, data)

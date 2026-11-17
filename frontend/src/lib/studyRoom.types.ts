@@ -1,8 +1,10 @@
 import type { UserSummary } from './profile.types';
 
-/** Mirrors app/db/enums.py */
+/** Mirrors app/db/enums.py. Rooms no longer have a start/end lifecycle (migration 010):
+ * every room the API returns is 'active'; 'waiting'/'ended' only survive in the DB enum. */
 export type StudyRoomStatus = 'waiting' | 'active' | 'ended';
-export type StudyRoomMemberRole = 'host' | 'moderator' | 'participant';
+/** 'editor' = may draw on the board / control slides (was 'moderator' before migration 010). */
+export type StudyRoomMemberRole = 'host' | 'editor' | 'participant';
 export type ModerationAction = 'mute' | 'unmute' | 'kick' | 'raise_hand' | 'lower_hand';
 
 /** Mirrors StudyRoomResponse (app/study_rooms/dto/study_room_dto.py) */
@@ -31,6 +33,8 @@ export interface StudyRoom {
   conversation_id: string | null;
   whiteboard_state: Record<string, any> | null;
   presentation_state: PresentationState | null;
+  /** People currently inside the room -- the "live" signal now that there is no start/end. */
+  active_member_count?: number;
 }
 
 /** The shared "Slide Bài giảng" deck's current state -- `asset_path` is a Storage object path

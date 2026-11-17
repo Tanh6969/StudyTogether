@@ -5,7 +5,8 @@ Authority model, in one place:
 - Creating / joining an activity and adding to the music queue need active participation in
   the room (can_access_room) -- you have to be in the call.
 - Changing an activity's state (status, settings, snapshot, queue order) is the activity
-  host's job; an active group owner/moderator (can_manage_room) can always step in or stop it.
+  host's job; the group owner, room host or a group moderator (can_moderate_room) can always
+  step in or stop it.
 - Taking over as host (`host_user_id` = caller) is open to any participant: the clients
   deterministically elect the first still-connected participant when the host drops, and the
   backend cannot see LiveKit connectivity, so it trusts that election inside a small, private
@@ -38,7 +39,7 @@ from app.activities.services.music_resolve_service import TrackResolveError, res
 from app.activities.services.word_pack_service import WordPackService
 from app.auth.dependencies import get_current_user
 from app.auth.dto.auth_dto import CurrentUser
-from app.core.permissions import can_access_room, can_manage_room, can_view_room
+from app.core.permissions import can_access_room, can_moderate_room, can_view_room
 from app.db.session import get_db_session
 from app.groups.entities.group_entity import Group
 from app.roadmaps.services.roadmap_ai_service import RoadmapAiError, RoadmapAiServiceNotConfigured
@@ -94,7 +95,7 @@ async def _reload(session: AsyncSession, activity_id: uuid.UUID) -> RoomActivity
 
 
 async def _can_control(session: AsyncSession, room: StudyRoom, activity: RoomActivity, user_id: uuid.UUID) -> bool:
-    return activity.host_user_id == user_id or await can_manage_room(session, room, user_id)
+    return activity.host_user_id == user_id or await can_moderate_room(session, room, user_id)
 
 
 def _participant_ids(activity: RoomActivity) -> list[str]:

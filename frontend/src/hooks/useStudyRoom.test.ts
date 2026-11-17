@@ -26,8 +26,6 @@ vi.mock('../lib/studyRoom.api', () => ({
   leaveStudyRoomOnUnload: vi.fn(),
   joinStudyRoom: vi.fn(),
   leaveStudyRoom: vi.fn(),
-  startStudyRoom: vi.fn(),
-  endStudyRoom: vi.fn(),
   deleteStudyRoom: vi.fn(),
   logStudyRoomModeration: vi.fn(),
   updateStudyRoomMemberRole: vi.fn(),

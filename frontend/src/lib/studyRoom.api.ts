@@ -57,14 +57,6 @@ export function leaveStudyRoomOnUnload(roomId: string, joinedAt: string): void {
   ).catch(() => {});
 }
 
-export function startStudyRoom(roomId: string): Promise<StudyRoom> {
-  return apiClient.post<StudyRoom>(`/study-rooms/${roomId}/start`);
-}
-
-export function endStudyRoom(roomId: string): Promise<StudyRoom> {
-  return apiClient.post<StudyRoom>(`/study-rooms/${roomId}/end`);
-}
-
 export function updateWhiteboardState(roomId: string, state: Record<string, any>): Promise<StudyRoom> {
   return apiClient.put<StudyRoom>(`/study-rooms/${roomId}/whiteboard`, state);
 }
@@ -113,12 +105,20 @@ export function deleteStudyRoom(roomId: string): Promise<void> {
   return apiClient.delete<void>(`/study-rooms/${roomId}`);
 }
 
+/** Grant ('editor') or revoke ('participant') drawing rights. Backend requires the caller to
+ * strictly outrank the target -- see lib/roomPermissions.ts. */
 export function updateStudyRoomMemberRole(
   roomId: string,
   userId: string,
-  role: StudyRoomMemberRole
+  role: Exclude<StudyRoomMemberRole, 'host'>
 ): Promise<StudyRoomMember> {
   return apiClient.put<StudyRoomMember>(
     `/study-rooms/${roomId}/members/${userId}/role?role=${encodeURIComponent(role)}`
   );
+}
+
+/** Hand the room's single host role to someone currently inside the room (owner or current
+ * host only). The previous host becomes a participant. */
+export function transferStudyRoomHost(roomId: string, userId: string): Promise<StudyRoomMember> {
+  return apiClient.post<StudyRoomMember>(`/study-rooms/${roomId}/host`, { user_id: userId });
 }

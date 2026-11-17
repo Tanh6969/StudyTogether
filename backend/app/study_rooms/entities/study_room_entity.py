@@ -26,7 +26,7 @@ class StudyRoom(Base):
     description: Mapped[str | None] = mapped_column(Text)
     host_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("profiles.id", ondelete="RESTRICT"))
     status: Mapped[StudyRoomStatus] = mapped_column(
-        pg_enum(StudyRoomStatus, "study_room_status"), server_default=text("'waiting'::study_room_status")
+        pg_enum(StudyRoomStatus, "study_room_status"), server_default=text("'active'::study_room_status")
     )
     max_participants: Mapped[int] = mapped_column(Integer, server_default=text("50"))
     # Private ("hidden") room (migration 004): only visible to / joinable by group managers and

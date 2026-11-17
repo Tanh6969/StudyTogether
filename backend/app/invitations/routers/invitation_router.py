@@ -8,7 +8,7 @@ from app.channels.entities.channel_entity import Channel
 from app.channels.services.channel_service import ChannelsService
 from app.core.config import settings
 from app.core.email_service import send_invitation_email
-from app.core.permissions import can_join_room, is_active_group_member, is_group_manager
+from app.core.permissions import can_join_room, can_moderate_room, is_active_group_member, is_group_manager
 from app.db.enums import InvitationMethod, MemberStatus, NotificationType
 from app.db.session import get_db_session
 from app.groups.entities.group_entity import Group
@@ -124,6 +124,17 @@ async def _join_target(
     return "already_member"
 
 
+async def _can_manage_invitations(
+    session: AsyncSession, target_type: str, target_entity, group_id: uuid.UUID, user_id: uuid.UUID
+) -> bool:
+    """Group / private-channel invitations: an active group owner or moderator. Study-room
+    invitations: anyone ranked group moderator or above inside that room, which also lets the
+    room's host invite people even if they are not a group moderator."""
+    if target_type == "study_room":
+        return await can_moderate_room(session, target_entity, user_id)
+    return await is_group_manager(session, group_id, user_id)
+
+
 @router.post("/", response_model=InvitationCreated, status_code=status.HTTP_201_CREATED)
 async def create_invitation(
     data: InvitationCreate,
@@ -136,11 +147,10 @@ async def create_invitation(
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Invitation target not found")
     target_type, target_entity, group_id = resolved
 
-    # Conservative by default: only an active owner/moderator of the target's Group may
-    # create an invitation for it (Group, Study Room, or Private Channel alike) -- matches
-    # the existing channel-membership-management rule (no separate "channel manager" role
-    # exists in this schema). Normal members never gain invitation-management power here.
-    if not await is_group_manager(session, group_id, current_user.id):
+    # Only an active owner/moderator of the target's Group may invite -- plus, for a study
+    # room, that room's host (see _can_manage_invitations). Normal members never gain
+    # invitation-management power here.
+    if not await _can_manage_invitations(session, target_type, target_entity, group_id, current_user.id):
         raise HTTPException(
             status.HTTP_403_FORBIDDEN,
             "Only an active group owner or moderator can create invitations for this target",
@@ -221,8 +231,8 @@ async def get_active_code(
     resolved = await _load_target(session, group_id, room_id, channel_id)
     if resolved is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Target not found")
-    _, _, target_group_id = resolved
-    if not await is_group_manager(session, target_group_id, current_user.id):
+    target_type, target_entity, target_group_id = resolved
+    if not await _can_manage_invitations(session, target_type, target_entity, target_group_id, current_user.id):
         raise HTTPException(status.HTTP_403_FORBIDDEN, "Only an active group owner or moderator can view this")
 
     invitation = await service.get_active_code_for_target(
@@ -389,8 +399,8 @@ async def revoke_invitation(
     resolved = await _load_target(session, invitation.group_id, invitation.room_id, invitation.channel_id)
     if resolved is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Invitation target no longer exists")
-    _, _, group_id = resolved
-    if not await is_group_manager(session, group_id, current_user.id):
+    target_type, target_entity, group_id = resolved
+    if not await _can_manage_invitations(session, target_type, target_entity, group_id, current_user.id):
         raise HTTPException(
             status.HTTP_403_FORBIDDEN, "Only an active group owner or moderator can revoke this invitation"
         )

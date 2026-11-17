@@ -1,4 +1,5 @@
 import uuid
+from enum import IntEnum
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -51,13 +52,15 @@ async def is_group_manager(session: AsyncSession, group_id: uuid.UUID, user_id: 
     )
 
 
-def is_group_owner(group: Group, user_id: uuid.UUID) -> bool:
-    """Stricter than `is_group_manager` (owner-only, not owner-or-moderator). Reads the
-    denormalized `groups.owner_id` directly rather than re-querying group_members. Used for
-    operations the spec keeps conservative/owner-only: group update/delete, member role
-    changes, and ban/reactivate/remove (moderator authority over these is explicitly left
-    unresolved by the spec, so it is not granted here)."""
-    return group.owner_id == user_id
+async def is_group_owner(session: AsyncSession, group: Group, user_id: uuid.UUID) -> bool:
+    """Owner-only authority (group update/delete, member role changes, ban/reactivate/remove).
+    `groups.owner_id` alone is not enough: the owner must also still hold an ACTIVE membership.
+    Without that check an owner who had left the group kept full owner powers from outside it.
+    The owner can no longer leave without handing the group to a successor (see
+    group_router.leave_as_owner), so this only matters for legacy rows."""
+    if group.owner_id != user_id:
+        return False
+    return await is_active_group_member(session, group.id, user_id)
 
 
 async def can_access_channel(session: AsyncSession, channel: Channel, user_id: uuid.UUID) -> bool:
@@ -93,22 +96,71 @@ async def is_active_room_member(session: AsyncSession, room_id: uuid.UUID, user_
     return member is not None and member.left_at is None
 
 
-async def can_manage_room(session: AsyncSession, room: StudyRoom, user_id: uuid.UUID) -> bool:
-    """Room management authority (update/start/end/delete, KICK/MUTE/UNMUTE, member-role
-    changes) derives entirely from the actor's CURRENT Group role -- `is_group_manager`
-    (active owner or moderator of `room.group_id`), never from `study_rooms.host_id` or from
-    a room-scoped `study_room_members.role` (2026-08-18 policy: `host_id` identifies the
-    original creator, it is not an independent or permanent authorization grant -- see
-    STUDY_PLATFORM_DATABASE_SPEC.md §16/§22). Without this, a Moderator who creates a room and
-    is later demoted to plain Member (or leaves/is banned from the Group) would keep
-    unconditional host authority over that room forever, since `host_id` never changes.
+class RoomRank(IntEnum):
+    """Authority inside one study room, highest first. Every room permission is decided by
+    comparing ranks, so the rules live in one place:
 
-    A soft-deleted room (deleted_at set) is denied outright, before any other check --
-    this does not go through `can_access_room`, so it needs its own guard (see
-    docs/db/migrations/010_soft_delete_study_rooms.sql)."""
+    * OWNER           -- the group's owner. Always outranks everyone.
+    * HOST            -- the room's host (`study_room_members.role = host`; exactly one per
+                         room, transferable). Holds it from outside the call too, as long as
+                         they are still an active group member.
+    * GROUP_MODERATOR -- a moderator of the group.
+    * EDITOR          -- a participant who was allowed to draw on the board.
+    * PARTICIPANT     -- everyone else in the group.
+    * NONE            -- not an active member of the group (or the room is deleted).
+
+    The core rule: kick / mute / revoking drawing rights only ever targets someone with a
+    STRICTLY LOWER rank. That is what stops one moderator from acting on another moderator,
+    or anyone from acting on the host or the owner."""
+
+    NONE = -1
+    PARTICIPANT = 0
+    EDITOR = 1
+    GROUP_MODERATOR = 2
+    HOST = 3
+    OWNER = 4
+
+
+async def room_rank(session: AsyncSession, room: StudyRoom, user_id: uuid.UUID) -> RoomRank:
     if room.deleted_at is not None:
+        return RoomRank.NONE
+    group_member = await groups_service.get_member(session, room.group_id, user_id)
+    if group_member is None or group_member.status != MemberStatus.ACTIVE:
+        return RoomRank.NONE
+    if group_member.role == GroupMemberRole.OWNER:
+        return RoomRank.OWNER
+    room_member = await study_rooms_service.get_member(session, room.id, user_id)
+    if room_member is not None and room_member.role == StudyRoomMemberRole.HOST:
+        return RoomRank.HOST
+    if group_member.role == GroupMemberRole.MODERATOR:
+        return RoomRank.GROUP_MODERATOR
+    if room_member is not None and room_member.role == StudyRoomMemberRole.EDITOR:
+        return RoomRank.EDITOR
+    return RoomRank.PARTICIPANT
+
+
+async def can_manage_room(session: AsyncSession, room: StudyRoom, user_id: uuid.UUID) -> bool:
+    """Room settings and deletion: the group owner or the room's host."""
+    return await room_rank(session, room, user_id) >= RoomRank.HOST
+
+
+async def can_moderate_room(session: AsyncSession, room: StudyRoom, user_id: uuid.UUID) -> bool:
+    """May open the moderation tools at all (kick/mute, drawing rights, room invitations):
+    owner, host or group moderator. WHO they may act on is `can_act_on_member`."""
+    return await room_rank(session, room, user_id) >= RoomRank.GROUP_MODERATOR
+
+
+async def can_act_on_member(
+    session: AsyncSession, room: StudyRoom, actor_id: uuid.UUID, target_id: uuid.UUID
+) -> bool:
+    """Kick / mute / unmute / grant or revoke drawing: actor must be at least a group moderator
+    AND strictly outrank the target. Never on oneself."""
+    if actor_id == target_id:
         return False
-    return await is_group_manager(session, room.group_id, user_id)
+    actor = await room_rank(session, room, actor_id)
+    if actor < RoomRank.GROUP_MODERATOR:
+        return False
+    return await room_rank(session, room, target_id) < actor
 
 
 def can_join_room(room: StudyRoom) -> bool:
@@ -182,27 +234,12 @@ async def can_access_room(session: AsyncSession, room: StudyRoom, user_id: uuid.
 
 
 async def can_edit_whiteboard(session: AsyncSession, room: StudyRoom, user_id: uuid.UUID) -> bool:
-    """Whiteboard write authority (persisted-state PUT and adding image/document assets) is
-    scoped tighter than plain room participation: the room's HOST, a room MODERATOR, or an active
-    Group owner/moderator may edit -- a plain PARTICIPANT who is not also a Group manager gets
-    a live, synced, view-only board. The Group-manager branch matters because a Group
-    owner/moderator's `study_room_members.role` defaults to PARTICIPANT on join (only
-    `join_room` ever assigns a role, always PARTICIPANT -- promoting to a room-scoped
-    HOST/MODERATOR is a separate, optional action) -- without it, a Group manager who never
-    got separately promoted in this specific room would be denied edit rights despite already
-    having full management authority over the room itself (`can_manage_room`, same
-    `is_group_manager` check: start/end/delete/kick/mute). Mirrors the frontend's own
-    `isGroupManager || currentUserRole === 'host' || currentUserRole === 'moderator'` gate for
-    its local `isReadonly` flag (StudyRoom.tsx). LiveKit data publishing is granted to every
-    active room member for in-call activities; the whiteboard receiver filters edit packets by
-    the same editor list. Requires `can_access_room` first (active
-    Group + Room membership, non-deleted room); no branch here bypasses that."""
+    """Whiteboard / presentation write authority: anyone ranked EDITOR or above who is
+    currently in the room. Plain participants get a live, view-only board. Mirrors
+    `whiteboardEditorIds` in the frontend (lib/roomPermissions.ts)."""
     if not await can_access_room(session, room, user_id):
         return False
-    if await is_group_manager(session, room.group_id, user_id):
-        return True
-    member = await study_rooms_service.get_member(session, room.id, user_id)
-    return member is not None and member.role in (StudyRoomMemberRole.HOST, StudyRoomMemberRole.MODERATOR)
+    return await room_rank(session, room, user_id) >= RoomRank.EDITOR
 
 
 async def can_join_room_meeting(session: AsyncSession, room: StudyRoom, user_id: uuid.UUID) -> bool:

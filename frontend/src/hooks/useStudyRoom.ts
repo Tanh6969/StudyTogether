@@ -4,9 +4,10 @@ import { useStudyRoomMembersRealtime } from './useStudyRoomMembersRealtime';
 import { useRoomModerationRealtime } from './useRoomModerationRealtime';
 import { ApiError } from '../lib/apiClient';
 import { listGroupMembers } from '../lib/group.api';
+import type { GroupMember } from '../lib/group.types';
+import { RoomRank, roomPermissionsFor, roomRankOf } from '../lib/roomPermissions';
 import {
   deleteStudyRoom,
-  endStudyRoom,
   getStudyRoom,
   joinStudyRoom,
   leaveStudyRoom,
@@ -14,7 +15,7 @@ import {
   listStudyRoomMembers,
   listStudyRoomModeration,
   logStudyRoomModeration,
-  startStudyRoom,
+  transferStudyRoomHost,
   updateStudyRoomMemberRole,
 } from '../lib/studyRoom.api';
 import type {
@@ -61,7 +62,7 @@ export function useStudyRoom(roomId: string | undefined) {
   const [room, setRoom] = useState<StudyRoom | null>(null);
   const [members, setMembers] = useState<StudyRoomMember[]>([]);
   const [moderationActions, setModerationActions] = useState<RoomModerationAction[]>([]);
-  const [groupManagerIds, setGroupManagerIds] = useState<Set<string>>(new Set());
+  const [groupMembers, setGroupMembers] = useState<GroupMember[]>([]);
   const [loading, setLoading] = useState(true);
   const [roomError, setRoomError] = useState<StudyRoomError | null>(null);
   const [membersError, setMembersError] = useState<StudyRoomError | null>(null);
@@ -111,28 +112,18 @@ export function useStudyRoom(roomId: string | undefined) {
     }
   }, [roomId, isLoggedIn]);
 
-  // Backend rule (app/core/permissions.py::is_group_manager, used by can_manage_room): room
-  // MANAGEMENT authority (update/start/end/delete, kick/mute/unmute, member-role changes) is
-  // derived entirely from the caller's CURRENT active Group owner/moderator status -- never
-  // from study_rooms.host_id or a room-scoped member role (2026-08-18 policy change). This is
-  // UX-only; the backend independently re-checks the same rule on every request.
-  const loadGroupManagerIds = useCallback(async () => {
-    if (!room || !isLoggedIn) return;
+  // Group roles feed the room ranks (owner > host > group moderator > editor > participant,
+  // lib/roomPermissions.ts). UX-only: the backend re-checks the same rule on every request.
+  const groupId = room?.group_id ?? null;
+  const loadGroupMembers = useCallback(async () => {
+    if (!groupId || !isLoggedIn) return;
     try {
-      const data = await listGroupMembers(room.group_id);
-      setGroupManagerIds(
-        new Set(
-          data
-            .filter((m) => m.status === 'active' && (m.role === 'owner' || m.role === 'moderator'))
-            .map((m) => m.user_id)
-        )
-      );
+      setGroupMembers(await listGroupMembers(groupId));
     } catch {
-      // Non-critical for read access -- only used to gate management-action buttons; the
-      // backend is the real authorization boundary regardless of this state.
-      setGroupManagerIds(new Set());
+      // Non-critical for read access -- only used to decide which controls to show.
+      setGroupMembers([]);
     }
-  }, [room, isLoggedIn]);
+  }, [groupId, isLoggedIn]);
 
   useEffect(() => {
     loadRoom();
@@ -142,8 +133,11 @@ export function useStudyRoom(roomId: string | undefined) {
     if (!room) return;
     loadMembers();
     loadModeration();
-    loadGroupManagerIds();
-  }, [room, loadMembers, loadModeration, loadGroupManagerIds]);
+  }, [room, loadMembers, loadModeration]);
+
+  useEffect(() => {
+    loadGroupMembers();
+  }, [loadGroupMembers]);
 
   // `members` otherwise only refreshes after the current user's own join/leave/moderate
   // action -- an already-open tab never learns when someone ELSE joins or leaves, so the
@@ -173,7 +167,19 @@ export function useStudyRoom(roomId: string | undefined) {
   );
 
   const isCurrentUserMember = !!currentMember && !currentMember.left_at;
-  const isGroupManager = !!currentUserId && groupManagerIds.has(currentUserId);
+
+  const rankOf = useCallback(
+    (userId: string | null | undefined) => roomRankOf(userId, groupMembers, members),
+    [groupMembers, members]
+  );
+  const myRank = rankOf(currentUserId);
+  const permissions = useMemo(() => roomPermissionsFor(myRank), [myRank]);
+  // Everyone whose board strokes count: rank >= EDITOR (backend: can_edit_whiteboard).
+  const whiteboardEditorIds = useMemo(() => {
+    const ids = new Set<string>();
+    for (const m of groupMembers) if (rankOf(m.user_id) >= RoomRank.EDITOR) ids.add(m.user_id);
+    return ids;
+  }, [groupMembers, rankOf]);
 
   // Best-effort membership cleanup for tab close/reload/navigation-away, so a browser
   // departure doesn't leave `study_room_members.left_at` stale/NULL indefinitely (the
@@ -242,30 +248,6 @@ export function useStudyRoom(roomId: string | undefined) {
     }
   }, [roomId, loadMembers]);
 
-  const start = useCallback(async () => {
-    if (!roomId) return;
-    setActionError(null);
-    try {
-      await startStudyRoom(roomId);
-      await loadRoom();
-    } catch (err) {
-      setActionError(toStudyRoomError(err));
-      throw err;
-    }
-  }, [roomId, loadRoom]);
-
-  const end = useCallback(async () => {
-    if (!roomId) return;
-    setActionError(null);
-    try {
-      await endStudyRoom(roomId);
-      await loadRoom();
-    } catch (err) {
-      setActionError(toStudyRoomError(err));
-      throw err;
-    }
-  }, [roomId, loadRoom]);
-
   const moderate = useCallback(
     async (targetUserId: string, action: ModerationAction) => {
       if (!roomId || !currentUserId) return;
@@ -296,7 +278,7 @@ export function useStudyRoom(roomId: string | undefined) {
   }, [roomId]);
 
   const changeMemberRole = useCallback(
-    async (userId: string, role: StudyRoomMemberRole) => {
+    async (userId: string, role: Exclude<StudyRoomMemberRole, 'host'>) => {
       if (!roomId) return;
       setActionError(null);
       try {
@@ -310,6 +292,21 @@ export function useStudyRoom(roomId: string | undefined) {
     [roomId, loadMembers]
   );
 
+  const transferHost = useCallback(
+    async (userId: string) => {
+      if (!roomId) return;
+      setActionError(null);
+      try {
+        await transferStudyRoomHost(roomId, userId);
+        await Promise.all([loadMembers(), loadRoom()]);
+      } catch (err) {
+        setActionError(toStudyRoomError(err));
+        throw err;
+      }
+    },
+    [roomId, loadMembers, loadRoom]
+  );
+
   return {
     room,
     members,
@@ -321,17 +318,18 @@ export function useStudyRoom(roomId: string | undefined) {
     currentUserId,
     currentMember,
     isCurrentUserMember,
-    isGroupManager,
-    groupManagerIds,
+    rankOf,
+    myRank,
+    permissions,
+    whiteboardEditorIds,
     handRaisedUserIds,
     moderationMutedUserIds,
     join,
     leave,
-    start,
-    end,
     deleteRoom,
     moderate,
     changeMemberRole,
+    transferHost,
     refetchMembers: loadMembers,
     refetchRoom: loadRoom,
   };

@@ -53,6 +53,10 @@ class GroupBackgroundConfirm(BaseModel):
     path: str
 
 
+class OwnerLeaveRequest(BaseModel):
+    successor_id: uuid.UUID
+
+
 class GroupMemberCreate(BaseModel):
     """Target user for a manager (owner/moderator) adding someone else; omit to self-join
     as the authenticated caller. `role`/`status` are intentionally absent -- a new membership

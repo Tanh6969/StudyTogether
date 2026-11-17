@@ -81,17 +81,32 @@ async def test_is_group_manager_false_for_plain_member(monkeypatch):
     assert not await permissions.is_group_manager(session=None, group_id=uuid.uuid4(), user_id=uuid.uuid4())
 
 
-def test_is_group_owner_true_for_owner():
+async def test_is_group_owner_true_for_active_owner(monkeypatch):
     owner_id = uuid.uuid4()
     group = _group(owner_id=owner_id)
+    monkeypatch.setattr(
+        permissions.groups_service, "get_member",
+        AsyncMock(return_value=_group_member(GroupMemberRole.OWNER, MemberStatus.ACTIVE)),
+    )
 
-    assert permissions.is_group_owner(group, owner_id)
+    assert await permissions.is_group_owner(None, group, owner_id)
 
 
-def test_is_group_owner_false_for_non_owner():
+async def test_is_group_owner_false_for_non_owner(monkeypatch):
     group = _group(owner_id=uuid.uuid4())
 
-    assert not permissions.is_group_owner(group, uuid.uuid4())
+    assert not await permissions.is_group_owner(None, group, uuid.uuid4())
+
+
+async def test_is_group_owner_false_once_the_owner_has_left(monkeypatch):
+    owner_id = uuid.uuid4()
+    group = _group(owner_id=owner_id)
+    monkeypatch.setattr(
+        permissions.groups_service, "get_member",
+        AsyncMock(return_value=_group_member(GroupMemberRole.OWNER, MemberStatus.LEFT)),
+    )
+
+    assert not await permissions.is_group_owner(None, group, owner_id)
 
 
 async def test_can_access_channel_public_requires_only_group_membership(monkeypatch):
@@ -521,112 +536,94 @@ async def test_can_manage_room_false_for_deleted_room_even_for_host(monkeypatch)
     get_group_member_mock.assert_not_awaited()
 
 
-async def test_can_manage_room_true_for_active_group_owner(monkeypatch):
-    """Canonical manager rule: an active Group owner may manage ANY room in their group,
-    whether or not they created it -- authority comes from is_group_manager, not host_id."""
+# --- Room ranks: owner > host > group moderator > editor > participant ---------------------
+
+
+def _mock_ranks(monkeypatch, room: StudyRoom, people: dict) -> None:
+    """people: {user_id: (group_role | None, group_status, room_role | None)}"""
+
+    async def group_member(_session, _group_id, user_id):
+        group_role, group_status, _ = people.get(user_id, (None, None, None))
+        return None if group_role is None else _group_member(group_role, group_status)
+
+    async def room_member(_session, _room_id, user_id):
+        _, _, room_role = people.get(user_id, (None, None, None))
+        return None if room_role is None else _room_member(room.id, user_id, role=room_role)
+
+    monkeypatch.setattr(permissions.groups_service, "get_member", group_member)
+    monkeypatch.setattr(permissions.study_rooms_service, "get_member", room_member)
+
+
+A = MemberStatus.ACTIVE
+OWNER, MOD, MEMBER = GroupMemberRole.OWNER, GroupMemberRole.MODERATOR, GroupMemberRole.MEMBER
+HOST, EDITOR, PART = StudyRoomMemberRole.HOST, StudyRoomMemberRole.EDITOR, StudyRoomMemberRole.PARTICIPANT
+
+
+async def test_room_rank_orders_every_role(monkeypatch):
     room = _room()
-    user_id = uuid.uuid4()
-    monkeypatch.setattr(
-        permissions.groups_service,
-        "get_member",
-        AsyncMock(return_value=_group_member(GroupMemberRole.OWNER, MemberStatus.ACTIVE)),
-    )
+    ids = {name: uuid.uuid4() for name in ("owner", "host", "mod", "editor", "part", "outsider", "left")}
+    _mock_ranks(monkeypatch, room, {
+        ids["owner"]: (OWNER, A, PART),
+        ids["host"]: (MEMBER, A, HOST),
+        ids["mod"]: (MOD, A, PART),
+        ids["editor"]: (MEMBER, A, EDITOR),
+        ids["part"]: (MEMBER, A, PART),
+        ids["left"]: (MOD, MemberStatus.LEFT, HOST),
+    })
+    R = permissions.RoomRank
+    assert await permissions.room_rank(None, room, ids["owner"]) == R.OWNER
+    assert await permissions.room_rank(None, room, ids["host"]) == R.HOST
+    assert await permissions.room_rank(None, room, ids["mod"]) == R.GROUP_MODERATOR
+    assert await permissions.room_rank(None, room, ids["editor"]) == R.EDITOR
+    assert await permissions.room_rank(None, room, ids["part"]) == R.PARTICIPANT
+    assert await permissions.room_rank(None, room, ids["outsider"]) == R.NONE
+    # a host who left / was banned from the group loses everything
+    assert await permissions.room_rank(None, room, ids["left"]) == R.NONE
 
-    assert await permissions.can_manage_room(session=None, room=room, user_id=user_id)
 
-
-async def test_can_manage_room_true_for_active_group_moderator(monkeypatch):
+async def test_host_who_is_also_group_moderator_ranks_as_host(monkeypatch):
     room = _room()
-    user_id = uuid.uuid4()
-    monkeypatch.setattr(
-        permissions.groups_service,
-        "get_member",
-        AsyncMock(return_value=_group_member(GroupMemberRole.MODERATOR, MemberStatus.ACTIVE)),
-    )
-
-    assert await permissions.can_manage_room(session=None, room=room, user_id=user_id)
+    uid = uuid.uuid4()
+    _mock_ranks(monkeypatch, room, {uid: (MOD, A, HOST)})
+    assert await permissions.room_rank(None, room, uid) == permissions.RoomRank.HOST
 
 
-async def test_can_manage_room_false_for_plain_active_group_member(monkeypatch):
+async def test_can_manage_room_only_owner_and_host(monkeypatch):
     room = _room()
-    user_id = uuid.uuid4()
-    monkeypatch.setattr(
-        permissions.groups_service,
-        "get_member",
-        AsyncMock(return_value=_group_member(GroupMemberRole.MEMBER, MemberStatus.ACTIVE)),
-    )
+    owner, host, mod, part = (uuid.uuid4() for _ in range(4))
+    _mock_ranks(monkeypatch, room, {
+        owner: (OWNER, A, None), host: (MEMBER, A, HOST), mod: (MOD, A, PART), part: (MEMBER, A, PART),
+    })
+    assert await permissions.can_manage_room(None, room, owner)
+    assert await permissions.can_manage_room(None, room, host)
+    assert not await permissions.can_manage_room(None, room, mod)
+    assert not await permissions.can_manage_room(None, room, part)
 
-    assert not await permissions.can_manage_room(session=None, room=room, user_id=user_id)
 
-
-async def test_can_manage_room_false_for_non_group_member(monkeypatch):
+async def test_moderator_cannot_act_on_another_moderator_host_or_owner(monkeypatch):
     room = _room()
-    monkeypatch.setattr(permissions.groups_service, "get_member", AsyncMock(return_value=None))
-
-    assert not await permissions.can_manage_room(session=None, room=room, user_id=uuid.uuid4())
-
-
-async def test_can_manage_room_false_for_room_scoped_moderator_role_without_group_authority(monkeypatch):
-    """Regression guard: study_room_members.role == MODERATOR (a room-scoped delegation, see
-    STUDY_PLATFORM_DATABASE_SPEC.md §22, superseded 2026-08-18) must NOT independently grant
-    management authority any more -- only a CURRENT active Group owner/moderator can. This
-    also proves can_manage_room no longer consults study_room_members at all -- it must not
-    even be queried."""
-    room = _room()
-    user_id = uuid.uuid4()
-    get_room_member_mock = AsyncMock()
-    monkeypatch.setattr(permissions.study_rooms_service, "get_member", get_room_member_mock)
-    monkeypatch.setattr(
-        permissions.groups_service,
-        "get_member",
-        AsyncMock(return_value=_group_member(GroupMemberRole.MEMBER, MemberStatus.ACTIVE)),
-    )
-
-    assert not await permissions.can_manage_room(session=None, room=room, user_id=user_id)
-    get_room_member_mock.assert_not_awaited()
-
-
-async def test_can_manage_room_false_for_demoted_former_host(monkeypatch):
-    """The core stale-host regression: a Moderator creates a room (room.host_id == them) and
-    is later demoted to a plain Member -- host_id is unchanged, but management authority must
-    now be denied."""
-    host_id = uuid.uuid4()
-    room = _room(host_id=host_id)
-    monkeypatch.setattr(
-        permissions.groups_service,
-        "get_member",
-        AsyncMock(return_value=_group_member(GroupMemberRole.MEMBER, MemberStatus.ACTIVE)),
-    )
-
-    assert not await permissions.can_manage_room(session=None, room=room, user_id=host_id)
-
-
-async def test_can_manage_room_false_for_host_who_left_group(monkeypatch):
-    """A host who has left the Group entirely must not retain management authority via
-    host_id, even though the room's host_id field never changes."""
-    host_id = uuid.uuid4()
-    room = _room(host_id=host_id)
-    monkeypatch.setattr(
-        permissions.groups_service,
-        "get_member",
-        AsyncMock(return_value=_group_member(GroupMemberRole.MODERATOR, MemberStatus.LEFT)),
-    )
-
-    assert not await permissions.can_manage_room(session=None, room=room, user_id=host_id)
-
-
-async def test_can_manage_room_false_for_banned_host(monkeypatch):
-    """Same as above for a banned former Owner -- MemberStatus.BANNED must deny, matching
-    is_group_manager's existing ACTIVE requirement."""
-    host_id = uuid.uuid4()
-    room = _room(host_id=host_id)
-    monkeypatch.setattr(
-        permissions.groups_service,
-        "get_member",
-        AsyncMock(return_value=_group_member(GroupMemberRole.OWNER, MemberStatus.BANNED)),
-    )
-
-    assert not await permissions.can_manage_room(session=None, room=room, user_id=host_id)
+    owner, host, mod_a, mod_b, editor, part = (uuid.uuid4() for _ in range(6))
+    _mock_ranks(monkeypatch, room, {
+        owner: (OWNER, A, PART), host: (MEMBER, A, HOST), mod_a: (MOD, A, PART), mod_b: (MOD, A, PART),
+        editor: (MEMBER, A, EDITOR), part: (MEMBER, A, PART),
+    })
+    act = permissions.can_act_on_member
+    # moderator: only below them
+    assert not await act(None, room, mod_a, mod_b)
+    assert not await act(None, room, mod_a, host)
+    assert not await act(None, room, mod_a, owner)
+    assert await act(None, room, mod_a, editor)
+    assert await act(None, room, mod_a, part)
+    # host: moderators and below, never the owner
+    assert await act(None, room, host, mod_a)
+    assert not await act(None, room, host, owner)
+    # owner: everyone
+    assert await act(None, room, owner, host)
+    assert await act(None, room, owner, mod_b)
+    # nobody on themselves; editors / participants on nobody
+    assert not await act(None, room, owner, owner)
+    assert not await act(None, room, editor, part)
+    assert not await act(None, room, part, editor)
 
 
 # --- can_join_room ---

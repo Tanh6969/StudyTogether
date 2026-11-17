@@ -53,6 +53,9 @@ class StudyRoomResponse(BaseModel):
     conversation_id: uuid.UUID | None
     whiteboard_state: dict | None = None
     presentation_state: dict | None = None
+    # People currently inside the room (study_room_members with left_at NULL). Filled in by
+    # the list/detail endpoints; replaces the old waiting/active status as the "live" signal.
+    active_member_count: int = 0
 
 
 class StudyRoomMemberCreate(BaseModel):
@@ -72,6 +75,10 @@ class StudyRoomMemberResponse(BaseModel):
     left_at: datetime | None
     # See GroupMemberResponse.user -- same canonical-identity convention.
     user: UserSummary
+
+
+class TransferHostRequest(BaseModel):
+    user_id: uuid.UUID
 
 
 class RoomModerationActionCreate(BaseModel):
