@@ -280,6 +280,13 @@ export function StudyRoom() {
     });
   }, [callParticipants, members, currentUserId, currentUser, moderationMutedUserIds, handRaisedUserIds, currentUserHandRaised]);
 
+  // Hook must be called unconditionally, BEFORE loading/error early returns.
+  // This is the connected media roster, not all stored members with left_at=NULL.
+  const connectedRoomMembers = useMemo(() => {
+    const identities = new Set(callParticipants.map((person) => person.identity));
+    return members.filter((member) => !member.left_at && identities.has(member.user_id));
+  }, [members, callParticipants]);
+
   // Real persisted messages for this room's ROOM Conversation (reuses the same
   // /conversations/{id}/messages REST API + Realtime subscription as Channel chat --
   // see useRoomMessages.ts). `room.conversation_id` is null only in the brief instant
@@ -374,14 +381,6 @@ export function StudyRoom() {
   }
 
   const inRoomCount = participants.length;
-  // Permission controls are for people connected to this call, never
-  // everyone whose saved study_room_members row lacks a left_at timestamp.
-  // Membership still supplies authorization and rank, LiveKit supplies presence.
-  const connectedRoomMembers = useMemo(() => {
-    const identities = new Set(callParticipants.map((person) => person.identity));
-    return members.filter((member) => !member.left_at && identities.has(member.user_id));
-  }, [members, callParticipants]);
-
   // Pre-join lobby: lets the user preview/toggle camera & mic (and pick a device) before the
   // LiveKit connection is made, instead of connecting with audio/video hardcoded on immediately.
   // Also doubles as the room-membership join step for first-time visitors -- "Tham gia phòng học"

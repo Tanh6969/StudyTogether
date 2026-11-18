@@ -192,3 +192,41 @@ unknown/empty distinction, 21 persisted vs 1 connected, privacy, and
 single batched room query. `frontend/src/hooks/useRoomPresence.test.tsx`
 covers failed-provider unknown, periodical reconciliation, visibility
 focus and stale previous-room responses.
+
+
+## Room-route render lifecycle regression (2026-11-18)
+
+**Incident:** Opening any room in preview displayed `Đang tải phòng học...`
+then a blank white screen across accounts. Backend preview logs confirmed
+`GET /study-rooms/{id}` returned HTTP 200 (no corresponding 5xx at
+the room GET). The cause was not Supabase or LiveKit.
+
+**Verified root cause:** Commit `9720055` added a new
+`useMemo(connectedRoomMembers)` **after** the conditional
+`if (loading) return ...` and `if (roomError || !room) return ...`
+inside `frontend/src/pages/StudyGroup/StudyRoom.tsx`. Thus loading
+and loaded renders of the *same component* called different numbers of
+React hooks. The React rule-of-hooks linter reproduced the exact error
+at line 380 even without a browser; the loaded transition can crash
+the React root, leaving a white screen. Static type checking, a Vite
+bundle build and isolated hook unit tests cannot detect hook-call order
+at runtime.
+
+**Remediation:** Move the roster `useMemo` next to the other
+unconditional participant derivations **before** any room-state early
+returns. Add hard lint gate in `frontend/package.json` via
+`oxlint -D react-hooks/rules-of-hooks src`. Add
+`StudyRoom.loading.test.tsx` to exercise loading → ready, loading →
+error → ready, and ready → loading → ready transitions on the same
+component instance. Add a route-wide `ErrorBoundary` around
+`StudyRoom`, keyed by room ID, so a future rendering exception shows
+a reload/back fallback instead of unmounting the app into an empty
+page; changing room IDs resets the boundary. Existing media/session
+ownership, API contracts, and group presence authority are retained.
+
+**Prevent recurrence:** For every new hook added to `StudyRoom` or
+another component with conditional returns, place all React hooks
+above the first conditional return and exercise transitions between
+each state in a real React render test. Frontend release gate requires
+`npm run lint`, all Vitest tests, TypeScript check and production
+Vite build, followed by a live HTTP/browser review on preview.

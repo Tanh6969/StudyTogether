@@ -156,6 +156,39 @@ frontend 200, OpenAPI 200, room 200, presence requires user JWT
 (401 without it), with the new route present. Full video QA with
 real logged-in browser identities remains for PM acceptance.
 
+**Room route validation receipt (2026-11-18, local branch):**
+- `frontend/src/pages/StudyGroup/StudyRoom.loading.test.tsx`: 3/3 tests passed.
+- `frontend/src/routes/index.roomError.test.tsx`: 2/2 tests passed.
+- Complete Vitest suite: **330/330 tests**, **39/39 files**, passed.
+- `npm run lint`: zero errors, 16 preexisting non-blocking warnings.
+- `npm run build` now **runs lint itself** before TypeScript/Vite;
+  TypeScript compiled and production Vite bundle built successfully.
+- Preview's actual publicly accessed, one-click authorized HTTPS route
+  `/room/bbed1273-fd4b-4325-8c1d-3246d6bebc80` responded HTTP 200,
+  main JS HTTP 200, new room JS chunk HTTP 200
+  (`StudyRoom-BgSMu01F.js`), new route error fallback present.
+  Room API HTTP 200; unauthenticated presence API correctly returned 401.
+  Preview backend and production backend health both HTTP 200.
+- No production deploy, no GitHub push/merge, no Supabase schema/data
+  change. Browser acceptance with an authenticated PM user remains
+  necessary to confirm camera/lobby functionality and the absence of
+  any additional browser-specific issue.
+
+**Room route blank-screen fix (2026-11-18):** PM observed a
+loading screen followed by a white page in every room. Backend room
+GETs were 200; a newly introduced roster `useMemo` was placed after
+a loading/error early return and violated React's immutable hook-call
+ordering. `oxlint -D react-hooks/rules-of-hooks` reproduced this
+exact defect. The hook now runs above all returns; global room-route
+render errors show a recovery UI instead of a blank screen.
+New React lifecycle tests cover loading/loaded/error transition and
+error-boundary recovery/re-navigation. Do not release only based on
+backend HTTP 200 or build success: this class of bug is in the
+client render lifecycle. Run `npm run lint`, `npm run test`, and
+`npm run build` in that order and verify preview on /room/:id.
+The fix remains on the same local branch and does not touch
+production or Supabase schema.
+
 **Rollout caveats:** no migrations on production Supabase before PM approval.
 The app-level check does not revoke already issued LiveKit JWTs; a future
 production hardening pass can add webhook-based eviction. The local coordinator

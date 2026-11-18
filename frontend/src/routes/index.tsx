@@ -2,6 +2,7 @@ import { lazy, Suspense } from 'react';
 import { Routes, Route, Navigate, Outlet, useParams } from 'react-router-dom';
 import { useAuth } from '../hooks/useAuth';
 import { PageLoadingSkeleton } from '../components/ui/Skeleton';
+import { ErrorBoundary } from '../components/ui/ErrorBoundary';
 import { LazyStudyRoom as StudyRoom } from '../pages/StudyGroup/studyRoomPage';
 
 const Layout = lazy(() => import('../components/layout/Layout').then(({ Layout }) => ({ default: Layout })));
@@ -57,7 +58,33 @@ const ProtectedRoute = ({ children }: { children?: React.ReactNode }) => {
 // navigation to room B. The old room cleans up with its own join generation.
 function RoomRouteBoundary() {
   const { id } = useParams();
-  return <StudyRoom key={id} />;
+  return (
+    // A room render crash must never blank the whole application. Keying by
+    // room id also resets the boundary when navigating into another room.
+    <ErrorBoundary
+      key={id}
+      onError={(error, info) => console.error('[StudyRoom route render]', error, info.componentStack)}
+      fallback={
+        <main role="alert" style={{
+          minHeight: '100vh', background: '#0F172A', color: '#F8FAFC',
+          display: 'grid', placeContent: 'center', padding: 24, textAlign: 'center',
+        }}>
+          <h1 style={{fontSize: 20}}>Không thể hiển thị phòng học</h1>
+          <p style={{maxWidth: 480, color: '#CBD5E1'}}>
+            Giao diện phòng học gặp lỗi ngoài dự kiến. Bạn có thể thử tải lại
+            hoặc quay về danh sách phòng. Không có dữ liệu phòng nào bị xóa.
+          </p>
+          <div style={{display: 'flex', gap: 12, justifyContent: 'center'}}>
+            <button type="button" onClick={() => window.location.reload()}
+              style={{padding: 12, cursor: 'pointer'}}>Tải lại phòng</button>
+            <a href="/groups" style={{padding: 12, color: '#93C5FD'}}>Quay về nhóm</a>
+          </div>
+        </main>
+      }
+    >
+      <StudyRoom key={id} />
+    </ErrorBoundary>
+  );
 }
 
 export function AppRoutes() {
