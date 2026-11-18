@@ -1,0 +1,4 @@
+# Canonical local Git attribution for commits from the 2026-11-18 room-session release.
+# Replaces the temporary local tooling identity only in Git mailmap-aware views.
+# Original commit objects and SHA values remain unchanged.
+Nguyen Phuc Manh <131908995+npm11@users.noreply.github.com> <chatgpt-local-review@localhost.invalid>
