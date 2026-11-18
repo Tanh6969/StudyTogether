@@ -2,8 +2,8 @@
 
 ## Isolation contract
 
-Review branch: `fix/room-session-lifecycle-20261118` (local AWS Git only).
-Do not push/merge/deploy production until the PM accepts real two-user QA.
+Review branch: `fix/room-session-media-presence-security-preview-20261118` (local AWS Git; GitHub publication pending repository installation/write authorization).
+PM accepted interactive preview QA on 2026-11-18. Production rollout remains gated on a GitHub PR merged into main and migration 011 being applied to the chosen production coordinator database.
 
 | Component | Preview | Production |
 |---|---|---|

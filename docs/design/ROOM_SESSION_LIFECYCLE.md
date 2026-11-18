@@ -230,3 +230,31 @@ above the first conditional return and exercise transitions between
 each state in a real React render test. Frontend release gate requires
 `npm run lint`, all Vitest tests, TypeScript check and production
 Vite build, followed by a live HTTP/browser review on preview.
+
+## Release handoff after accepted QA (2026-11-18)
+
+Product owner confirmed the local preview worked across rooms, and requested
+publication of all session, presence, security, media and preview commits.
+The local branch was renamed to
+`fix/room-session-media-presence-security-preview-20261118`. GitHub `main`
+was still at `e1828af`. The existing `studytogether-deploy` CodeBuild
+project has `NO_SOURCE` and clones `main` itself; therefore merge a verified
+PR into `main` **before** starting that deployment, and independently compare
+`SOURCE_COMMIT` / `RELEASE_SUCCESS` in CloudWatch to the expected main SHA.
+
+Pre-release blocker: the new `POST /meeting/claim` unconditionally persists
+to `meeting_internal.media_session`. It needs migration
+`backend/db/migrations/011_meeting_media_session_owner.sql` on the chosen
+production database/coordinator before shipping the new frontend and backend.
+The shared Supabase production project does not yet have this table (verified
+read-only 2026-11-18). Never issue a production CodeBuild deployment without
+first confirming the coordinator migration and runtime connection permissions.
+The independent authentication security hotfix is already byte-for-byte included
+in the release branch, so do not cherry-pick it again.
+
+Publication attempts were blocked by authentication/permissions, not by test
+failures: Linux `git push` lacks credentials, and the connected GitHub App
+installed for `npm11` cannot create Git refs/trees in the
+`Tanh6969/StudyTogether` repository (HTTP 403). Request repository-owner
+installation/write authorization; do not infer that a local rename implies
+a remote push. Leave production and Supabase unchanged until resolved.
