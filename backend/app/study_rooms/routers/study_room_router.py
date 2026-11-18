@@ -2,6 +2,7 @@ import logging
 import uuid
 from datetime import datetime
 from fastapi import APIRouter, Depends, HTTPException, status
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.attachments.dto.attachment_dto import DownloadUrlResponse, UploadUrlRequest, UploadUrlResponse
@@ -36,6 +37,7 @@ from app.study_rooms.dto.study_room_dto import (
     RoomModerationActionResponse,
     StudyRoomCreate,
     StudyRoomMemberResponse,
+    StudyRoomSessionResponse,
     StudyRoomResponse,
     StudyRoomUpdate,
     TransferHostRequest,
@@ -353,6 +355,7 @@ async def join_room(
     # Check existing membership. The joining identity is always the caller --
     # never a client-supplied user_id. A first join is always PARTICIPANT; a rejoin keeps the
     # role the row already has (so the host stays host). No self-assigning roles here.
+    group_id = room.group_id  # Preserve before rollback expires ORM fields.
     member = await service.get_member(session, room_id, current_user.id)
     try:
         if member:
@@ -361,12 +364,24 @@ async def join_room(
             updated = await service.join(session, room_id, current_user.id)
         await session.commit()
         return updated
-    except Exception as e:
+    except IntegrityError as exc:
         await session.rollback()
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"Could not join study room: {str(e)}"
-        )
+        # Two first-time joins by the same account can both see no membership.
+        # The unique (room_id,user_id) index correctly admits only one insert;
+        # the losing request should return the winning active membership, not 400.
+        constraint = getattr(getattr(exc.orig, 'diag', None), 'constraint_name', None)
+        if constraint == 'study_room_members_room_id_user_id_key':
+            winner = await service.get_member(session, room_id, current_user.id)
+            if (winner is not None and winner.left_at is None
+                    and await is_active_group_member(session, group_id, current_user.id)):
+                return StudyRoomMemberResponse.model_validate(winner)
+            raise HTTPException(status.HTTP_409_CONFLICT, 'Membership changed during join; please retry') from exc
+        logger.exception('Unexpected integrity error joining study room %s', room_id)
+        raise HTTPException(status.HTTP_500_INTERNAL_SERVER_ERROR, 'Could not join study room') from exc
+    except Exception as exc:
+        await session.rollback()
+        logger.exception('Failed joining study room %s', room_id)
+        raise HTTPException(status.HTTP_500_INTERNAL_SERVER_ERROR, 'Could not join study room') from exc
 
 
 @router.post("/{room_id}/leave", response_model=StudyRoomMemberResponse)
@@ -375,8 +390,14 @@ async def leave_room(
     current_user: CurrentUser = Depends(get_current_user),
     session: AsyncSession = Depends(get_db_session),
     expected_joined_at: datetime | None = None,
+    disconnect_livekit: bool = False,
 ):
-    """Leave current membership. Unload cleanup is conditional on the join generation."""
+    """Leave current membership, with optional generation-safe explicit leave.
+
+    Legacy leave without generation still evicts LiveKit. A conditional pagehide
+    leave must not evict the replacement session; an explicit generation-safe
+    leave can opt in to LiveKit eviction only after the conditional update won.
+    """
     # A deleted room must behave as if it no longer exists here too -- the soft-delete
     # invariant (deleted_at set -> normal operations stop) applies to leave just like every
     # other mutation, even though leaving only touches the caller's own membership row.
@@ -395,14 +416,24 @@ async def leave_room(
                 session, room_id, current_user.id, expected_joined_at
             )
             if closed_at is None:
+                # Keep a detached response snapshot before rollback expires ORM fields.
+                # A stale leave from another tab must not trigger MissingGreenlet.
+                response = StudyRoomMemberResponse.model_validate(member)
                 await session.rollback()
-                return member
+                return response
             # Build the DTO before committing: validation errors must not turn a
             # committed leave into an apparent request failure.
             response = StudyRoomMemberResponse.model_validate(member).model_copy(
                 update={'left_at': closed_at}
             )
             await session.commit()
+            if disconnect_livekit:
+                # The same user can rejoin in another tab. A generation mismatch
+                # above never reaches this path and cannot kick a newer session.
+                try:
+                    await livekit_service.remove_participant(room_id, current_user.id)
+                except Exception:
+                    logger.exception('Could not disconnect LiveKit participant after generation-safe leave')
             return response
         updated = await service.leave(session, member)
         await session.commit()
@@ -437,6 +468,31 @@ async def list_members(
     if active_only:
         return await service.list_active_members(session, room_id)
     return await service.list_members(session, room_id)
+
+
+@router.get("/{room_id}/session", response_model=StudyRoomSessionResponse)
+async def get_room_session(
+    room_id: uuid.UUID,
+    current_user: CurrentUser = Depends(get_current_user),
+    session: AsyncSession = Depends(get_db_session),
+):
+    """Single authority for the caller's membership, independent from the roster.
+
+    The caller may inspect their own state before joining a visible room, but a
+    private/unavailable room never leaks its membership or metadata. The backend
+    independently checks authorization again when issuing every LiveKit token.
+    """
+    room = await _get_active_room_or_404(session, room_id)
+    if not await can_view_room(session, room, current_user.id):
+        raise HTTPException(status.HTTP_403_FORBIDDEN, "You do not have access to this study room")
+    member = await service.get_member(session, room_id, current_user.id)
+    active = member is not None and member.left_at is None
+    return StudyRoomSessionResponse(
+        room_id=room.id,
+        room_status=room.status,
+        member=StudyRoomMemberResponse.model_validate(member) if member is not None else None,
+        can_connect=active and can_join_room(room),
+    )
 
 
 _ASSIGNABLE_ROOM_ROLES = {StudyRoomMemberRole.PARTICIPANT, StudyRoomMemberRole.EDITOR}

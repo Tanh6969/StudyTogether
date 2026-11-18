@@ -7,6 +7,7 @@ import type {
   StudyRoomCreate,
   StudyRoomMember,
   StudyRoomMemberRole,
+  StudyRoomSession,
 } from './studyRoom.types';
 
 export function getStudyRoom(roomId: string): Promise<StudyRoom> {
@@ -29,13 +30,23 @@ export function createStudyRoom(data: StudyRoomCreate): Promise<StudyRoom> {
 }
 
 /** Caller is always derived from the bearer token on the backend; no user id is ever sent. */
+/** Backend-owned state of the caller, independent of the UI roster. */
+export function getStudyRoomSession(roomId: string): Promise<StudyRoomSession> {
+  return apiClient.get<StudyRoomSession>(`/study-rooms/${roomId}/session`);
+}
+
 export function joinStudyRoom(roomId: string): Promise<StudyRoomMember> {
   return apiClient.post<StudyRoomMember>(`/study-rooms/${roomId}/join`);
 }
 
 /** Backend derives the leaving member from the bearer token — this can only leave the caller's own membership. */
-export function leaveStudyRoom(roomId: string): Promise<StudyRoomMember> {
-  return apiClient.post<StudyRoomMember>(`/study-rooms/${roomId}/leave`);
+export function leaveStudyRoom(roomId: string, joinedAt?: string): Promise<StudyRoomMember> {
+  // Explicit leave of a known join generation is atomic at the database boundary.
+  // The server must never evict LiveKit when that generation was superseded.
+  const generation = joinedAt
+    ? `?expected_joined_at=${encodeURIComponent(joinedAt)}&disconnect_livekit=true`
+    : '';
+  return apiClient.post<StudyRoomMember>(`/study-rooms/${roomId}/leave${generation}`);
 }
 
 /**

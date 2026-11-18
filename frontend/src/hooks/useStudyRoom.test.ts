@@ -6,6 +6,7 @@ import { listGroupMembers } from '../lib/group.api';
 import { ApiError } from '../lib/apiClient';
 import {
   getStudyRoom,
+  getStudyRoomSession,
   joinStudyRoom,
   leaveStudyRoomOnUnload,
   listStudyRoomMembers,
@@ -26,6 +27,7 @@ vi.mock('../lib/group.api', () => ({
 }));
 vi.mock('../lib/studyRoom.api', () => ({
   getStudyRoom: vi.fn(),
+  getStudyRoomSession: vi.fn(),
   listStudyRoomMembers: vi.fn(),
   listStudyRoomModeration: vi.fn(),
   leaveStudyRoomOnUnload: vi.fn(),
@@ -40,6 +42,7 @@ const mockedUseAuth = vi.mocked(useAuth);
 const mockedUseRealtime = vi.mocked(useStudyRoomMembersRealtime);
 const mockedListGroupMembers = vi.mocked(listGroupMembers);
 const mockedGetStudyRoom = vi.mocked(getStudyRoom);
+const mockedGetSession = vi.mocked(getStudyRoomSession);
 const mockedJoinRoom = vi.mocked(joinStudyRoom);
 const mockedListMembers = vi.mocked(listStudyRoomMembers);
 const mockedListModeration = vi.mocked(listStudyRoomModeration);
@@ -93,6 +96,7 @@ beforeEach(() => {
   mockedUseRealtime.mockReset();
   mockedListGroupMembers.mockReset().mockResolvedValue([]);
   mockedGetStudyRoom.mockReset();
+  mockedGetSession.mockReset().mockResolvedValue({ room_id: 'room-1', room_status: 'active', member: null, can_connect: false });
   mockedJoinRoom.mockReset();
   mockedListMembers.mockReset().mockResolvedValue([]);
   mockedListModeration.mockReset().mockResolvedValue([]);
@@ -102,6 +106,7 @@ beforeEach(() => {
 describe('useStudyRoom -- leave-on-unload cleanup', () => {
   it('fires a beacon leave on pagehide while the caller is an active room member', async () => {
     mockedGetStudyRoom.mockResolvedValue(makeRoom());
+    mockedGetSession.mockResolvedValue({ room_id: 'room-1', room_status: 'active', member: makeMember(), can_connect: true });
     mockedListMembers.mockResolvedValue([makeMember()]);
 
     const { result } = renderHook(() => useStudyRoom('room-1'));
@@ -126,6 +131,7 @@ describe('useStudyRoom -- leave-on-unload cleanup', () => {
 
   it('fires a best-effort leave on unmount (in-app navigation away) while an active member', async () => {
     mockedGetStudyRoom.mockResolvedValue(makeRoom());
+    mockedGetSession.mockResolvedValue({ room_id: 'room-1', room_status: 'active', member: makeMember(), can_connect: true });
     mockedListMembers.mockResolvedValue([makeMember()]);
 
     const { result, unmount } = renderHook(() => useStudyRoom('room-1'));
@@ -217,6 +223,7 @@ describe('useStudyRoom -- coordinated membership lifecycle', () => {
 describe('useStudyRoom -- permissions and in-flight responses', () => {
   it('revokes local membership on a definitive 403 instead of treating it as transient', async () => {
     mockedGetStudyRoom.mockResolvedValue(makeRoom());
+    mockedGetSession.mockResolvedValue({ room_id: 'room-1', room_status: 'active', member: makeMember(), can_connect: true });
     mockedListMembers.mockResolvedValueOnce([makeMember()]);
 
     const { result } = renderHook(() => useStudyRoom('room-1'));
@@ -229,6 +236,8 @@ describe('useStudyRoom -- permissions and in-flight responses', () => {
   });
 
   it('ignores a moderation response from a membership that was revoked meanwhile', async () => {
+    mockedGetSession.mockResolvedValueOnce({ room_id: 'room-1', room_status: 'active', member: makeMember(), can_connect: true })
+      .mockResolvedValueOnce({ room_id: 'room-1', room_status: 'active', member: null, can_connect: false });
     let resolveHistory!: (actions: { id: string; room_id: string; moderator_id: string; target_user_id: string; action: 'raise_hand'; reason: null; created_at: string }[]) => void;
     mockedGetStudyRoom.mockResolvedValue(makeRoom());
     mockedListMembers.mockResolvedValueOnce([makeMember()]).mockResolvedValueOnce([]);
@@ -244,5 +253,41 @@ describe('useStudyRoom -- permissions and in-flight responses', () => {
       resolveHistory([{ id: 'old-1', room_id: 'room-1', moderator_id: 'user-2', target_user_id: CURRENT_USER_ID, action: 'raise_hand', reason: null, created_at: '2026-11-18T00:00:00Z' }]);
     });
     expect(result.current.handRaisedUserIds.size).toBe(0);
+  });
+});
+
+
+describe('useStudyRoom -- authoritative backend session contract', () => {
+  it('recognizes an active current user even when the shared roster is empty', async () => {
+    mockedGetStudyRoom.mockResolvedValue(makeRoom());
+    mockedListMembers.mockResolvedValue([]);
+    mockedGetSession.mockResolvedValue({ room_id: 'room-1', room_status: 'active', member: makeMember(), can_connect: true });
+    const { result } = renderHook(() => useStudyRoom('room-1'));
+    await waitFor(() => expect(result.current.currentMember?.user_id).toBe(CURRENT_USER_ID));
+    expect(result.current.isCurrentUserMember).toBe(true);
+    expect(result.current.members).toEqual([]);
+    expect(result.current.sessionError).toBeNull();
+  });
+
+  it('honors server revocation even if the shared roster still contains the caller', async () => {
+    mockedGetStudyRoom.mockResolvedValue(makeRoom());
+    mockedListMembers.mockResolvedValue([makeMember()]);
+    mockedGetSession.mockResolvedValue({ room_id: 'room-1', room_status: 'active', member: makeMember({ left_at: '2026-11-18T00:00:00Z' }), can_connect: false });
+    const { result } = renderHook(() => useStudyRoom('room-1'));
+    await waitFor(() => expect(result.current.currentMember?.left_at).toBe('2026-11-18T00:00:00Z'));
+    expect(result.current.isCurrentUserMember).toBe(false);
+    expect(result.current.members.length).toBe(1);
+  });
+
+  it('a definitive 403 session response invalidates prior membership', async () => {
+    mockedGetStudyRoom.mockResolvedValue(makeRoom());
+    mockedListMembers.mockResolvedValue([makeMember()]);
+    mockedGetSession.mockResolvedValueOnce({ room_id: 'room-1', room_status: 'active', member: makeMember(), can_connect: true })
+      .mockRejectedValueOnce(new ApiError(403, 'Forbidden'));
+    const { result } = renderHook(() => useStudyRoom('room-1'));
+    await waitFor(() => expect(result.current.isCurrentUserMember).toBe(true));
+    await act(async () => { await result.current.refetchMembers(); });
+    expect(result.current.isCurrentUserMember).toBe(false);
+    expect(result.current.sessionError?.status).toBe(403);
   });
 });

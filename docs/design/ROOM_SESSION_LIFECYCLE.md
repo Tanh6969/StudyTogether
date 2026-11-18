@@ -6,11 +6,15 @@ authorization system or replace LiveKit's own connection management.
 
 ## Source of truth and phases
 
-1. **Pre-join**: `GET /study-rooms/{id}` and the visibility-gated active member roster
-   can load to populate the preview lobby. Protected room content must not load yet.
+1. **Pre-join**: `GET /study-rooms/{id}` supplies public/visible room metadata.
+   `GET /study-rooms/{id}/session` returns **only the caller's own membership**,
+   current lifecycle status and `can_connect`. Unconfirmed access is not access.
+   The shared roster is for displaying other people, not authorization.
 2. **Join acknowledgement**: `POST /study-rooms/{id}/join` returns the current
    user's membership row. A successful response is sufficient to enable the next
    client step. Do NOT make joining depend on a separate roster GET succeeding.
+   Concurrent first joins by the same account are idempotent successes: the
+   losing unique-constraint INSERT reads back the winner's active membership.
 3. **In-room**: Backend token issuance (`POST /meeting/token`) performs its own
    authorization. Protected moderation history, chat and in-room activities are
    enabled only after room membership has been confirmed.
@@ -23,13 +27,14 @@ authorization system or replace LiveKit's own connection management.
 ## Critical invariants
 
 - A failed roster GET due to transport errors means **unknown / temporarily unavailable**, not **no member**.
-  Keep the last confirmed membership and report the error separately. A definitive
-  401/403/404 is different: invalidate locally known participation and display the
-  authorization/access failure. Do not optimistically retain access after revocation.
+  Current-user authority is determined exclusively by `GET /session` or a committed
+  POST `/join`/`/leave` response. Before either responds, participation is unconfirmed.
+  A definitive 401/403/404 must invalidate local participation, unlike transient IO errors.
 - All roster refresh sources (join/leave, periodic polling, Supabase Realtime)
   use the same increasing request revision. Discard results from older revisions.
-- Realtime events trigger a roster re-fetch. They are not a substitute for
-  current REST authorization and do not supersede a confirmed join response.
+- Realtime events and the 10-second poll refresh BOTH the roster and the caller's
+  `/session`. They are not themselves authorization; late responses are versioned and
+  cannot supersede a newer confirmed join/leave.
 - Protected moderation history is requested after confirmed room membership;
   a 403 from that supplementary endpoint must not masquerade as a video failure.
   A response received after leaving is ignored using the same request-revision pattern.
@@ -43,6 +48,14 @@ authorization system or replace LiveKit's own connection management.
 - A token request has a 15-second deadline and an AbortController. A stalled
   request becomes a visible retryable error, never an indefinite spinner.
   A superseded request's late response must never reactivate a revoked session.
+- Explicit `POST /leave` is generation-safe when supplied `expected_joined_at` and
+  `disconnect_livekit=true`. If an old tab's generation is no longer active it must
+  neither close the newer DB membership nor evict the new LiveKit connection.
+  Page-unload cleanup uses conditional leave WITHOUT media eviction. Serialize stale
+  ORM members before rollback to prevent SQLAlchemy `MissingGreenlet`.
+- Backend conversation reads and writes use the SAME `can_access_conversation`
+  permission: active group membership alone is NOT authorization for a private channel.
+- Backend must reject unsigned frontend mock identity tokens in every environment.
 - After LiveKit exhausts transient reconnection and disconnects, retain the
   room UI, refresh metadata non-disruptively, surface the disconnect and allow
   an explicit fresh-token retry. Never reload the entire page as recovery.
@@ -61,7 +74,7 @@ Relevant frontend tests:
 
 Backend token and permission tests remain authoritative. They must run before
 a release, followed by two-user testing with actual Supabase and LiveKit.
-No production schema changes are needed for this frontend lifecycle fix.
+No database schema changes are needed; the new backend API reads existing tables. Backend and frontend must deploy together after review.
 
 ## Operational notes
 
