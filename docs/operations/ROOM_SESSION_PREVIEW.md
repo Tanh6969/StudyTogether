@@ -107,12 +107,54 @@ schema nor production backend has been modified. The preview application
 refuses startup if a strict shared-production coordinator points outside the
 known loopback port.
 
-**QA verification:** backend 731 passed, 9 skipped; frontend 320 passed
+**QA verification:** backend 739 passed, 9 skipped; frontend 325 passed
 across 36 test files; focused media tests 63 passed. A full manual two-tab/
 two-device LiveKit session takeover test with real user credentials is still
 required and is the PM's acceptance gate. On an existing browser, reload
 both tabs with the new preview assets before testing, otherwise an old
 JavaScript bundle would still call the legacy token API and be rejected.
+
+**Presence ghost regression (2026-11-18):** Supabase showed Test 18
+still in `study_room_members` without `left_at`, despite LiveKit listing
+only Test 01 as an ACTIVE connected participant. Preview now uses
+`GET /study-rooms/{id}/presence` for the group-room roster and
+LiveKit `ListRooms` (one RPC for all visible rooms) for online badges.
+Reconciliation is 5s for selected room, 8s for all group-room counts,
+plus browser focus. No Supabase mutation, no presence migration.
+`active_member_count: null` is an unverified count, distinct from zero.
+StudyRoom's in-call permissions window uses the LiveKit identity list.
+Backend 739/739, frontend 325/325, and new frontend build passed.
+Review must still include Test 18 ghost, browser crash, reload and
+network failure with real accounts. Historical attendance remains
+persisted and must not be mislabeled as current connection.
+
+**Preview connection ceiling incident and fix:** A second API worker
+initially returned 500 when connecting to the shared Supabase **session**
+pooler at port 5432: Supavisor reported EMAXCONNSESSION and its
+15-connection session pool limit. A safe, read-only test of port 6543
+succeeded and counted 64 study rooms; preview's **DATABASE_URL only**
+was changed to that same project's transaction pooler at port 6543.
+The backend's existing `build_engine_kwargs` already disables psycopg
+server-side prepared statements for this mode. A local backup of
+`preview.env` was taken with mode 0600, and public production
+database configuration was not changed. Before port migration the old
+preview API remained available; the new backend was tested first at
+8182, then cut over ONLY 8181. The extra 8182 candidate was stopped.
+Production backend 8000 was never restarted. Both preview and
+production HTTP health checks returned 200. No database schema changes.
+
+**Preview acceptance test:** open the existing Cloudflare one-click
+access link, use Test 01 in "Phòng này là Thảo nhé" and verify Test 18
+never shows as connected unless they genuinely join LiveKit. The
+live badge/count can briefly be unknown while the API responds;
+connection loss must converge to 0 in a foreground tab within the
+configured poll period plus LiveKit's reconnect grace period. A
+LiveKit error must display "Không thể xác minh..." and not "0 người".
+The participant list inside the call and the group card should agree
+after reconciliation. Direct public HTTPS smoke: one-click 303,
+frontend 200, OpenAPI 200, room 200, presence requires user JWT
+(401 without it), with the new route present. Full video QA with
+real logged-in browser identities remains for PM acceptance.
 
 **Rollout caveats:** no migrations on production Supabase before PM approval.
 The app-level check does not revoke already issued LiveKit JWTs; a future

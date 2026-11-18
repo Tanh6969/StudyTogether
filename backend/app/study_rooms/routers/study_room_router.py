@@ -75,9 +75,17 @@ async def _get_active_room_or_404(session: AsyncSession, room_id: uuid.UUID) -> 
 
 
 async def _with_active_counts(session: AsyncSession, rooms: list[StudyRoom]) -> list[StudyRoomResponse]:
-    counts = await service.active_member_counts(session, [room.id for room in rooms])
+    # The badge means *connected to the call*, never "has a DB row without
+    # left_at". Keep membership independently for authorization and history.
+    try:
+        counts = await livekit_service.connected_counts([room.id for room in rooms])
+    except Exception:
+        logger.exception("LiveKit presence counts unavailable")
+        counts = None
     return [
-        StudyRoomResponse.model_validate(room).model_copy(update={"active_member_count": counts.get(room.id, 0)})
+        StudyRoomResponse.model_validate(room).model_copy(
+            update={"active_member_count": counts.get(room.id, 0) if counts is not None else None}
+        )
         for room in rooms
     ]
 
@@ -465,6 +473,34 @@ async def leave_room(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=f"Could not leave study room: {str(e)}"
         )
+
+
+@router.get("/{room_id}/presence", response_model=list[StudyRoomMemberResponse])
+async def get_room_presence(
+    room_id: uuid.UUID,
+    current_user: CurrentUser = Depends(get_current_user),
+    session: AsyncSession = Depends(get_db_session),
+):
+    """LiveKit-confirmed participants visible to the caller, NOT membership.
+
+    A saved study_room_members row, even with left_at=NULL, never counts as
+    somebody in the call. Use this endpoint only for real-time presence UI.
+    A broken LiveKit API means UNKNOWN (503), never a fabricated empty room.
+    """
+    room = await _get_active_room_or_404(session, room_id)
+    if not await can_view_room(session, room, current_user.id):
+        raise HTTPException(status.HTTP_403_FORBIDDEN, "You do not have access to this study room")
+    try:
+        connected = await livekit_service.connected_user_ids(room_id)
+    except Exception as exc:
+        logger.exception("LiveKit room presence unavailable for %s", room_id)
+        raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, "Room presence temporarily unavailable") from exc
+    if not connected:
+        return []
+    # Preserve canonical user/profile/role payload and permissions from the DB,
+    # but never infer online-ness from DB membership alone.
+    members = await service.list_members(session, room_id)
+    return [member for member in members if member.user_id in connected]
 
 
 @router.get("/{room_id}/members", response_model=list[StudyRoomMemberResponse])

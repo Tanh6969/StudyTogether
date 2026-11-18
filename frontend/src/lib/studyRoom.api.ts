@@ -82,6 +82,12 @@ export function listStudyRoomMembers(roomId: string, activeOnly: boolean): Promi
   return apiClient.get<StudyRoomMember[]>(`/study-rooms/${roomId}/members?active_only=${activeOnly}`);
 }
 
+/** Actual people connected to the LiveKit call. Never equate this with
+ * /members?active_only=true (DB membership without an explicit leave). */
+export function listStudyRoomPresence(roomId: string): Promise<StudyRoomMember[]> {
+  return apiClient.get<StudyRoomMember[]>(`/study-rooms/${roomId}/presence`);
+}
+
 export function listStudyRoomModeration(roomId: string): Promise<RoomModerationAction[]> {
   return apiClient.get<RoomModerationAction[]>(`/study-rooms/${roomId}/moderation`);
 }

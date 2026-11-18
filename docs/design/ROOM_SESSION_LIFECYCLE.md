@@ -135,3 +135,60 @@ whiteboard mappings. Backend and frontend must deploy together after review.
 The local review branch is independent of the running production service.
 Do not push, merge or deploy it until the product owner accepts an interactive
 test of join, video, reconnect, membership revocation and room end.
+
+
+## Connected media presence vs durable room membership (2026-11-18)
+
+**Root cause (verified on production read-only):** Room
+`17b629ce-e822-44bf-b79d-744b786b1ec1` had a Test 18 row
+with `joined_at=2026-11-18T03:51:32Z`, `left_at=NULL` more than
+four hours later. Test 01 also had an active membership row. At the
+same instant the real LiveKit room held exactly one ACTIVE participant,
+Test 01. A durable `left_at=NULL` means no explicit leave was recorded;
+it is **not** a presence signal. A browser crash, laptop sleep, lost
+pagehide or stale tab can leave this value indefinitely.
+
+**Authority boundaries:**
+- `study_room_members` is retained for historical joins, room access,
+  roles, moderation and explicit leave. Do not rewrite its rows merely
+  because the call temporarily disconnects; transient network recovery
+  and cross-tab fencing would otherwise be broken.
+- Connected call membership is defined by LiveKit's ACTIVE participant
+  roster. Backend `GET /study-rooms/{room_id}/presence` looks up the
+  actual connected UUID identities, then joins the saved profiles/roles
+  without ever inferring online state from `left_at`.
+- `StudyRoomResponse.active_member_count` continues to be the field
+  consumed by existing clients but now represents the number LiveKit
+  reports, in **one batched ListRooms RPC** across visible rooms.
+  `null` means the LiveKit provider was unavailable; `0` means it
+  confirmed there are no connections. This is an explicit API semantics
+  change; frontend and backend must be deployed together.
+- Group-card current room roster reconciles every 5 seconds; room
+  list counts every 8 seconds, on focus and on tab visibility. Supabase
+  DB Realtime remains an optional fast refresh **signal**, not an
+  authoritative media event stream. UI renders unknown separately from
+  empty, and uses request-generation checks/single-flight polling.
+- Inside the call, video, tasks, shared participants and the
+  permissions-modal list now use LiveKit participant identities. Role
+  grants remain checked in the backend.
+- SDK grace periods mean a recently disconnected connection may remain
+  briefly during valid reconnection; the LiveKit roster, not persisted
+  membership, controls this period. Application guarantees **eventual
+  bounded reconciliation while a tab is foregrounded**, not impossible
+  zero-delay global consistency.
+- Group-member counts, session activity/history and persisted role
+  assignments must never be relabeled as online media presence.
+
+**Operational guardrails:** LiveKit 503, rate limits and timeouts are
+UNKNOWN, never fake zero. Direct LiveKit reads only, no new Supabase
+tables, no migrations or data cleanup in production. One batch call
+for group counts and at most one concurrent call per active roster.
+Preview read-side testing must confirm DB Test 18 remains untouched
+while the presence API includes only Test 01.
+
+**Regression tests:** `tests/test_livekit_presence.py` and the presence
+tests in `tests/test_study_rooms.py` cover ACTIVE vs JOINING identities,
+unknown/empty distinction, 21 persisted vs 1 connected, privacy, and
+single batched room query. `frontend/src/hooks/useRoomPresence.test.tsx`
+covers failed-provider unknown, periodical reconciliation, visibility
+focus and stale previous-room responses.
