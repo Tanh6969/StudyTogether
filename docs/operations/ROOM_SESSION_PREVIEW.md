@@ -12,7 +12,7 @@ Do not push/merge/deploy production until the PM accepts real two-user QA.
 | PostgreSQL | Isolated local DB by default; production Supabase DB after explicit opt-in | Existing Supabase production |
 | Authentication | Real Supabase Auth, existing-account login; no account writes | Existing Supabase Auth |
 | LiveKit | Disabled by default; existing LiveKit after explicit opt-in | Existing LiveKit |
-| Browser access | Temporary Cloudflare OTP-protected Quick Tunnel | Stable main domain |
+| Browser access | Temporary Cloudflare Tunnel, one-click private invitation link | Stable main domain |
 
 The preview backend accepts local PostgreSQL by default. It can be explicitly
 switched to the **existing production Supabase DB and LiveKit**, as the PM
@@ -118,8 +118,24 @@ Its environment file must never be committed or posted to chat.
 - Sign in with existing authorized accounts, create a uniquely named QA group
   and QA room, and constrain testers to those IDs. Normal backend permission
   checks still apply; shared production secrets do not bypass them.
-- The preview Cloudflare Quick Tunnel is email-restricted. Its URL changes on
-  restart; verify protection each time. Grant access only to QA testers.
+- The preview uses a Cloudflare Quick Tunnel **without OTP**. The Node
+  preview web server checks a 256-bit capability link on initial entry,
+  sets a Secure/HttpOnly/SameSite=Lax session cookie (24 hours), and redirects
+  to normal StudyTogether login. All static/SPA/API paths return 403 without
+  the cookie. Guessing a path or calling API directly is not public access.
+  The token lives outside Git in the owner-only
+  `/srv/mcppro/workspaces/studytogether-session-env/preview-access.key`
+  (mode 600). Never paste it into code, logs or a public document.
+- Open the invitation link once per browser/profile; the browser remembers
+  preview access for 24 hours, without a Cloudflare OTP. Login to an existing
+  StudyTogether account is still mandatory to use protected functions because
+  the preview shares real Supabase/LiveKit resources.
+- The Quick Tunnel hostname changes on restart: regenerate the invitation
+  with the new hostname plus `/__preview/open/<capability>`. Only share it with
+  permitted QA testers. Do not publish the naked hostname as a public preview.
+- Verified from the public HTTPS hostname: anonymous web/API -> HTTP 403;
+  valid invite -> HTTP 303 to /login with secure cookie; authorized browser ->
+  HTTP 200 login and preview API, zero JavaScript runtime errors.
 - As before, the backend/frontend source in production is **untouched**.
 - Run two-user audio/video, join/leave/rejoin, screen share, hand raise,
   permissions, kick in the QA room, and network reconnect before PM approval.
