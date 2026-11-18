@@ -1,0 +1,21 @@
+[Unit]
+Description=StudyTogether isolated review PostgreSQL
+After=network.target
+StartLimitIntervalSec=0
+
+[Service]
+Type=simple
+User=mcppro
+Group=mcppro
+Environment=LD_LIBRARY_PATH=/srv/mcppro/workspaces/studytogether-session-env/bin/usr/lib/x86_64-linux-gnu
+WorkingDirectory=/srv/mcppro/workspaces/studytogether-session-env
+ExecStart=/srv/mcppro/workspaces/studytogether-session-env/bin/usr/lib/postgresql/16/bin/postgres -D /srv/mcppro/workspaces/studytogether-session-env/data -c listen_addresses=127.0.0.1 -c port=6544 -c shared_buffers=32MB -c max_connections=20 -c unix_socket_directories=/srv/mcppro/workspaces/studytogether-session-env
+Restart=on-failure
+RestartSec=5
+MemoryMax=350M
+CPUQuota=60%
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

@@ -1478,3 +1478,42 @@ async def test_get_reactions_success(async_client, monkeypatch, as_fake_user):
     response = await async_client.get(f"/messages/{message.id}/reactions", headers=AUTH_HEADERS)
     assert response.status_code == 200
     assert response.json() == [{"emoji": "😆", "count": 2, "reacted_by_me": False}]
+
+
+# --- Shared read/write permission: a channel roster is not a private-channel grant ---
+
+async def test_list_messages_rejects_private_channel_for_uninvited_group_member(
+    async_client, monkeypatch, as_fake_user
+):
+    channel = _make_channel(is_private=True)
+    conversation = _make_conversation(channel)
+    _wire_conversation(monkeypatch, channel, conversation)
+    monkeypatch.setattr(
+        permissions.groups_service, "get_member",
+        AsyncMock(return_value=_active_member(channel.group_id, as_fake_user.id)),
+    )
+    monkeypatch.setattr(permissions.channels_service, "get_member", AsyncMock(return_value=None))
+    list_mock = AsyncMock()
+    monkeypatch.setattr(message_router.message_service, "list_by_conversation", list_mock)
+
+    response = await async_client.get(f"/conversations/{conversation.id}/messages", headers=AUTH_HEADERS)
+    assert response.status_code == 403
+    list_mock.assert_not_awaited()
+
+
+async def test_list_messages_allows_group_owner_of_private_channel(
+    async_client, monkeypatch, as_fake_user
+):
+    channel = _make_channel(is_private=True)
+    conversation = _make_conversation(channel)
+    _wire_conversation(monkeypatch, channel, conversation)
+    monkeypatch.setattr(
+        permissions.groups_service, "get_member",
+        AsyncMock(return_value=_active_member(channel.group_id, as_fake_user.id, role=GroupMemberRole.OWNER)),
+    )
+    channel_member = AsyncMock(return_value=None)
+    monkeypatch.setattr(permissions.channels_service, "get_member", channel_member)
+    monkeypatch.setattr(message_router.message_service, "list_by_conversation", AsyncMock(return_value=([], None)))
+    response = await async_client.get(f"/conversations/{conversation.id}/messages", headers=AUTH_HEADERS)
+    assert response.status_code == 200
+    channel_member.assert_not_awaited()

@@ -51,14 +51,15 @@ import { GroupSettingsModal } from '../../components/groups/GroupSettingsModal';
 import { GroupMembersPanel } from '../../components/groups/GroupMembersPanel';
 import { OwnerLeaveModal } from '../../components/groups/OwnerLeaveModal';
 import { createChannel, deleteChannel, getChannel, listChannelMembers, listChannelsByGroup, removeChannelMember } from '../../lib/channel.api';
-import { createStudyRoom, deleteStudyRoom, getStudyRoom, listStudyRoomMembers, listStudyRoomsByGroup } from '../../lib/studyRoom.api';
+import { createStudyRoom, deleteStudyRoom, getStudyRoom, listStudyRoomsByGroup } from '../../lib/studyRoom.api';
 import { preloadStudyRoomPage } from './studyRoomPage';
 import { useStudyRoomMembersRealtime } from '../../hooks/useStudyRoomMembersRealtime';
+import { useRoomPresence } from '../../hooks/useRoomPresence';
 import { listConversationMessages, sendConversationMessage } from '../../lib/message.api';
 import { chatCache } from '../../lib/chatCache';
 import type { Group, GroupMember } from '../../lib/group.types';
 import type { Channel, ChannelMember } from '../../lib/channel.types';
-import type { StudyRoom, StudyRoomMember } from '../../lib/studyRoom.types';
+import type { StudyRoom } from '../../lib/studyRoom.types';
 import type { Message, MessageReactionSummary } from '../../lib/message.types';
 import { getAvatarInitials, getAvatarColor } from '../../utils/avatarUtils';
 import { getDisplayName } from '../../utils/userDisplay';
@@ -816,24 +817,66 @@ export function StudyGroupDetail() {
   const activeRoomHost = activeRoom ? groupMembers.find((m) => m.user_id === activeRoom.host_id)?.user : undefined;
   const activeRoomIdForMembers = mainView === 'rooms' ? activeRoom?.id ?? null : null;
 
-  // People currently inside the selected room (active_only) -- shown on the room card.
-  const [roomPresence, setRoomPresence] = useState<{ roomId: string; members: StudyRoomMember[] } | null>(null);
+  // Connected presence is queried from LiveKit, never inferred from durable
+  // study_room_members rows. Membership Realtime provides a refresh hint only.
   const [roomPresenceReload, setRoomPresenceReload] = useState(0);
   useStudyRoomMembersRealtime(activeRoomIdForMembers, () => setRoomPresenceReload((n) => n + 1));
+  const { members: activeRoomPresence, status: roomPresenceStatus } =
+    useRoomPresence(activeRoomIdForMembers, roomPresenceReload);
+
+  // A single LiveKit-backed rooms-list request refreshes every sidebar badge.
+  // Presence changes have no DB INSERT/UPDATE event when a browser crashes,
+  // and the room table's Realtime events are not a reliable media event stream.
   useEffect(() => {
-    if (!activeRoomIdForMembers) return;
-    let cancelled = false;
-    listStudyRoomMembers(activeRoomIdForMembers, true)
-      .then((members) => { if (!cancelled) setRoomPresence({ roomId: activeRoomIdForMembers, members }); })
-      .catch(() => { if (!cancelled) setRoomPresence({ roomId: activeRoomIdForMembers, members: [] }); });
-    return () => { cancelled = true; };
-  }, [activeRoomIdForMembers, roomPresenceReload]);
-  const activeRoomPresence = roomPresence && roomPresence.roomId === activeRoomIdForMembers ? roomPresence.members : null;
-  // The selected room's presence is realtime; the others use the count from the room list.
-  const peopleInRoom = (room: StudyRoom) =>
-    room.id === activeRoom?.id && activeRoomPresence ? activeRoomPresence.length : room.active_member_count ?? 0;
-  const liveRoomCount = openRooms.filter((r) => peopleInRoom(r) > 0).length;
-  const isActiveRoomLive = !!activeRoom && peopleInRoom(activeRoom) > 0;
+    if (!groupId) return;
+    let disposed = false;
+    let revision = 0;
+    let inFlight = false;
+    const refreshCounts = async () => {
+      if (inFlight) return;
+      inFlight = true;
+      const request = ++revision;
+      try {
+        const next = await listStudyRoomsByGroup(groupId);
+        if (disposed || request !== revision) return;
+        const counts = new Map(next.map((room) => [room.id, room.active_member_count ?? null]));
+        setStudyRooms((current) => current.map((room) => counts.has(room.id)
+          ? { ...room, active_member_count: counts.get(room.id) }
+          : room));
+      } catch {
+        // Unknown ≠ zero. A failed presence refresh must never keep showing
+        // an indefinitely stale 'LIVE' badge as if it were verified.
+        if (!disposed && request === revision) {
+          setStudyRooms((current) => current.map((room) =>
+            ({ ...room, active_member_count: null })));
+        }
+      } finally {
+        inFlight = false;
+      }
+    };
+    const onFocus = () => { void refreshCounts(); };
+    const onVisible = () => {
+      if (document.visibilityState === 'visible') void refreshCounts();
+    };
+    const interval = window.setInterval(() => {
+      if (document.visibilityState !== 'hidden') void refreshCounts();
+    }, 8000);
+    window.addEventListener('focus', onFocus);
+    document.addEventListener('visibilitychange', onVisible);
+    return () => {
+      disposed = true;
+      window.clearInterval(interval);
+      window.removeEventListener('focus', onFocus);
+      document.removeEventListener('visibilitychange', onVisible);
+    };
+  }, [groupId]);
+
+  const peopleInRoom = (room: StudyRoom): number | null =>
+    room.id === activeRoom?.id && activeRoomIdForMembers
+      ? activeRoomPresence?.length ?? null
+      : room.active_member_count ?? null;
+  const liveRoomCount = openRooms.filter((r) => (peopleInRoom(r) ?? 0) > 0).length;
+  const isActiveRoomLive = !!activeRoom && (peopleInRoom(activeRoom) ?? 0) > 0;
 
   const countBadge = (count: number) => (
     <span style={{minWidth: 22, padding: '1px 7px', borderRadius: 10, background: '#E2E8F0', color: '#475569', fontSize: 12, fontWeight: 600, textAlign: 'center', boxSizing: 'border-box'}}>{count}</span>
@@ -1222,7 +1265,7 @@ export function StudyGroupDetail() {
                                 {item.meta}
                             </button>
                             {item.key === 'chat' && channels.map(channel => <button key={channel.id} type="button" title={channel.description || channel.name} onClick={() => { setMainView('chat'); setActiveChannel(channel.id); setOpenHeaderMenu(null); }} style={{width:'100%',minHeight:34,padding:'0 10px 0 38px',display:'flex',alignItems:'center',gap:8,border:0,borderRadius:7,background:mainView==='chat'&&activeChannel===channel.id?'#E2E8F0':'transparent',color:mainView==='chat'&&activeChannel===channel.id?'#0F172A':'#64748B',fontSize:13,cursor:'pointer',textAlign:'left'}}>{channel.is_private ? <Lock size={14}/> : <Hash size={14}/>}<span style={{overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{channel.name}</span></button>)}
-                            {item.key === 'rooms' && openRooms.map(room => <button key={room.id} type="button" title={room.name} onClick={() => { setMainView('rooms'); setActiveRoomId(room.id); setOpenHeaderMenu(null); }} style={{width:'100%',minHeight:34,padding:'0 10px 0 38px',display:'flex',alignItems:'center',gap:8,border:0,borderRadius:7,background:mainView==='rooms'&&activeRoom?.id===room.id?'#E2E8F0':'transparent',color:mainView==='rooms'&&activeRoom?.id===room.id?'#0F172A':'#64748B',fontSize:13,cursor:'pointer',textAlign:'left'}}><Video size={14}/><span style={{overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap',flex:1}}>{room.name}</span>{peopleInRoom(room)>0&&<span title={`${peopleInRoom(room)} người đang học`} style={{width:7,height:7,borderRadius:'50%',background:'#10B981'}}/>}</button>)}
+                            {item.key === 'rooms' && openRooms.map(room => <button key={room.id} type="button" title={room.name} onClick={() => { setMainView('rooms'); setActiveRoomId(room.id); setOpenHeaderMenu(null); }} style={{width:'100%',minHeight:34,padding:'0 10px 0 38px',display:'flex',alignItems:'center',gap:8,border:0,borderRadius:7,background:mainView==='rooms'&&activeRoom?.id===room.id?'#E2E8F0':'transparent',color:mainView==='rooms'&&activeRoom?.id===room.id?'#0F172A':'#64748B',fontSize:13,cursor:'pointer',textAlign:'left'}}><Video size={14}/><span style={{overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap',flex:1}}>{room.name}</span>{(peopleInRoom(room) ?? 0)>0&&<span title={`${peopleInRoom(room)} người đang học`} style={{width:7,height:7,borderRadius:'50%',background:'#10B981'}}/>}</button>)}
                           </div>
                         );
                     })}
@@ -1523,7 +1566,9 @@ export function StudyGroupDetail() {
                                                 <span className="workspace-live-dot" style={{width: 6, height: 6, borderRadius: '50%', background: 'white'}} /> {peopleInRoom(activeRoom)} NGƯỜI ĐANG HỌC
                                             </span>
                                         ) : (
-                                            <span style={{display: 'inline-flex', padding: '2px 10px', borderRadius: 999, background: '#E0E7FF', color: '#3730A3', fontSize: 11, fontWeight: 700, letterSpacing: 0.4}}>ĐANG MỞ · CHƯA CÓ AI</span>
+                                            <span style={{display: 'inline-flex', padding: '2px 10px', borderRadius: 999, background: '#E0E7FF', color: '#3730A3', fontSize: 11, fontWeight: 700, letterSpacing: 0.4}}>
+                                                {peopleInRoom(activeRoom) === null ? 'ĐANG XÁC MINH HIỆN DIỆN' : 'ĐANG MỞ · CHƯA CÓ AI'}
+                                            </span>
                                         )}
                                         {activeRoom.is_private && (
                                             <span style={{display: 'inline-flex', alignItems: 'center', gap: 4, marginLeft: 6, padding: '2px 10px', borderRadius: 999, background: '#1E293B', color: 'white', fontSize: 11, fontWeight: 700, letterSpacing: 0.4, verticalAlign: 'top'}}>
@@ -1565,7 +1610,11 @@ export function StudyGroupDetail() {
                                             </h3>
                                             {activeRoomPresence && activeRoomPresence.length > 0 && countBadge(activeRoomPresence.length)}
                                         </div>
-                                        {activeRoomPresence === null ? (
+                                        {roomPresenceStatus === 'unavailable' ? (
+                                            <div role="status" style={{padding: '14px 16px', borderRadius: 10, border: '1px dashed #CBD5E1', color: '#64748B', fontSize: 13, textAlign: 'center'}}>
+                                                Không thể xác minh ai đang kết nối. Danh sách sẽ tự cập nhật lại.
+                                            </div>
+                                        ) : activeRoomPresence === null ? (
                                             <div className="skeleton-pulse" style={{height: 52, borderRadius: 10}} />
                                         ) : activeRoomPresence.length === 0 ? (
                                             <div style={{padding: '14px 16px', borderRadius: 10, border: '1px dashed #CBD5E1', color: '#64748B', fontSize: 13, textAlign: 'center'}}>

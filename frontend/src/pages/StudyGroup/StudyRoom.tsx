@@ -21,6 +21,8 @@ import {
 import type { ReactNode } from 'react';
 import { useAuth } from '../../hooks/useAuth';
 import { useStudyRoom } from '../../hooks/useStudyRoom';
+import { claimMeetingSession } from '../../lib/meeting.api';
+import { setOwnedMediaSession } from '../../lib/meetingOwnerState';
 import { useRoomMessages } from '../../hooks/useRoomMessages';
 import { useMessageReactionActions } from '../../hooks/useMessageReactionActions';
 import { useMessageImageAttachment, ALLOWED_IMAGE_ACCEPT } from '../../hooks/useMessageImageAttachment';
@@ -108,6 +110,7 @@ export function StudyRoom() {
     changeMemberRole,
     transferHost,
     refetchRoom,
+    refetchMembers,
   } = useStudyRoom(roomId);
 
   // Room states
@@ -130,6 +133,12 @@ export function StudyRoom() {
   const [pendingRoomRoleUserId, setPendingRoomRoleUserId] = useState<string | null>(null);
   const [isDeletingRoom, setIsDeletingRoom] = useState(false);
   const [lobbyConfirmed, setLobbyConfirmed] = useState(false);
+  const [clientSessionId, setClientSessionId] = useState<string | null>(null);
+  const [callTransferred, setCallTransferred] = useState(false);
+  // Stable callback: StudyRoom's clock re-renders every second. An inline
+  // callback here would constantly restart MeetingProvider's ownership poll.
+  const handleCallTransferred = useCallback(() => setCallTransferred(true), []);
+  const [mediaJoinError, setMediaJoinError] = useState<string | null>(null);
   const [callParticipants, setCallParticipants] = useState<ConnectedCallParticipant[]>([]);
   const handleCallParticipantsChange = useCallback((next: ConnectedCallParticipant[]) => {
     setCallParticipants((previous) =>
@@ -271,6 +280,13 @@ export function StudyRoom() {
     });
   }, [callParticipants, members, currentUserId, currentUser, moderationMutedUserIds, handRaisedUserIds, currentUserHandRaised]);
 
+  // Hook must be called unconditionally, BEFORE loading/error early returns.
+  // This is the connected media roster, not all stored members with left_at=NULL.
+  const connectedRoomMembers = useMemo(() => {
+    const identities = new Set(callParticipants.map((person) => person.identity));
+    return members.filter((member) => !member.left_at && identities.has(member.user_id));
+  }, [members, callParticipants]);
+
   // Real persisted messages for this room's ROOM Conversation (reuses the same
   // /conversations/{id}/messages REST API + Realtime subscription as Channel chat --
   // see useRoomMessages.ts). `room.conversation_id` is null only in the brief instant
@@ -365,12 +381,32 @@ export function StudyRoom() {
   }
 
   const inRoomCount = participants.length;
-
   // Pre-join lobby: lets the user preview/toggle camera & mic (and pick a device) before the
   // LiveKit connection is made, instead of connecting with audio/video hardcoded on immediately.
   // Also doubles as the room-membership join step for first-time visitors -- "Tham gia phòng học"
   // both joins the room and confirms the media setup in one action, instead of a separate screen.
-  if (!lobbyConfirmed) {
+  if (callTransferred) {
+    return (
+      <div style={{ width: '100vw', height: '100vh', display: 'flex', flexDirection: 'column',
+        justifyContent: 'center', alignItems: 'center', gap: 16, padding: 28,
+        background: '#0F172A', color: '#E2E8F0', textAlign: 'center' }}>
+        <VideoIcon size={42} color="#FBBF24" />
+        <h2 style={{ margin: 0, fontSize: 22 }}>Cuộc gọi đã chuyển sang tab hoặc thiết bị khác</h2>
+        <p style={{ maxWidth: 460, color: '#94A3B8', lineHeight: 1.6 }}>
+          Phiên video tại đây đã kết thúc để tránh xung đột camera, micro và cuộc gọi.
+          Tab hoặc thiết bị mới tiếp tục hoạt động. Nếu muốn chuyển cuộc gọi về đây,
+          hãy quay lại danh sách phòng và chủ động bấm tham gia lần nữa.
+        </p>
+        <button onClick={() => navigate(`/groups/${room.group_id}`)}
+          style={{ border: 0, borderRadius: 8, padding: '12px 20px',
+            background: '#2563EB', color: 'white', cursor: 'pointer', fontWeight: 600 }}>
+          Quay về nhóm
+        </button>
+      </div>
+    );
+  }
+
+  if (!lobbyConfirmed || !clientSessionId) {
     return (
       <PreJoinLobby
         roomName={room.name}
@@ -380,20 +416,24 @@ export function StudyRoom() {
         userColor={currentUser.color}
         userAvatarUrl={currentUser.avatarUrl ?? undefined}
         isJoining={isJoining}
-        joinError={actionError?.message}
+        joinError={mediaJoinError ?? actionError?.message}
         restrictionBan={isCurrentUserMember ? undefined : getBan('join_room')}
         onJoin={async (choice) => {
+          if (isJoining) return;
           setMediaChoice(choice);
-          if (isCurrentUserMember) {
-            setLobbyConfirmed(true);
-            return;
-          }
+          setMediaJoinError(null);
           setIsJoining(true);
           try {
-            await join();
+            if (!isCurrentUserMember) await join();
+            // Explicit interaction is the ONLY way to take over from another
+            // tab/device. React effect retries must never silently take over.
+            const nextSessionId = crypto.randomUUID();
+            await claimMeetingSession(roomId, nextSessionId);
+            setOwnedMediaSession(roomId, nextSessionId);
+            setClientSessionId(nextSessionId);
             setLobbyConfirmed(true);
           } catch {
-            // actionError is already populated by the hook.
+            setMediaJoinError('Không thể bắt đầu phiên gọi. Vui lòng kiểm tra quyền vào phòng hoặc thử tham gia lại.');
           } finally {
             setIsJoining(false);
           }
@@ -406,7 +446,9 @@ export function StudyRoom() {
   return (
     <MeetingProvider
       roomId={roomId}
+      clientSessionId={clientSessionId}
       enabled={isCurrentUserMember}
+      onTransferred={handleCallTransferred}
       initialAudioEnabled={mediaChoice.audioEnabled}
       initialVideoEnabled={mediaChoice.videoEnabled}
       audioDeviceId={mediaChoice.audioDeviceId}
@@ -559,7 +601,7 @@ export function StudyRoom() {
       {permissions.canModerate && (
         <WhiteboardPermissionsModal
           isOpen={isWhiteboardPermissionsOpen}
-          members={members}
+          members={connectedRoomMembers}
           currentUserId={currentUserId}
           myRank={myRank}
           rankOf={rankOf}
@@ -634,6 +676,7 @@ export function StudyRoom() {
               currentUserId={currentUserId}
               currentUserName={currentUser.name}
               currentUserAvatarUrl={currentUser.avatarUrl}
+              onRetryMembership={refetchMembers}
             />
           </div>
         )}

@@ -1,0 +1,21 @@
+[Unit]
+Description=StudyTogether isolated review static frontend + API proxy
+After=network.target studytogether-review-api.service
+Requires=studytogether-review-api.service
+StartLimitIntervalSec=0
+
+[Service]
+Type=simple
+User=mcppro
+Group=mcppro
+WorkingDirectory=/srv/mcppro/workspaces/studytogether-room-lifecycle-20261118/frontend
+ExecStart=/srv/mcppro/runtime/node/bin/node /srv/mcppro/workspaces/studytogether-room-lifecycle-20261118/deploy/staging/preview_server.cjs
+Restart=on-failure
+RestartSec=5
+MemoryMax=250M
+CPUQuota=35%
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

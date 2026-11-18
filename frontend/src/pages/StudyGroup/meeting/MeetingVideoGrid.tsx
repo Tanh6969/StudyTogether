@@ -43,17 +43,35 @@ interface MeetingVideoGridProps {
   /** Set when the meeting is known to be unavailable without asking the backend (room ended) --
    * a UX shortcut only; the backend still independently rejects the token request either way. */
   unavailableReason?: string;
+  onRetryMembership?: () => void;
 }
 
-export function MeetingVideoGrid({ members, currentUserId, currentUserName, currentUserAvatarUrl, unavailableReason }: MeetingVideoGridProps) {
-  const { status, error, retry, connected, liveKitError } = useMeetingContext();
+export function MeetingVideoGrid({ members, currentUserId, currentUserName, currentUserAvatarUrl, unavailableReason, onRetryMembership }: MeetingVideoGridProps) {
+  const { status, error, retry, connected, liveKitError, transferred } = useMeetingContext();
+
+  if (transferred) {
+    return <MeetingStatusMessage
+      icon={<AlertTriangle size={32} color="#FBBF24" />}
+      title="Cuộc gọi đã chuyển sang tab hoặc thiết bị khác"
+      subtitle="Phiên này đã kết thúc. Bạn có thể quay về nhóm và chủ động tham gia lại nếu muốn chuyển cuộc gọi về đây."
+    />;
+  }
 
   if (unavailableReason) {
     return <MeetingStatusMessage icon={<VideoOff size={32} />} title={unavailableReason} />;
   }
 
-  if (status === 'idle' || status === 'loading') {
-    return <MeetingStatusMessage icon={<Loader2 size={32} style={{ animation: 'spin 1s linear infinite' }} />} title="Đang kết nối cuộc gọi..." />;
+  if (status === 'idle') {
+    return <MeetingStatusMessage
+      icon={<AlertTriangle size={32} color="#FBBF24" />}
+      title="Chưa thể bắt đầu cuộc gọi"
+      subtitle="Chưa xác nhận được bạn đang tham gia phòng học. Hãy kiểm tra lại tư cách thành viên."
+      action={onRetryMembership ? { label: 'Kiểm tra lại', onClick: onRetryMembership } : undefined}
+    />;
+  }
+
+  if (status === 'loading') {
+    return <MeetingStatusMessage icon={<Loader2 size={32} style={{ animation: 'spin 1s linear infinite' }} />} title="Đang xin quyền kết nối cuộc gọi..." />;
   }
 
   if (status === 'error') {
@@ -73,7 +91,7 @@ export function MeetingVideoGrid({ members, currentUserId, currentUserName, curr
         icon={<AlertTriangle size={32} color="#F87171" />}
         title="Không thể kết nối máy chủ video"
         subtitle={liveKitError.message || 'Lỗi LiveKit. Vui lòng kiểm tra cấu hình hoặc kết nối mạng.'}
-        action={{ label: 'Thử lại', onClick: () => window.location.reload() }}
+        action={{ label: 'Kết nối lại', onClick: retry }}
       />
     );
   }
