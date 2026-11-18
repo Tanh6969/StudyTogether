@@ -3,6 +3,54 @@ const http = require('node:http');
 const fs = require('node:fs');
 const path = require('node:path');
 const { Readable } = require('node:stream');
+const crypto = require('node:crypto');
+
+// A private one-click link grants access only to the preview shell.
+// Supabase Auth and all production data/LiveKit permissions remain unchanged.
+// Keep this capability outside Git, private to the preview service account.
+const ACCESS_FILE = '/srv/mcppro/workspaces/studytogether-session-env/preview-access.key';
+const ACCESS_TOKEN = fs.readFileSync(ACCESS_FILE, 'utf8').trim();
+if (!/^[a-f0-9]{64}$/.test(ACCESS_TOKEN)) {
+  throw new Error('A securely generated 256-bit preview link key is required');
+}
+const ACCESS_PREFIX = '/__preview/open/';
+const SESSION_COOKIE = '__Host-study-preview';
+const MAX_AGE_SECONDS = 24 * 60 * 60;
+
+function constantTimeSame(left, right) {
+  if (typeof right !== 'string' || left.length !== right.length) return false;
+  return crypto.timingSafeEqual(Buffer.from(left), Buffer.from(right));
+}
+function sessionSignature(expiry, nonce) {
+  return crypto.createHmac('sha256', ACCESS_TOKEN).update(`${expiry}.${nonce}`).digest('hex');
+}
+function makeAccessCookie() {
+  const expiry = Math.floor(Date.now() / 1000) + MAX_AGE_SECONDS;
+  const nonce = crypto.randomBytes(12).toString('hex');
+  const value = `${expiry}.${nonce}.${sessionSignature(expiry, nonce)}`;
+  return `${SESSION_COOKIE}=${value}; Path=/; Max-Age=${MAX_AGE_SECONDS}; Secure; HttpOnly; SameSite=Lax`;
+}
+function hasAccessSession(req) {
+  const raw = req.headers.cookie?.split(';').map(part => part.trim())
+    .find(part => part.startsWith(SESSION_COOKIE + '='));
+  if (!raw) return false;
+  const value = raw.slice(SESSION_COOKIE.length + 1);
+  const match = /^(\d{10})\.([a-f0-9]{24})\.([a-f0-9]{64})$/.exec(value);
+  if (!match) return false;
+  const expiry = Number(match[1]);
+  const now = Math.floor(Date.now() / 1000);
+  if (expiry < now || expiry > now + MAX_AGE_SECONDS) return false;
+  return constantTimeSame(sessionSignature(match[1], match[2]), match[3]);
+}
+function denyAccess(res) {
+  res.writeHead(403, {
+    'content-type': 'text/plain; charset=utf-8',
+    'cache-control': 'no-store',
+    'referrer-policy': 'no-referrer',
+    'x-robots-tag': 'noindex, nofollow',
+  });
+  res.end('Preview riêng tư. Hãy mở liên kết nghiệm thu được cấp.');
+}
 
 const DIST = '/srv/mcppro/workspaces/studytogether-room-lifecycle-20261118/frontend/dist';
 // Preview must never forward writes to the production API.
@@ -71,6 +119,28 @@ const server = http.createServer(async (req,res) => {
   let url;
   try { url = new URL(req.url, 'http://localhost'); }
   catch { return error(res,400,'Invalid URL'); }
+  // Cloudflare's tunnel is transport only: every request (including API,
+  // assets and SPA routes) requires the one-click link session.
+  // Never expose a raw shared-production API over an unauthenticated tunnel.
+  if (url.pathname === '/__preview/health' && req.socket.remoteAddress === '127.0.0.1') {
+    res.writeHead(200, { 'content-type': 'text/plain', 'cache-control': 'no-store' });
+    return res.end('OK');
+  }
+  if (url.pathname.startsWith(ACCESS_PREFIX)) {
+    const candidate = url.pathname.slice(ACCESS_PREFIX.length);
+    if (req.method !== 'GET' || !constantTimeSame(ACCESS_TOKEN, candidate)) {
+      return denyAccess(res);
+    }
+    res.writeHead(303, {
+      'location': '/login',
+      'set-cookie': makeAccessCookie(),
+      'cache-control': 'no-store',
+      'referrer-policy': 'no-referrer',
+      'x-robots-tag': 'noindex, nofollow',
+    });
+    return res.end();
+  }
+  if (!hasAccessSession(req)) return denyAccess(res);
   if (url.pathname === '/api' || url.pathname.startsWith('/api/')) {
     return proxyAPI(req,res,url);
   }
@@ -90,7 +160,8 @@ const server = http.createServer(async (req,res) => {
     'content-type': TYPES[path.extname(file).toLowerCase()] || 'application/octet-stream',
     'cache-control': file.endsWith('index.html') ? 'no-store' : 'public, max-age=120',
     'x-content-type-options': 'nosniff',
-    'referrer-policy': 'strict-origin-when-cross-origin'
+    'referrer-policy': 'no-referrer',
+    'x-robots-tag': 'noindex, nofollow'
   });
   if (req.method==='HEAD') return res.end();
   fs.createReadStream(file).pipe(res);
