@@ -1,7 +1,9 @@
 [Unit]
 Description=StudyTogether isolated review FastAPI
-After=network.target studytogether-review-postgres.service
-Requires=studytogether-review-postgres.service
+After=network-online.target studytogether-review-postgres.service
+Wants=network-online.target
+# Local PostgreSQL is optional: shared-production preview uses Supabase hosted DB.
+# No hard dependency on the local database in the approved shared mode.
 StartLimitIntervalSec=0
 
 [Service]
