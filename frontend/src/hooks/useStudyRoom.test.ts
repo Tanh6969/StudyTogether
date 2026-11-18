@@ -8,6 +8,7 @@ import {
   getStudyRoom,
   getStudyRoomSession,
   joinStudyRoom,
+  leaveStudyRoom,
   leaveStudyRoomOnUnload,
   listStudyRoomMembers,
   listStudyRoomModeration,
@@ -44,6 +45,7 @@ const mockedListGroupMembers = vi.mocked(listGroupMembers);
 const mockedGetStudyRoom = vi.mocked(getStudyRoom);
 const mockedGetSession = vi.mocked(getStudyRoomSession);
 const mockedJoinRoom = vi.mocked(joinStudyRoom);
+const mockedLeaveRoom = vi.mocked(leaveStudyRoom);
 const mockedListMembers = vi.mocked(listStudyRoomMembers);
 const mockedListModeration = vi.mocked(listStudyRoomModeration);
 const mockedLeaveOnUnload = vi.mocked(leaveStudyRoomOnUnload);
@@ -98,6 +100,7 @@ beforeEach(() => {
   mockedGetStudyRoom.mockReset();
   mockedGetSession.mockReset().mockResolvedValue({ room_id: 'room-1', room_status: 'active', member: null, can_connect: false });
   mockedJoinRoom.mockReset();
+  mockedLeaveRoom.mockReset();
   mockedListMembers.mockReset().mockResolvedValue([]);
   mockedListModeration.mockReset().mockResolvedValue([]);
   mockedLeaveOnUnload.mockReset();
@@ -289,5 +292,55 @@ describe('useStudyRoom -- authoritative backend session contract', () => {
     await act(async () => { await result.current.refetchMembers(); });
     expect(result.current.isCurrentUserMember).toBe(false);
     expect(result.current.sessionError?.status).toBe(403);
+  });
+});
+
+
+describe('useStudyRoom -- cross-room identity and generation isolation', () => {
+  it('discards the previous room participation on a same-component route change', async () => {
+    mockedGetStudyRoom.mockImplementation(async (id) => makeRoom({ id, group_id: `group-${id}` }));
+    mockedGetSession.mockImplementation((id) => id === 'room-1'
+      ? Promise.resolve({ room_id: id, room_status: 'active', member: makeMember(), can_connect: true })
+      : new Promise(() => {}));
+    mockedListMembers.mockResolvedValue([makeMember()]);
+
+    const { result, rerender } = renderHook(({ id }) => useStudyRoom(id), {
+      initialProps: { id: 'room-1' },
+    });
+    await waitFor(() => expect(result.current.isCurrentUserMember).toBe(true));
+    await act(async () => { rerender({ id: 'room-2' }); });
+
+    // Even while the room-2 session request is pending, room-1 must never
+    // enable the room-2 LiveKit provider or protected moderation request.
+    expect(result.current.isCurrentUserMember).toBe(false);
+    expect(result.current.currentMember).toBeNull();
+    expect(result.current.room?.id).not.toBe('room-1');
+    expect(result.current.members).toEqual([]);
+    expect(mockedListModeration).not.toHaveBeenCalledWith('room-2');
+    expect(mockedLeaveOnUnload).toHaveBeenCalledWith('room-1', makeMember().joined_at);
+  });
+
+  it('cannot call unconditional leave before our own join generation is confirmed', async () => {
+    mockedGetStudyRoom.mockResolvedValue(makeRoom());
+    mockedListMembers.mockResolvedValue([]);
+    mockedGetSession.mockResolvedValue({ room_id: 'room-1', room_status: 'active', member: null, can_connect: false });
+
+    const { result } = renderHook(() => useStudyRoom('room-1'));
+    await waitFor(() => expect(mockedGetSession).toHaveBeenCalledTimes(1));
+    await act(async () => { await result.current.leave(); });
+    expect(mockedLeaveRoom).not.toHaveBeenCalled();
+  });
+
+  it('an explicit leave must include the current confirmed generation', async () => {
+    mockedGetStudyRoom.mockResolvedValue(makeRoom());
+    mockedListMembers.mockResolvedValue([makeMember()]);
+    mockedGetSession.mockResolvedValue({ room_id: 'room-1', room_status: 'active', member: makeMember(), can_connect: true });
+    mockedLeaveRoom.mockResolvedValue(makeMember({ left_at: '2026-11-18T00:00:00Z' }));
+
+    const { result } = renderHook(() => useStudyRoom('room-1'));
+    await waitFor(() => expect(result.current.isCurrentUserMember).toBe(true));
+    await act(async () => { await result.current.leave(); });
+    expect(mockedLeaveRoom).toHaveBeenCalledWith('room-1', makeMember().joined_at);
+    expect(result.current.isCurrentUserMember).toBe(false);
   });
 });

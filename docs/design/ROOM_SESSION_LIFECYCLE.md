@@ -40,6 +40,15 @@ authorization system or replace LiveKit's own connection management.
   A response received after leaving is ignored using the same request-revision pattern.
 - The chat hook uses the same membership gate; other protected features should
   follow the same rule instead of inventing feature-specific join semantics.
+- Every room route instance is keyed by its `roomId`. A same-component navigation
+  from room A to B must never present A's member, room metadata, permissions or
+  moderation as belonging to B. The hook independently filters old responses by
+  room id and request generation as a second line of defense.
+- A tab may only issue an explicit leave with a confirmed `joined_at` generation.
+  Without that generation, leaving the UI is a no-op for backend membership;
+  it must not evict an active session opened in another tab.
+- Route-change cleanup retains the old room's generation until that room's
+  effect cleanup has run, then may conditionally leave the old membership.
 - A background room metadata refresh must not toggle the page-wide initial
   loading state, because that unmounts and recreates the LiveKit provider.
 - Token request status is NOT media connection status:
