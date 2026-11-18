@@ -2,6 +2,7 @@ import logging
 import uuid
 from datetime import datetime
 from fastapi import APIRouter, Depends, HTTPException, status
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.attachments.dto.attachment_dto import DownloadUrlResponse, UploadUrlRequest, UploadUrlResponse
@@ -28,7 +29,10 @@ from app.core.permissions import (
 from app.db.session import get_db_session
 from app.db.enums import ModerationAction, StudyRoomMemberRole
 from app.groups.services.group_service import GroupsService
-from app.meetings.dto.meeting_dto import MeetingTokenResponse
+from app.meetings.dto.meeting_dto import (
+    MeetingTokenRequest, MeetingTokenResponse, MeetingSessionClaim, MeetingSessionStatus,
+)
+from app.meetings.services.meeting_session_service import meeting_session_service
 from app.meetings.services.livekit_service import LiveKitService
 from app.profiles.services.profile_service import ProfilesService
 from app.study_rooms.dto.study_room_dto import (
@@ -36,6 +40,7 @@ from app.study_rooms.dto.study_room_dto import (
     RoomModerationActionResponse,
     StudyRoomCreate,
     StudyRoomMemberResponse,
+    StudyRoomSessionResponse,
     StudyRoomResponse,
     StudyRoomUpdate,
     TransferHostRequest,
@@ -70,9 +75,17 @@ async def _get_active_room_or_404(session: AsyncSession, room_id: uuid.UUID) -> 
 
 
 async def _with_active_counts(session: AsyncSession, rooms: list[StudyRoom]) -> list[StudyRoomResponse]:
-    counts = await service.active_member_counts(session, [room.id for room in rooms])
+    # The badge means *connected to the call*, never "has a DB row without
+    # left_at". Keep membership independently for authorization and history.
+    try:
+        counts = await livekit_service.connected_counts([room.id for room in rooms])
+    except Exception:
+        logger.exception("LiveKit presence counts unavailable")
+        counts = None
     return [
-        StudyRoomResponse.model_validate(room).model_copy(update={"active_member_count": counts.get(room.id, 0)})
+        StudyRoomResponse.model_validate(room).model_copy(
+            update={"active_member_count": counts.get(room.id, 0) if counts is not None else None}
+        )
         for room in rooms
     ]
 
@@ -353,6 +366,7 @@ async def join_room(
     # Check existing membership. The joining identity is always the caller --
     # never a client-supplied user_id. A first join is always PARTICIPANT; a rejoin keeps the
     # role the row already has (so the host stays host). No self-assigning roles here.
+    group_id = room.group_id  # Preserve before rollback expires ORM fields.
     member = await service.get_member(session, room_id, current_user.id)
     try:
         if member:
@@ -361,12 +375,24 @@ async def join_room(
             updated = await service.join(session, room_id, current_user.id)
         await session.commit()
         return updated
-    except Exception as e:
+    except IntegrityError as exc:
         await session.rollback()
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"Could not join study room: {str(e)}"
-        )
+        # Two first-time joins by the same account can both see no membership.
+        # The unique (room_id,user_id) index correctly admits only one insert;
+        # the losing request should return the winning active membership, not 400.
+        constraint = getattr(getattr(exc.orig, 'diag', None), 'constraint_name', None)
+        if constraint == 'study_room_members_room_id_user_id_key':
+            winner = await service.get_member(session, room_id, current_user.id)
+            if (winner is not None and winner.left_at is None
+                    and await is_active_group_member(session, group_id, current_user.id)):
+                return StudyRoomMemberResponse.model_validate(winner)
+            raise HTTPException(status.HTTP_409_CONFLICT, 'Membership changed during join; please retry') from exc
+        logger.exception('Unexpected integrity error joining study room %s', room_id)
+        raise HTTPException(status.HTTP_500_INTERNAL_SERVER_ERROR, 'Could not join study room') from exc
+    except Exception as exc:
+        await session.rollback()
+        logger.exception('Failed joining study room %s', room_id)
+        raise HTTPException(status.HTTP_500_INTERNAL_SERVER_ERROR, 'Could not join study room') from exc
 
 
 @router.post("/{room_id}/leave", response_model=StudyRoomMemberResponse)
@@ -375,8 +401,15 @@ async def leave_room(
     current_user: CurrentUser = Depends(get_current_user),
     session: AsyncSession = Depends(get_db_session),
     expected_joined_at: datetime | None = None,
+    disconnect_livekit: bool = False,
+    client_session_id: uuid.UUID | None = None,
 ):
-    """Leave current membership. Unload cleanup is conditional on the join generation."""
+    """Leave current membership, with optional generation-safe explicit leave.
+
+    Legacy leave without generation still evicts LiveKit. A conditional pagehide
+    leave must not evict the replacement session; an explicit generation-safe
+    leave can opt in to LiveKit eviction only after the conditional update won.
+    """
     # A deleted room must behave as if it no longer exists here too -- the soft-delete
     # invariant (deleted_at set -> normal operations stop) applies to leave just like every
     # other mutation, even though leaving only touches the caller's own membership row.
@@ -387,6 +420,17 @@ async def leave_room(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Membership not found"
         )
+    if settings.meeting_session_required and client_session_id is None:
+        raise HTTPException(
+            status.HTTP_409_CONFLICT, "A media session identifier is required to leave this room"
+        )
+    # A stale tab closing/reloading must not revoke another tab's newly
+    # claimed media session. Older clients remain supported on the legacy API
+    # until strict session rollout is enabled for all deployed clients.
+    if client_session_id is not None and not await meeting_session_service.is_owner(
+        room_id, current_user.id, client_session_id
+    ):
+        return StudyRoomMemberResponse.model_validate(member)
     try:
         if expected_joined_at is not None:
             # Atomic compare-and-leave: prevents a new join that commits after the
@@ -395,14 +439,24 @@ async def leave_room(
                 session, room_id, current_user.id, expected_joined_at
             )
             if closed_at is None:
+                # Keep a detached response snapshot before rollback expires ORM fields.
+                # A stale leave from another tab must not trigger MissingGreenlet.
+                response = StudyRoomMemberResponse.model_validate(member)
                 await session.rollback()
-                return member
+                return response
             # Build the DTO before committing: validation errors must not turn a
             # committed leave into an apparent request failure.
             response = StudyRoomMemberResponse.model_validate(member).model_copy(
                 update={'left_at': closed_at}
             )
             await session.commit()
+            if disconnect_livekit:
+                # The same user can rejoin in another tab. A generation mismatch
+                # above never reaches this path and cannot kick a newer session.
+                try:
+                    await livekit_service.remove_participant(room_id, current_user.id)
+                except Exception:
+                    logger.exception('Could not disconnect LiveKit participant after generation-safe leave')
             return response
         updated = await service.leave(session, member)
         await session.commit()
@@ -421,6 +475,34 @@ async def leave_room(
         )
 
 
+@router.get("/{room_id}/presence", response_model=list[StudyRoomMemberResponse])
+async def get_room_presence(
+    room_id: uuid.UUID,
+    current_user: CurrentUser = Depends(get_current_user),
+    session: AsyncSession = Depends(get_db_session),
+):
+    """LiveKit-confirmed participants visible to the caller, NOT membership.
+
+    A saved study_room_members row, even with left_at=NULL, never counts as
+    somebody in the call. Use this endpoint only for real-time presence UI.
+    A broken LiveKit API means UNKNOWN (503), never a fabricated empty room.
+    """
+    room = await _get_active_room_or_404(session, room_id)
+    if not await can_view_room(session, room, current_user.id):
+        raise HTTPException(status.HTTP_403_FORBIDDEN, "You do not have access to this study room")
+    try:
+        connected = await livekit_service.connected_user_ids(room_id)
+    except Exception as exc:
+        logger.exception("LiveKit room presence unavailable for %s", room_id)
+        raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, "Room presence temporarily unavailable") from exc
+    if not connected:
+        return []
+    # Preserve canonical user/profile/role payload and permissions from the DB,
+    # but never infer online-ness from DB membership alone.
+    members = await service.list_members(session, room_id)
+    return [member for member in members if member.user_id in connected]
+
+
 @router.get("/{room_id}/members", response_model=list[StudyRoomMemberResponse])
 async def list_members(
     room_id: uuid.UUID,
@@ -437,6 +519,31 @@ async def list_members(
     if active_only:
         return await service.list_active_members(session, room_id)
     return await service.list_members(session, room_id)
+
+
+@router.get("/{room_id}/session", response_model=StudyRoomSessionResponse)
+async def get_room_session(
+    room_id: uuid.UUID,
+    current_user: CurrentUser = Depends(get_current_user),
+    session: AsyncSession = Depends(get_db_session),
+):
+    """Single authority for the caller's membership, independent from the roster.
+
+    The caller may inspect their own state before joining a visible room, but a
+    private/unavailable room never leaks its membership or metadata. The backend
+    independently checks authorization again when issuing every LiveKit token.
+    """
+    room = await _get_active_room_or_404(session, room_id)
+    if not await can_view_room(session, room, current_user.id):
+        raise HTTPException(status.HTTP_403_FORBIDDEN, "You do not have access to this study room")
+    member = await service.get_member(session, room_id, current_user.id)
+    active = member is not None and member.left_at is None
+    return StudyRoomSessionResponse(
+        room_id=room.id,
+        room_status=room.status,
+        member=StudyRoomMemberResponse.model_validate(member) if member is not None else None,
+        can_connect=active and can_join_room(room),
+    )
 
 
 _ASSIGNABLE_ROOM_ROLES = {StudyRoomMemberRole.PARTICIPANT, StudyRoomMemberRole.EDITOR}
@@ -633,9 +740,44 @@ async def list_moderation(
 # --- Meeting (LiveKit) ---
 
 
+@router.post("/{room_id}/meeting/claim", response_model=MeetingSessionStatus)
+async def claim_meeting_session(
+    room_id: uuid.UUID,
+    request: MeetingSessionClaim,
+    current_user: CurrentUser = Depends(get_current_user),
+    session: AsyncSession = Depends(get_db_session),
+):
+    """Only explicit prejoin action can replace an existing media session.
+
+    Membership and authorization are read from the regular study-room DB.
+    State is saved in the coordinator database, NOT study_room_members.
+    """
+    room = await _get_active_room_or_404(session, room_id)
+    if not await can_join_room_meeting(session, room, current_user.id):
+        raise HTTPException(status.HTTP_403_FORBIDDEN, "You do not have access to this study room")
+    await meeting_session_service.claim(room_id, current_user.id, request.client_session_id)
+    return MeetingSessionStatus(active=True)
+
+
+@router.get("/{room_id}/meeting/owner", response_model=MeetingSessionStatus)
+async def check_meeting_owner(
+    room_id: uuid.UUID,
+    client_session_id: uuid.UUID,
+    current_user: CurrentUser = Depends(get_current_user),
+    session: AsyncSession = Depends(get_db_session),
+):
+    """Side-effect-free ownership check for cross-device takeover detection."""
+    room = await _get_active_room_or_404(session, room_id)
+    if not await can_join_room_meeting(session, room, current_user.id):
+        raise HTTPException(status.HTTP_403_FORBIDDEN, "You do not have access to this study room")
+    owned = await meeting_session_service.is_owner(room_id, current_user.id, client_session_id)
+    return MeetingSessionStatus(active=owned)
+
+
 @router.post("/{room_id}/meeting/token", response_model=MeetingTokenResponse)
 async def create_meeting_token(
     room_id: uuid.UUID,
+    request: MeetingTokenRequest | None = None,
     current_user: CurrentUser = Depends(get_current_user),
     session: AsyncSession = Depends(get_db_session),
 ):
@@ -651,6 +793,19 @@ async def create_meeting_token(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="You do not have access to this study room"
         )
+
+    if request is None:
+        if settings.meeting_session_required:
+            raise HTTPException(status.HTTP_400_BAD_REQUEST, "Media session ID is required")
+    else:
+        if not await meeting_session_service.is_owner(
+            room_id, current_user.id, request.client_session_id
+        ):
+            # Crucially a refresh never claims ownership. The older tab cannot
+            # reacquire a LiveKit identity just by pressing Retry.
+            raise HTTPException(
+                status.HTTP_409_CONFLICT, "Media session was transferred to another tab or device"
+            )
 
     # Canonical display-name fallback hierarchy (display_name -> username -> None, never a
     # raw id/email) -- LiveKit's own SDK-level fallback (bare `identity`, a UUID) only

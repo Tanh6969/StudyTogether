@@ -43,7 +43,7 @@ const members: StudyRoomMember[] = [
 ];
 
 function renderGrid(contextValue: Partial<MeetingContextValue>, unavailableReason?: string) {
-  const value: MeetingContextValue = { status: 'idle', error: null, retry: vi.fn(), connected: false, liveKitError: null, ...contextValue };
+  const value: MeetingContextValue = { status: 'idle', error: null, retry: vi.fn(), connected: false, liveKitError: null, transferred: false, ...contextValue };
   return render(
     <MeetingContext.Provider value={value}>
       <MeetingVideoGrid members={members} currentUserId="user-1" currentUserName="Minh Anh" unavailableReason={unavailableReason} />
@@ -58,6 +58,12 @@ describe('MeetingVideoGrid', () => {
     mockScreenShareTrackRefs.length = 0;
   });
 
+  it('shows a terminal transferred notice with no retry control', () => {
+    renderGrid({ transferred: true, status: 'ready' });
+    expect(screen.getByText('Cuộc gọi đã chuyển sang tab hoặc thiết bị khác')).toBeInTheDocument();
+    expect(screen.queryByText('Kết nối lại')).not.toBeInTheDocument();
+  });
+
   it('shows the ended-room message without waiting on a token request', () => {
     renderGrid({}, 'Phòng học này đã kết thúc, cuộc gọi không còn khả dụng.');
     expect(screen.getByText('Phòng học này đã kết thúc, cuộc gọi không còn khả dụng.')).toBeInTheDocument();
@@ -65,7 +71,13 @@ describe('MeetingVideoGrid', () => {
 
   it('shows a loading state while the token request/connection is in progress', () => {
     renderGrid({ status: 'loading' });
-    expect(screen.getByText('Đang kết nối cuộc gọi...')).toBeInTheDocument();
+    expect(screen.getByText('Đang xin quyền kết nối cuộc gọi...')).toBeInTheDocument();
+  });
+
+  it('distinguishes an idle request from an in-flight token request', () => {
+    renderGrid({ status: 'idle' });
+    expect(screen.getByText('Chưa thể bắt đầu cuộc gọi')).toBeInTheDocument();
+    expect(screen.queryByText('Đang xin quyền kết nối cuộc gọi...')).not.toBeInTheDocument();
   });
 
   it('shows a retryable error state when the token request is rejected', async () => {

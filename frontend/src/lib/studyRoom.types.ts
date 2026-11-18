@@ -33,8 +33,8 @@ export interface StudyRoom {
   conversation_id: string | null;
   whiteboard_state: Record<string, any> | null;
   presentation_state: PresentationState | null;
-  /** People currently inside the room -- the "live" signal now that there is no start/end. */
-  active_member_count?: number;
+  /** Current LiveKit connections. null means unknown/provider unavailable, not zero. */
+  active_member_count?: number | null;
 }
 
 /** The shared "Slide Bài giảng" deck's current state -- `asset_path` is a Storage object path
@@ -58,6 +58,15 @@ export interface StudyRoomMember {
   joined_at: string;
   left_at: string | null;
   user: UserSummary;
+}
+
+/** The current user's backend-authoritative room session. Different from the
+ * shared member roster (which is used for rendering other people, not access). */
+export interface StudyRoomSession {
+  room_id: string;
+  room_status: StudyRoomStatus;
+  member: StudyRoomMember | null;
+  can_connect: boolean;
 }
 
 /** Mirrors StudyRoomCreate (app/study_rooms/dto/study_room_dto.py). No `host_id` field:
