@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest';
-import { render, screen, fireEvent, cleanup } from '@testing-library/react';
+import { render, screen, fireEvent } from '@testing-library/react';
 import { NotesStackPanel, type NotesStackPanelProps } from './NotesStackPanel';
 import type { Note } from '../../lib/note.types';
 
@@ -64,166 +64,148 @@ function baseController(overrides: Partial<NotesStackPanelProps> = {}): NotesSta
 
 function renderPanel(overrides: Partial<NotesStackPanelProps> = {}) {
   const props = baseController(overrides);
-  render(<NotesStackPanel {...props} />);
-  expandPanel();
-  return props;
+  const view = render(<NotesStackPanel {...props} />);
+  return { props, ...view };
 }
 
-/** The panel renders collapsed by default -- click the "Ghi chú" header to open it. */
-function expandPanel() {
-  fireEvent.click(screen.getByText('Ghi chú'));
-}
-
-describe('NotesStackPanel', () => {
-  it('shows a loading state', () => {
+// The current component is a compact one-row strip, not the old collapsible panel.
+// Its accessibility labels, role permissions and controller callbacks are the contract.
+describe('NotesStackPanel compact strip', () => {
+  it('shows loading feedback and the static heading', () => {
     renderPanel({ loading: true });
-    expect(screen.getByText('Đang tải ghi chú...')).toBeInTheDocument();
+    expect(screen.getByText('GHI CHÚ')).toBeInTheDocument();
+    expect(screen.getByText('Đang tải ghi chú…')).toBeInTheDocument();
   });
 
-  describe('empty state', () => {
-    it('Owner/Moderator sees an empty state with a Create note action', () => {
-      renderPanel({ notes: [], isGroupManager: true });
-      expect(screen.getByText('Chưa có ghi chú nào trong nhóm này.')).toBeInTheDocument();
-      expect(screen.getByText('Tạo ghi chú')).toBeInTheDocument();
-    });
-
-    it('Member sees an empty state with no create action', () => {
-      renderPanel({ notes: [], isGroupManager: false });
-      expect(screen.getByText('Chưa có ghi chú nào được thêm vào nhóm này.')).toBeInTheDocument();
-      expect(screen.queryByText('Tạo ghi chú')).not.toBeInTheDocument();
-    });
+  it('offers add on an empty group to a manager only', () => {
+    renderPanel({ isGroupManager: true });
+    expect(screen.getByText('Chưa có ghi chú')).toBeInTheDocument();
+    expect(screen.getByTitle('Thêm ghi chú')).toBeInTheDocument();
   });
 
-  describe('role-gated controls on the focused note', () => {
-    const notes = [makeNote({ id: 'a' })];
-
-    it('Member sees a read-only stack: no create/edit/delete controls, but can navigate', () => {
-      renderPanel({ notes, focusedIndex: 0, focusedNote: notes[0], isGroupManager: false });
-      expect(screen.queryByTitle('Tạo ghi chú')).not.toBeInTheDocument();
-      expect(screen.queryByTitle('Sửa')).not.toBeInTheDocument();
-      expect(screen.queryByTitle('Xóa')).not.toBeInTheDocument();
-      expect(screen.getByTitle('Ghi chú trước')).toBeInTheDocument();
-      expect(screen.getByTitle('Ghi chú sau')).toBeInTheDocument();
-    });
-
-    it('Owner/Moderator sees create/edit/delete controls', () => {
-      renderPanel({ notes, focusedIndex: 0, focusedNote: notes[0], isGroupManager: true });
-      expect(screen.getByTitle('Tạo ghi chú')).toBeInTheDocument();
-      expect(screen.getByTitle('Sửa')).toBeInTheDocument();
-      expect(screen.getByTitle('Xóa')).toBeInTheDocument();
-    });
+  it('keeps an empty member view read-only', () => {
+    renderPanel({ isGroupManager: false });
+    expect(screen.getByText('Chưa có ghi chú')).toBeInTheDocument();
+    expect(screen.queryByTitle('Thêm ghi chú')).not.toBeInTheDocument();
   });
 
-  describe('stack navigation', () => {
+  it('displays focused note content and author tooltip', () => {
+    const note = makeNote({ title: 'Important' });
+    renderPanel({ notes: [note], focusedNote: note });
+    expect(screen.getByText('Important · Hello note')).toBeInTheDocument();
+    expect(screen.getByTitle('Alice · Hello note')).toBeInTheDocument();
+  });
+
+  it('omits navigation for a single note', () => {
+    const note = makeNote();
+    renderPanel({ notes: [note], focusedNote: note });
+    expect(screen.queryByTitle('Ghi chú trước')).not.toBeInTheDocument();
+    expect(screen.queryByTitle('Ghi chú tiếp')).not.toBeInTheDocument();
+  });
+
+  it('provides edit, delete and add only to group managers', () => {
+    const note = makeNote();
+    renderPanel({ notes: [note], focusedNote: note, isGroupManager: true });
+    expect(screen.getByTitle('Thêm ghi chú')).toBeInTheDocument();
+    expect(screen.getByTitle('Sửa ghi chú')).toBeInTheDocument();
+    expect(screen.getByTitle('Xóa ghi chú')).toBeInTheDocument();
+  });
+
+  it('keeps a member note read-only', () => {
+    const note = makeNote();
+    renderPanel({ notes: [note], focusedNote: note, isGroupManager: false });
+    expect(screen.queryByTitle('Thêm ghi chú')).not.toBeInTheDocument();
+    expect(screen.queryByTitle('Sửa ghi chú')).not.toBeInTheDocument();
+    expect(screen.queryByTitle('Xóa ghi chú')).not.toBeInTheDocument();
+  });
+
+  it('shows current position for multiple notes', () => {
     const notes = [makeNote({ id: 'a' }), makeNote({ id: 'b' }), makeNote({ id: 'c' })];
-
-    it('shows the position indicator', () => {
-      renderPanel({ notes, focusedIndex: 1, focusedNote: notes[1] });
-      expect(screen.getByText('2 / 3')).toBeInTheDocument();
-    });
-
-    it('disables Previous on the first note and Next on the last note', () => {
-      const { rerender } = render(
-        <NotesStackPanel {...baseController({ notes, focusedIndex: 0, focusedNote: notes[0] })} />
-      );
-      expandPanel();
-      expect(screen.getByTitle('Ghi chú trước')).toBeDisabled();
-      expect(screen.getByTitle('Ghi chú sau')).not.toBeDisabled();
-
-      rerender(<NotesStackPanel {...baseController({ notes, focusedIndex: 2, focusedNote: notes[2] })} />);
-      expect(screen.getByTitle('Ghi chú trước')).not.toBeDisabled();
-      expect(screen.getByTitle('Ghi chú sau')).toBeDisabled();
-    });
-
-    it('calls goToPrev/goToNext on click', () => {
-      const props = renderPanel({ notes, focusedIndex: 1, focusedNote: notes[1] });
-      fireEvent.click(screen.getByTitle('Ghi chú trước'));
-      fireEvent.click(screen.getByTitle('Ghi chú sau'));
-      expect(props.goToPrev).toHaveBeenCalledTimes(1);
-      expect(props.goToNext).toHaveBeenCalledTimes(1);
-    });
+    renderPanel({ notes, focusedIndex: 1, focusedNote: notes[1] });
+    expect(screen.getByText('2/3')).toBeInTheDocument();
   });
 
-  describe('composer (create)', () => {
-    it('shows a content character counter and calls submitCreate', () => {
-      const props = renderPanel({ isAdding: true, isGroupManager: true, newContent: 'hello' });
-      expect(screen.getByText('5 / 2000')).toBeInTheDocument();
-      fireEvent.click(screen.getByText('Lưu'));
-      expect(props.submitCreate).toHaveBeenCalledTimes(1);
-    });
-
-    it('disables Save while empty or pending', () => {
-      renderPanel({ isAdding: true, newContent: '' });
-      expect(screen.getByText('Lưu')).toBeDisabled();
-
-      cleanup();
-      renderPanel({ isAdding: true, newContent: 'x', isCreating: true });
-      expect(screen.getByText('Đang lưu...')).toBeDisabled();
-    });
-
-    it('surfaces a create error', () => {
-      renderPanel({ isAdding: true, createError: { status: 403, message: 'Forbidden' } });
-      expect(screen.getByText('Forbidden')).toBeInTheDocument();
-    });
+  it('disables navigation beyond first and last note', () => {
+    const notes = [makeNote({ id: 'a' }), makeNote({ id: 'b' })];
+    const { rerender } = renderPanel({ notes, focusedIndex: 0, focusedNote: notes[0] });
+    expect(screen.getByTitle('Ghi chú trước')).toBeDisabled();
+    expect(screen.getByTitle('Ghi chú tiếp')).not.toBeDisabled();
+    rerender(<NotesStackPanel {...baseController({ notes, focusedIndex: 1, focusedNote: notes[1] })} />);
+    expect(screen.getByTitle('Ghi chú trước')).not.toBeDisabled();
+    expect(screen.getByTitle('Ghi chú tiếp')).toBeDisabled();
   });
 
-  describe('editor (edit current note)', () => {
-    const notes = [makeNote({ id: 'a', content: 'Old content' })];
-
-    it('shows a content character counter for the editing draft', () => {
-      renderPanel({
-        notes,
-        focusedIndex: 0,
-        focusedNote: notes[0],
-        isEditing: true,
-        editingContent: 'Edited content',
-        isGroupManager: true,
-      });
-      expect(screen.getByText('14 / 2000')).toBeInTheDocument();
-    });
-
-    it('disables Save while pending', () => {
-      renderPanel({
-        notes,
-        focusedIndex: 0,
-        focusedNote: notes[0],
-        isEditing: true,
-        editingContent: 'x',
-        isSavingFocused: true,
-      });
-      expect(screen.getByTitle('Lưu')).toBeDisabled();
-    });
-
-    it('surfaces an edit error', () => {
-      renderPanel({
-        notes,
-        focusedIndex: 0,
-        focusedNote: notes[0],
-        isEditing: true,
-        editingContent: 'x',
-        editError: { status: 403, message: 'Forbidden' },
-      });
-      expect(screen.getByText('Forbidden')).toBeInTheDocument();
-    });
+  it('dispatches navigation callbacks', () => {
+    const notes = [makeNote({ id: 'a' }), makeNote({ id: 'b' }), makeNote({ id: 'c' })];
+    const { props } = renderPanel({ notes, focusedIndex: 1, focusedNote: notes[1] });
+    fireEvent.click(screen.getByTitle('Ghi chú trước'));
+    fireEvent.click(screen.getByTitle('Ghi chú tiếp'));
+    expect(props.goToPrev).toHaveBeenCalledTimes(1);
+    expect(props.goToNext).toHaveBeenCalledTimes(1);
   });
 
-  describe('delete', () => {
-    const notes = [makeNote({ id: 'a' })];
+  it('invokes inline creation on add action', () => {
+    const { props } = renderPanel({ isGroupManager: true });
+    fireEvent.click(screen.getByTitle('Thêm ghi chú'));
+    expect(props.startAdd).toHaveBeenCalledTimes(1);
+  });
 
-    it('disables the delete button while pending', () => {
-      renderPanel({ notes, focusedIndex: 0, focusedNote: notes[0], isGroupManager: true, isDeletingFocused: true });
-      expect(screen.getByTitle('Xóa')).toBeDisabled();
-    });
+  it('sends a valid inline new note with labeled fields', () => {
+    const { props } = renderPanel({ isAdding: true, newTitle: 'Title', newContent: 'Note', isGroupManager: true });
+    expect(screen.getByRole('textbox', { name: 'Tiêu đề ghi chú' })).toHaveValue('Title');
+    expect(screen.getByRole('textbox', { name: 'Nội dung ghi chú' })).toHaveValue('Note');
+    fireEvent.click(screen.getByTitle('Lưu ghi chú'));
+    expect(props.submitCreate).toHaveBeenCalledTimes(1);
+  });
 
-    it('surfaces a delete error', () => {
-      renderPanel({
-        notes,
-        focusedIndex: 0,
-        focusedNote: notes[0],
-        isGroupManager: true,
-        deleteError: { status: 403, message: 'Forbidden' },
-      });
-      expect(screen.getByText('Forbidden')).toBeInTheDocument();
-    });
+  it('disables empty new note and duplicate pending save', () => {
+    const { rerender } = renderPanel({ isAdding: true, newContent: '' });
+    expect(screen.getByTitle('Lưu ghi chú')).toBeDisabled();
+    rerender(<NotesStackPanel {...baseController({ isAdding: true, newContent: 'note', isCreating: true })} />);
+    expect(screen.getByTitle('Lưu ghi chú')).toBeDisabled();
+  });
+
+  it('cancels inline new note', () => {
+    const { props } = renderPanel({ isAdding: true });
+    fireEvent.click(screen.getByTitle('Hủy'));
+    expect(props.cancelAdd).toHaveBeenCalledTimes(1);
+  });
+
+  it('saves a valid edited note using the editor callback', () => {
+    const note = makeNote();
+    const { props } = renderPanel({ notes: [note], focusedNote: note, isEditing: true, editingTitle: 'Edited', editingContent: 'New content' });
+    expect(screen.getByRole('textbox', { name: 'Tiêu đề ghi chú' })).toHaveValue('Edited');
+    expect(screen.getByRole('textbox', { name: 'Nội dung ghi chú' })).toHaveValue('New content');
+    fireEvent.click(screen.getByTitle('Lưu ghi chú'));
+    expect(props.submitEdit).toHaveBeenCalledTimes(1);
+  });
+
+  it('disables edit save during a pending request', () => {
+    renderPanel({ isEditing: true, editingContent: 'updated', isSavingFocused: true });
+    expect(screen.getByTitle('Lưu ghi chú')).toBeDisabled();
+  });
+
+  it('cancels editing without writing', () => {
+    const { props } = renderPanel({ isEditing: true });
+    fireEvent.click(screen.getByTitle('Hủy'));
+    expect(props.cancelEdit).toHaveBeenCalledTimes(1);
+  });
+
+  it('disables deletion while request is pending', () => {
+    const note = makeNote();
+    renderPanel({ notes: [note], focusedNote: note, isGroupManager: true, isDeletingFocused: true });
+    expect(screen.getByTitle('Xóa ghi chú')).toBeDisabled();
+  });
+
+  it('sends a delete only on the manager action', () => {
+    const note = makeNote();
+    const { props } = renderPanel({ notes: [note], focusedNote: note, isGroupManager: true });
+    fireEvent.click(screen.getByTitle('Xóa ghi chú'));
+    expect(props.submitDelete).toHaveBeenCalledTimes(1);
+  });
+
+  it('displays an error in the non-editing strip tooltip', () => {
+    renderPanel({ listError: { status: 503, message: 'Notes temporarily unavailable' } });
+    expect(screen.getByTitle('Notes temporarily unavailable')).toBeInTheDocument();
   });
 });

@@ -61,6 +61,15 @@ should be passed off as a connected call.
 - React/Vitest and Vite production build validate frontend source.
 - Chromium tests verify preview login, blocked Auth-write routes, JS console
   and preview `/api/health`. They do not prove real audio/video.
+- Full regression on 2026-11-18: backend 723/723 tests; frontend 314/314 tests
+  across 36 test files (run in six batches to survive MCP connection resets).
+  Vite production build succeeded; Chromium verified the newly exposed `/session`
+  OpenAPI route and no login/registration runtime JS errors.
+- Pre-existing `NotesStackPanel.test.tsx` expected an obsolete expand/collapse
+  design. Its coverage was realigned to the existing compact 42px note bar,
+  retaining 20 role/actions/navigation/error tests, without altering the UI.
+- Room A-to-B navigation and leaving with an unconfirmed join generation now
+  have explicit regression tests. These are separate from real LiveKit QA.
 
 ## Outstanding gates
 

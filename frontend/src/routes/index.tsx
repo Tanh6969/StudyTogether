@@ -1,5 +1,5 @@
 import { lazy, Suspense } from 'react';
-import { Routes, Route, Navigate, Outlet } from 'react-router-dom';
+import { Routes, Route, Navigate, Outlet, useParams } from 'react-router-dom';
 import { useAuth } from '../hooks/useAuth';
 import { PageLoadingSkeleton } from '../components/ui/Skeleton';
 import { LazyStudyRoom as StudyRoom } from '../pages/StudyGroup/studyRoomPage';
@@ -52,6 +52,14 @@ const ProtectedRoute = ({ children }: { children?: React.ReactNode }) => {
   return children ? <>{children}</> : <Outlet />;
 };
 
+// React Router can reuse the same route instance when only :id changes.
+// Key the room subtree so no media/session state from room A can outlive a
+// navigation to room B. The old room cleans up with its own join generation.
+function RoomRouteBoundary() {
+  const { id } = useParams();
+  return <StudyRoom key={id} />;
+}
+
 export function AppRoutes() {
   return (
     <Suspense fallback={<PageLoadingSkeleton />}>
@@ -60,7 +68,7 @@ export function AppRoutes() {
         <Route path="/register" element={PREVIEW_MODE ? <PreviewAuthDisabled /> : <RegisterPage />} />
         <Route path="/forgot-password" element={PREVIEW_MODE ? <PreviewAuthDisabled /> : <ForgotPasswordPage />} />
         <Route path="/update-password" element={PREVIEW_MODE ? <PreviewAuthDisabled /> : <UpdatePasswordPage />} />
-        <Route path="/room/:id" element={<ProtectedRoute><StudyRoom /></ProtectedRoute>} />
+        <Route path="/room/:id" element={<ProtectedRoute><RoomRouteBoundary /></ProtectedRoute>} />
         <Route path="/" element={<Layout />}>
           <Route path="invitations/:secret" element={<InvitationPreviewPage />} />
 
