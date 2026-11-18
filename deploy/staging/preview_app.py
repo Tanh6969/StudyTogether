@@ -1,22 +1,55 @@
-"""Isolated StudyTogether preview API (never imported or deployed in production).
+"""Isolated preview application process (never installed into production).
 
-Only local PostgreSQL is writable. Authentication is verified using the existing
-Supabase Auth verifier, then the verified account is copied *to local preview DB*
-to permit an interactive login using the real frontend. No real Supabase database
-rows or users are created or modified by this wrapper.
+Two explicit resource modes:
+- isolated: local PostgreSQL, real Supabase Auth, local profile bootstrap;
+- shared-production: existing Supabase DB, Auth and LiveKit, without any profile
+  bootstrap or automatic migrations. Writes made by users affect real data.
+Neither mode changes the deployed FastAPI or frontend service.
 """
 import asyncio
 import logging
 import os
 import uuid
+from urllib.parse import urlsplit
 
 from fastapi import Request
 from fastapi.responses import JSONResponse
 from sqlalchemy import text
 
-DB_URL = "postgresql+psycopg://mcppro@127.0.0.1:6544/studytogether_preview"
-if os.getenv("DATABASE_URL") != DB_URL:
-    raise RuntimeError("Preview API refuses to use a non-isolated database")
+LOCAL_DB_URL = "postgresql+psycopg://mcppro@127.0.0.1:6544/studytogether_preview"
+PRODUCTION_SUPABASE_REF = "auieyzwvehuwnbkbaqud"
+PREVIEW_RESOURCE_MODE = os.getenv("PREVIEW_RESOURCE_MODE", "isolated")
+
+
+def validate_preview_target() -> None:
+    db_url = os.getenv("DATABASE_URL", "")
+    if PREVIEW_RESOURCE_MODE == "isolated":
+        if db_url != LOCAL_DB_URL:
+            raise RuntimeError("Isolated preview requires the exact local preview database")
+        return
+    if PREVIEW_RESOURCE_MODE != "shared-production":
+        raise RuntimeError("Unknown preview resource mode")
+    if os.getenv("PREVIEW_SHARED_PRODUCTION_APPROVED") != "yes-real-data-affected":
+        raise RuntimeError("Sharing production resources requires an explicit approval marker")
+    if os.getenv("SUPABASE_URL", "").rstrip("/") != f"https://{PRODUCTION_SUPABASE_REF}.supabase.co":
+        raise RuntimeError("Supabase project URL does not match the approved production project")
+    try:
+        db_target = urlsplit(db_url)
+        hostname = (db_target.hostname or "").lower()
+        username = db_target.username or ""
+    except ValueError as exc:
+        raise RuntimeError("Malformed production database URL") from exc
+    project_db = hostname == f"db.{PRODUCTION_SUPABASE_REF}.supabase.co"
+    pooler_db = hostname.endswith(".pooler.supabase.com") and PRODUCTION_SUPABASE_REF in username
+    if not (project_db or pooler_db):
+        raise RuntimeError("Database host / user do not identify the approved Supabase project")
+    if not all(os.getenv(k) for k in ("LIVEKIT_URL", "LIVEKIT_API_KEY", "LIVEKIT_API_SECRET")):
+        raise RuntimeError("Missing real LiveKit configuration")
+    if os.getenv("LIVEKIT_API_KEY") == "previewkey" or os.getenv("LIVEKIT_URL", "").endswith(".invalid"):
+        raise RuntimeError("Placeholder LiveKit config cannot be used in shared mode")
+
+
+validate_preview_target()
 
 from app.main import app
 from app.auth.services.auth_service import supabase_auth_service
@@ -69,7 +102,9 @@ async def local_preview_identity(request: Request, call_next):
             headers={"Cache-Control":"no-store"}
         )
     header = request.headers.get("authorization", "")
-    if header.lower().startswith("bearer "):
+    # Real Supabase DB already owns Auth users and profiles. Never run the
+    # preview-only identity bootstrap against production, including on login.
+    if PREVIEW_RESOURCE_MODE == "isolated" and header.lower().startswith("bearer "):
         token = header[7:].strip()
         try:
             # Uses the same signature/issuer verification as the normal backend.

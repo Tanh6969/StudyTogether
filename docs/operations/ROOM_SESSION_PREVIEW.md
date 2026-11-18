@@ -1,4 +1,4 @@
-# StudyTogether — isolated room-session preview
+# StudyTogether — separate frontend/backend preview with opt-in shared resources
 
 ## Isolation contract
 
@@ -9,26 +9,35 @@ Do not push/merge/deploy production until the PM accepts real two-user QA.
 |---|---|---|
 | Frontend | Built assets, loopback 5179 | Existing Caddy website |
 | Backend | FastAPI, loopback 8181 | Existing service, port 8000 |
-| PostgreSQL | 16, loopback 6544, `studytogether_preview` | Supabase production |
-| Authentication | Production Supabase **Auth only**, existing-account login | Supabase production Auth |
-| LiveKit | Explicitly **disabled** pending real test credentials | Existing LiveKit |
+| PostgreSQL | Isolated local DB by default; production Supabase DB after explicit opt-in | Existing Supabase production |
+| Authentication | Real Supabase Auth, existing-account login; no account writes | Existing Supabase Auth |
+| LiveKit | Disabled by default; existing LiveKit after explicit opt-in | Existing LiveKit |
 | Browser access | Temporary Cloudflare OTP-protected Quick Tunnel | Stable main domain |
 
-The preview backend refuses a database URL other than the exact loopback
-preview database. The public preview proxy must forward `/api` to port 8181,
-never production. `preview.env` is outside Git and mode 600; do not print it.
+The preview backend accepts local PostgreSQL by default. It can be explicitly
+switched to the **existing production Supabase DB and LiveKit**, as the PM
+requested on 2026-11-18, but only when its configuration validates the exact
+known Supabase project and a deliberate shared-production acknowledgement.
+No additional Supabase or LiveKit project is needed. Frontend/backend preview
+remain separate processes. The public preview proxy must forward `/api` to
+port 8181, never to the production backend. `preview.env` is outside Git and
+mode 600; never print its contents.
 
 The local PostgreSQL has all ten repository migrations and minimal compatible
 `auth/storage` stubs, but it is not a full Supabase Realtime/Storage service.
-Preview login verifies real Supabase-issued JWTs and then writes profiles
-**only to the local preview database**. Account registration, password reset,
-account settings and password updates are disabled on the preview frontend
-to avoid production Auth writes.
+In **isolated** mode, preview login verifies real Supabase-issued JWTs and
+writes local profile rows only to the isolated database. In **shared-production**
+mode, this provisioning is disabled entirely: existing production Auth/database
+users and their profiles are used as-is. No schema migration or data import is
+performed. Account registration, password reset, account settings, and password
+updates stay disabled in the preview frontend to avoid unintended Auth writes.
 
-Media requests intentionally return HTTP 503 with an explicit explanation
-until distinct test `LIVEKIT_URL`, `LIVEKIT_API_KEY`, and
-`LIVEKIT_API_SECRET` have been securely provisioned. No fake LiveKit token
-should be passed off as a connected call.
+Media requests intentionally return HTTP 503 until real LiveKit credentials
+have been added with explicit shared-production opt-in. After opt-in, the
+existing token endpoint generates genuine LiveKit tokens for authorized room
+members using the existing LiveKit project. Its identifiers are the existing
+`study-room-{UUID}` pattern, so **only create/use dedicated test room UUIDs**.
+Do not mistake a signed token for a successful real camera/microphone connection.
 
 ## Shared architecture invariants
 
@@ -71,18 +80,50 @@ should be passed off as a connected call.
 - Room A-to-B navigation and leaving with an unconfirmed join generation now
   have explicit regression tests. These are separate from real LiveKit QA.
 
-## Outstanding gates
+## Shared production resources: administrator one-time setup
 
-1. **Separate Supabase staging project:** quote is $0/month for a new
-   project in the existing Free org. PM must choose/confirm the org.
-   The alternative project branch quotes $0.01344/hour; do not create
-   a paid branch without explicit price approval.
-2. **Real LiveKit QA project/credentials:** secure delivery only, never
-   paste credentials into chat. Prefer a separate project.
-3. Validate authenticated two-person camera/microphone, screen-sharing,
-   hand raising, chat, join/leave/rejoin, kick, permissions, network
-   loss/reconnect, and room end, across browsers.
-4. Coordinate backend+frontend release only after PM acceptance.
+The user chose **existing production Supabase and LiveKit**, not a new project.
+The MCP-PRO operating account `mcppro` cannot read the protected production
+file `/opt/studytogether/backend/.env`; its AWS IAM role also cannot list
+Secrets Manager or SSM managed instances. This is a deliberate access boundary.
+
+A narrowly scoped, reviewed helper is prepared at
+`deploy/staging/enable_existing_resources.py` (requires Python from the existing
+`/opt/studytogether/venv`). The server administrator must review and execute it
+once with local sudo permission. It reads the existing production environment
+locally, verifies the DB and project identifiers, writes **only** the preview
+environment file with restrictive permissions and an owner-only backup, and
+prints no secrets. It does not restart/change the production application,
+database, Caddy, DNS, GitHub, LiveKit projects, or Supabase configuration.
+
+In Lightsail SSH connected as `ubuntu`, the administrator can use:
+
+```sh
+sudo install -o root -g root -m 0400 \
+  /srv/mcppro/workspaces/studytogether-room-lifecycle-20261118/deploy/staging/enable_existing_resources.py \
+  /root/studytogether-preview-shared.py
+sudo /opt/studytogether/venv/bin/python /root/studytogether-preview-shared.py
+```
+
+The helper will refuse to change preview configuration if project DB metadata
+cannot be verified. Once successful, **restart only the preview API** on
+127.0.0.1:8181 and verify its `/health`, `/session` and test-only token flow.
+Its environment file must never be committed or posted to chat.
+
+### Mandatory QA safeguards when sharing production
+
+- **All test actions now operate on real Supabase rows and the real LiveKit
+  project**. Avoid existing user rooms, destructive moderation against real
+  members, mass messages, or schema migrations.
+- Sign in with existing authorized accounts, create a uniquely named QA group
+  and QA room, and constrain testers to those IDs. Normal backend permission
+  checks still apply; shared production secrets do not bypass them.
+- The preview Cloudflare Quick Tunnel is email-restricted. Its URL changes on
+  restart; verify protection each time. Grant access only to QA testers.
+- As before, the backend/frontend source in production is **untouched**.
+- Run two-user audio/video, join/leave/rejoin, screen share, hand raise,
+  permissions, kick in the QA room, and network reconnect before PM approval.
+
 5. **Security priority, evidence 2026-11-18:** Public API ingress rejects
    synthetic unsigned development tokens (HTTP 403 from Caddy) via an explicit
    header-matching rule in `/etc/caddy/Caddyfile`; the production FastAPI
