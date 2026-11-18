@@ -108,6 +108,7 @@ export function StudyRoom() {
     changeMemberRole,
     transferHost,
     refetchRoom,
+    refetchMembers,
   } = useStudyRoom(roomId);
 
   // Room states
@@ -634,6 +635,7 @@ export function StudyRoom() {
               currentUserId={currentUserId}
               currentUserName={currentUser.name}
               currentUserAvatarUrl={currentUser.avatarUrl}
+              onRetryMembership={refetchMembers}
             />
           </div>
         )}

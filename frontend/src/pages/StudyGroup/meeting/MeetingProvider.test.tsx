@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { render, screen, waitFor } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { useEffect } from 'react';
 import type { LiveKitRoomProps } from '@livekit/components-react';
 import { ApiError } from '../../../lib/apiClient';
@@ -37,12 +37,13 @@ vi.mock('@livekit/components-react', () => ({
 const mockedCreateMeetingToken = vi.mocked(createMeetingToken);
 
 function StatusProbe() {
-  const { status, connected, error } = useMeetingContext();
+  const { status, connected, error, liveKitError } = useMeetingContext();
   return (
     <div>
       <span data-testid="status">{status}</span>
       <span data-testid="connected">{String(connected)}</span>
       <span data-testid="error">{error?.message ?? ''}</span>
+      <span data-testid="livekit-error">{liveKitError?.message ?? ''}</span>
     </div>
   );
 }
@@ -136,7 +137,7 @@ describe('MeetingProvider', () => {
     expect(screen.getByTestId('connected').textContent).toBe('false');
   });
 
-  it('calls onSessionEnded when the LiveKit connection disconnects, so the caller can refetch room status (kick/end/delete)', async () => {
+  it('does not treat deliberate participation disable as an unexpected LiveKit disconnect', async () => {
     mockedCreateMeetingToken.mockResolvedValue({ server_url: 'wss://x', participant_token: 'tok' });
     const onSessionEnded = vi.fn();
 
@@ -148,15 +149,62 @@ describe('MeetingProvider', () => {
     await waitFor(() => expect(screen.getByTestId('connected').textContent).toBe('true'));
     expect(onSessionEnded).not.toHaveBeenCalled();
 
-    // Disabling tears down the LiveKit room (mirrors what the real component does once the
-    // room ends/the caller is kicked and `enabled` flips false) -- the fake LiveKitRoom above
-    // fires onDisconnected from its cleanup effect.
+    // The mocked LiveKitRoom fires onDisconnected during unmount, but this was a
+    // deliberate authorization/participation change rather than network failure.
     rerender(
       <MeetingProvider roomId="room-1" enabled={false} onSessionEnded={onSessionEnded}>
         <StatusProbe />
       </MeetingProvider>
     );
 
-    await waitFor(() => expect(onSessionEnded).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(screen.queryByTestId('livekit-room')).not.toBeInTheDocument());
+    expect(onSessionEnded).not.toHaveBeenCalled();
+  });
+});
+
+describe('MeetingProvider -- recoverable disconnect', () => {
+  it('exposes a meaningful error when LiveKit disconnects and refreshes room metadata', async () => {
+    mockedCreateMeetingToken.mockResolvedValue({ server_url: 'wss://x', participant_token: 'tok' });
+    const onSessionEnded = vi.fn();
+    render(
+      <MeetingProvider roomId="room-1" enabled onSessionEnded={onSessionEnded}>
+        <StatusProbe />
+      </MeetingProvider>
+    );
+    await waitFor(() => expect(screen.getByTestId('connected').textContent).toBe('true'));
+    await act(async () => { lastLiveKitRoomProps?.onDisconnected?.(); });
+    expect(screen.getByTestId('connected').textContent).toBe('false');
+    expect(screen.getByTestId('livekit-error').textContent).toContain('Kết nối video đã bị ngắt');
+    expect(onSessionEnded).toHaveBeenCalledTimes(1);
+  });
+});
+
+function RetryConnectionProbe() {
+  const { retry } = useMeetingContext();
+  return <button onClick={retry}>Retry connection</button>;
+}
+
+describe('MeetingProvider -- connection attempt isolation', () => {
+  it('does not confuse callbacks from a superseded LiveKit attempt with the new connection', async () => {
+    mockedCreateMeetingToken
+      .mockResolvedValueOnce({ server_url: 'wss://x', participant_token: 'old-token' })
+      .mockResolvedValueOnce({ server_url: 'wss://x', participant_token: 'new-token' });
+    const onSessionEnded = vi.fn();
+    render(
+      <MeetingProvider roomId="room-1" enabled onSessionEnded={onSessionEnded}>
+        <StatusProbe />
+        <RetryConnectionProbe />
+      </MeetingProvider>
+    );
+    await waitFor(() => expect(screen.getByTestId('connected').textContent).toBe('true'));
+    expect(lastLiveKitRoomProps?.token).toBe('old-token');
+    const original = lastLiveKitRoomProps;
+
+    await act(async () => { fireEvent.click(screen.getByText('Retry connection')); });
+    await waitFor(() => expect(lastLiveKitRoomProps?.token).toBe('new-token'));
+    await waitFor(() => expect(screen.getByTestId('connected').textContent).toBe('true'));
+    await act(async () => { original?.onDisconnected?.(); });
+    expect(onSessionEnded).not.toHaveBeenCalled();
+    expect(screen.getByTestId('livekit-error').textContent).toBe('');
   });
 });

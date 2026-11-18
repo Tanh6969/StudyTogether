@@ -1,10 +1,12 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { renderHook, waitFor } from '@testing-library/react';
+import { act, renderHook, waitFor } from '@testing-library/react';
 import { useAuth } from './useAuth';
 import { useStudyRoomMembersRealtime } from './useStudyRoomMembersRealtime';
 import { listGroupMembers } from '../lib/group.api';
+import { ApiError } from '../lib/apiClient';
 import {
   getStudyRoom,
+  joinStudyRoom,
   leaveStudyRoomOnUnload,
   listStudyRoomMembers,
   listStudyRoomModeration,
@@ -15,6 +17,9 @@ import type { StudyRoom, StudyRoomMember } from '../lib/studyRoom.types';
 vi.mock('./useAuth');
 vi.mock('./useStudyRoomMembersRealtime', () => ({
   useStudyRoomMembersRealtime: vi.fn(),
+}));
+vi.mock('./useRoomModerationRealtime', () => ({
+  useRoomModerationRealtime: vi.fn(),
 }));
 vi.mock('../lib/group.api', () => ({
   listGroupMembers: vi.fn(),
@@ -35,6 +40,7 @@ const mockedUseAuth = vi.mocked(useAuth);
 const mockedUseRealtime = vi.mocked(useStudyRoomMembersRealtime);
 const mockedListGroupMembers = vi.mocked(listGroupMembers);
 const mockedGetStudyRoom = vi.mocked(getStudyRoom);
+const mockedJoinRoom = vi.mocked(joinStudyRoom);
 const mockedListMembers = vi.mocked(listStudyRoomMembers);
 const mockedListModeration = vi.mocked(listStudyRoomModeration);
 const mockedLeaveOnUnload = vi.mocked(leaveStudyRoomOnUnload);
@@ -87,6 +93,7 @@ beforeEach(() => {
   mockedUseRealtime.mockReset();
   mockedListGroupMembers.mockReset().mockResolvedValue([]);
   mockedGetStudyRoom.mockReset();
+  mockedJoinRoom.mockReset();
   mockedListMembers.mockReset().mockResolvedValue([]);
   mockedListModeration.mockReset().mockResolvedValue([]);
   mockedLeaveOnUnload.mockReset();
@@ -139,5 +146,103 @@ describe('useStudyRoom -- leave-on-unload cleanup', () => {
     unmount();
 
     expect(mockedLeaveOnUnload).not.toHaveBeenCalled();
+  });
+});
+
+describe('useStudyRoom -- coordinated membership lifecycle', () => {
+  it('does not request protected moderation history before membership is confirmed', async () => {
+    mockedGetStudyRoom.mockResolvedValue(makeRoom());
+    mockedListMembers.mockResolvedValueOnce([]).mockResolvedValueOnce([makeMember()]);
+    mockedJoinRoom.mockResolvedValue(makeMember());
+
+    const { result } = renderHook(() => useStudyRoom('room-1'));
+    await waitFor(() => expect(result.current.loading).toBe(false));
+    await waitFor(() => expect(mockedListMembers).toHaveBeenCalled());
+    expect(mockedListModeration).not.toHaveBeenCalled();
+
+    await act(async () => { await result.current.join(); });
+    await waitFor(() => expect(result.current.isCurrentUserMember).toBe(true));
+    await waitFor(() => expect(mockedListModeration).toHaveBeenCalledTimes(1));
+  });
+
+  it('keeps the authoritative join acknowledgement when a roster refresh fails', async () => {
+    mockedGetStudyRoom.mockResolvedValue(makeRoom());
+    mockedListMembers.mockResolvedValueOnce([]);
+    mockedJoinRoom.mockResolvedValue(makeMember());
+
+    const { result } = renderHook(() => useStudyRoom('room-1'));
+    await waitFor(() => expect(result.current.loading).toBe(false));
+    await waitFor(() => expect(mockedListMembers).toHaveBeenCalledTimes(1));
+
+    mockedListMembers.mockRejectedValue(new Error('temporary network outage'));
+    await act(async () => { await result.current.join(); });
+
+    await waitFor(() => expect(result.current.membersError).not.toBeNull());
+    expect(result.current.isCurrentUserMember).toBe(true);
+    expect(result.current.currentMember?.user_id).toBe(CURRENT_USER_ID);
+  });
+
+  it('discards an old pre-join roster response that arrives after a successful join', async () => {
+    let resolveOld!: (members: StudyRoomMember[]) => void;
+    mockedGetStudyRoom.mockResolvedValue(makeRoom());
+    mockedListMembers
+      .mockImplementationOnce(() => new Promise<StudyRoomMember[]>((resolve) => { resolveOld = resolve; }))
+      .mockResolvedValueOnce([makeMember()]);
+    mockedJoinRoom.mockResolvedValue(makeMember());
+
+    const { result } = renderHook(() => useStudyRoom('room-1'));
+    await waitFor(() => expect(mockedListMembers).toHaveBeenCalledTimes(1));
+
+    await act(async () => { await result.current.join(); });
+    await waitFor(() => expect(result.current.isCurrentUserMember).toBe(true));
+
+    await act(async () => { resolveOld([]); });
+    expect(result.current.isCurrentUserMember).toBe(true);
+  });
+
+  it('refreshes room metadata without toggling the full-page loading state', async () => {
+    mockedGetStudyRoom.mockResolvedValueOnce(makeRoom()).mockResolvedValueOnce(makeRoom({ name: 'Updated Room' }));
+    mockedListMembers.mockResolvedValue([makeMember()]);
+
+    const { result } = renderHook(() => useStudyRoom('room-1'));
+    await waitFor(() => expect(result.current.loading).toBe(false));
+
+    await act(async () => { await result.current.refetchRoom(); });
+    expect(result.current.loading).toBe(false);
+    expect(result.current.room?.name).toBe('Updated Room');
+  });
+});
+
+
+describe('useStudyRoom -- permissions and in-flight responses', () => {
+  it('revokes local membership on a definitive 403 instead of treating it as transient', async () => {
+    mockedGetStudyRoom.mockResolvedValue(makeRoom());
+    mockedListMembers.mockResolvedValueOnce([makeMember()]);
+
+    const { result } = renderHook(() => useStudyRoom('room-1'));
+    await waitFor(() => expect(result.current.isCurrentUserMember).toBe(true));
+
+    mockedListMembers.mockRejectedValueOnce(new ApiError(403, 'Forbidden'));
+    await act(async () => { await result.current.refetchMembers(); });
+    expect(result.current.isCurrentUserMember).toBe(false);
+    expect(result.current.membersError?.status).toBe(403);
+  });
+
+  it('ignores a moderation response from a membership that was revoked meanwhile', async () => {
+    let resolveHistory!: (actions: { id: string; room_id: string; moderator_id: string; target_user_id: string; action: 'raise_hand'; reason: null; created_at: string }[]) => void;
+    mockedGetStudyRoom.mockResolvedValue(makeRoom());
+    mockedListMembers.mockResolvedValueOnce([makeMember()]).mockResolvedValueOnce([]);
+    mockedListModeration.mockImplementationOnce(() => new Promise((resolve) => { resolveHistory = resolve; }));
+
+    const { result } = renderHook(() => useStudyRoom('room-1'));
+    await waitFor(() => expect(result.current.isCurrentUserMember).toBe(true));
+    await waitFor(() => expect(mockedListModeration).toHaveBeenCalledTimes(1));
+
+    await act(async () => { await result.current.refetchMembers(); });
+    expect(result.current.isCurrentUserMember).toBe(false);
+    await act(async () => {
+      resolveHistory([{ id: 'old-1', room_id: 'room-1', moderator_id: 'user-2', target_user_id: CURRENT_USER_ID, action: 'raise_hand', reason: null, created_at: '2026-11-18T00:00:00Z' }]);
+    });
+    expect(result.current.handRaisedUserIds.size).toBe(0);
   });
 });

@@ -33,7 +33,7 @@ describe('useMeetingToken', () => {
     const { result } = renderHook(() => useMeetingToken('room-1', true));
 
     await waitFor(() => expect(result.current.status).toBe('loading'));
-    expect(mockedCreateMeetingToken).toHaveBeenCalledWith('room-1');
+    expect(mockedCreateMeetingToken).toHaveBeenCalledWith('room-1', expect.any(AbortSignal));
 
     act(() => resolveToken({ server_url: 'wss://livekit.example.com', participant_token: 'tok-123' }));
 
@@ -90,5 +90,41 @@ describe('useMeetingToken', () => {
 
     expect(result.current.data?.participant_token).toBe('second');
     expect(mockedCreateMeetingToken).toHaveBeenCalledTimes(2);
+  });
+});
+
+describe('useMeetingToken -- stalled or revoked requests', () => {
+  it('aborts a stalled token request and shows a retryable timeout instead of indefinite loading', async () => {
+    vi.useFakeTimers();
+    try {
+      mockedCreateMeetingToken.mockImplementation((_roomId, signal) => new Promise((_resolve, reject) => {
+        signal?.addEventListener('abort', () => reject(new DOMException('Aborted', 'AbortError')), { once: true });
+      }));
+      const { result } = renderHook(() => useMeetingToken('room-1', true));
+      expect(result.current.status).toBe('loading');
+
+      await act(async () => { await vi.advanceTimersByTimeAsync(15001); });
+      expect(result.current.status).toBe('error');
+      expect(result.current.error?.message).toContain('quá thời gian chờ');
+      expect(result.current.data).toBeNull();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('ignores an in-flight token response after participation is disabled', async () => {
+    let resolveToken!: (value: MeetingTokenResponse) => void;
+    mockedCreateMeetingToken.mockImplementation(() => new Promise<MeetingTokenResponse>((resolve) => {
+      resolveToken = resolve;
+    }));
+    const { result, rerender } = renderHook(({ enabled }) => useMeetingToken('room-1', enabled), {
+      initialProps: { enabled: true },
+    });
+    await waitFor(() => expect(result.current.status).toBe('loading'));
+    rerender({ enabled: false });
+
+    await act(async () => resolveToken({ server_url: 'wss://x', participant_token: 'late' }));
+    expect(result.current.status).toBe('idle');
+    expect(result.current.data).toBeNull();
   });
 });

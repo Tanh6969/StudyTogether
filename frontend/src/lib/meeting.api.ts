@@ -8,6 +8,6 @@ import type { MeetingTokenResponse } from './meeting.types';
  * The browser only ever receives the LiveKit participant token this returns, never the
  * server's LiveKit API key/secret.
  */
-export function createMeetingToken(roomId: string): Promise<MeetingTokenResponse> {
-  return apiClient.post<MeetingTokenResponse>(`/study-rooms/${roomId}/meeting/token`);
+export function createMeetingToken(roomId: string, signal?: AbortSignal): Promise<MeetingTokenResponse> {
+  return apiClient.post<MeetingTokenResponse>(`/study-rooms/${roomId}/meeting/token`, undefined, { signal });
 }
