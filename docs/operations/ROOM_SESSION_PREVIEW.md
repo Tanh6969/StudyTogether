@@ -80,6 +80,46 @@ Do not mistake a signed token for a successful real camera/microphone connection
 - Room A-to-B navigation and leaving with an unconfirmed join generation now
   have explicit regression tests. These are separate from real LiveKit QA.
 
+## Multi-tab and multi-device media ownership (2026-11-18 QA)
+
+The existing StudyTogether frontend/backend preview now uses an explicit
+**single-active-media-owner** protocol. It is intentionally distinct from
+room membership:
+
+1. User presses Join in the prejoin lobby; the frontend creates an in-memory
+   UUID for that tab and `POST /study-rooms/{id}/meeting/claim`.
+2. Backend authorizes the user against the existing real Supabase room/group
+   database, then commits an atomic UPSERT to the **private local PostgreSQL
+   coordinator**. A new claim replaces the old owner.
+3. `POST /meeting/token` only refreshes if the same media session still
+   owns that (room,user); old tabs receive 409, never a silent takeover.
+4. LiveKit `DUPLICATE_IDENTITY` and the side-effect-free
+   `GET /meeting/owner` check (connect/focus/5-second poll) identify transfers.
+   The old tab exits to a terminal notice, with no Connect Again loop.
+5. Stale tab unload sends its session ID. The backend rejects it when the
+   media owner changed, so old tabs cannot leave the replacement's membership.
+
+**Resource split:** the preview's `DATABASE_URL` remains Supabase production,
+its `MEETING_SESSION_DATABASE_URL` points to local 127.0.0.1:6544. The
+private migration `backend/db/migrations/011_meeting_media_session_owner.sql`
+was applied only to the local coordinator. Neither the Supabase production
+schema nor production backend has been modified. The preview application
+refuses startup if a strict shared-production coordinator points outside the
+known loopback port.
+
+**QA verification:** backend 731 passed, 9 skipped; frontend 320 passed
+across 36 test files; focused media tests 63 passed. A full manual two-tab/
+two-device LiveKit session takeover test with real user credentials is still
+required and is the PM's acceptance gate. On an existing browser, reload
+both tabs with the new preview assets before testing, otherwise an old
+JavaScript bundle would still call the legacy token API and be rejected.
+
+**Rollout caveats:** no migrations on production Supabase before PM approval.
+The app-level check does not revoke already issued LiveKit JWTs; a future
+production hardening pass can add webhook-based eviction. The local coordinator
+is durable across preview-worker restarts but is NOT multi-host shared storage.
+Use a shared PostgreSQL coordinator for any production horizontal scaling.
+
 ## Shared production resources: administrator one-time setup
 
 The user chose **existing production Supabase and LiveKit**, not a new project.

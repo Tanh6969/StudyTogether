@@ -3,12 +3,14 @@ import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { useEffect } from 'react';
 import type { LiveKitRoomProps } from '@livekit/components-react';
 import { ApiError } from '../../../lib/apiClient';
-import { createMeetingToken } from '../../../lib/meeting.api';
+import { checkMeetingSession, createMeetingToken } from '../../../lib/meeting.api';
+import { DisconnectReason } from 'livekit-client';
 import { MeetingProvider } from './MeetingProvider';
 import { useMeetingContext } from './MeetingContext';
 
 vi.mock('../../../lib/meeting.api', () => ({
   createMeetingToken: vi.fn(),
+  checkMeetingSession: vi.fn(),
 }));
 
 let lastLiveKitRoomProps: LiveKitRoomProps | null = null;
@@ -35,6 +37,7 @@ vi.mock('@livekit/components-react', () => ({
 }));
 
 const mockedCreateMeetingToken = vi.mocked(createMeetingToken);
+const mockedCheckMeetingSession = vi.mocked(checkMeetingSession);
 
 function StatusProbe() {
   const { status, connected, error, liveKitError } = useMeetingContext();
@@ -51,6 +54,7 @@ function StatusProbe() {
 describe('MeetingProvider', () => {
   beforeEach(() => {
     mockedCreateMeetingToken.mockReset();
+    mockedCheckMeetingSession.mockReset().mockResolvedValue({ active: true });
     lastLiveKitRoomProps = null;
     fakeParticipants = [];
   });
@@ -60,7 +64,7 @@ describe('MeetingProvider', () => {
     fakeParticipants = [{ identity: 'real-call-user', name: 'Online' }];
     const onParticipantsChange = vi.fn();
     const view = (enabled: boolean) => (
-      <MeetingProvider roomId="room-1" enabled={enabled} onParticipantsChange={onParticipantsChange}>
+      <MeetingProvider roomId="room-1" clientSessionId="client-1" enabled={enabled} onParticipantsChange={onParticipantsChange}>
         <StatusProbe />
       </MeetingProvider>
     );
@@ -79,7 +83,7 @@ describe('MeetingProvider', () => {
     mockedCreateMeetingToken.mockReturnValue(new Promise(() => {}));
 
     render(
-      <MeetingProvider roomId="room-1" enabled>
+      <MeetingProvider roomId="room-1" clientSessionId="client-1" enabled>
         <StatusProbe />
       </MeetingProvider>
     );
@@ -93,7 +97,7 @@ describe('MeetingProvider', () => {
     mockedCreateMeetingToken.mockResolvedValue({ server_url: 'wss://livekit.example.com', participant_token: 'tok-123' });
 
     render(
-      <MeetingProvider roomId="room-1" enabled>
+      <MeetingProvider roomId="room-1" clientSessionId="client-1" enabled>
         <StatusProbe />
       </MeetingProvider>
     );
@@ -107,7 +111,7 @@ describe('MeetingProvider', () => {
     mockedCreateMeetingToken.mockRejectedValue(new ApiError(403, 'Forbidden'));
 
     render(
-      <MeetingProvider roomId="room-1" enabled>
+      <MeetingProvider roomId="room-1" clientSessionId="client-1" enabled>
         <StatusProbe />
       </MeetingProvider>
     );
@@ -121,14 +125,14 @@ describe('MeetingProvider', () => {
     mockedCreateMeetingToken.mockResolvedValue({ server_url: 'wss://x', participant_token: 'tok' });
 
     const { rerender } = render(
-      <MeetingProvider roomId="room-1" enabled>
+      <MeetingProvider roomId="room-1" clientSessionId="client-1" enabled>
         <StatusProbe />
       </MeetingProvider>
     );
     await waitFor(() => expect(screen.getByTestId('connected').textContent).toBe('true'));
 
     rerender(
-      <MeetingProvider roomId="room-1" enabled={false}>
+      <MeetingProvider roomId="room-1" clientSessionId="client-1" enabled={false}>
         <StatusProbe />
       </MeetingProvider>
     );
@@ -142,7 +146,7 @@ describe('MeetingProvider', () => {
     const onSessionEnded = vi.fn();
 
     const { rerender } = render(
-      <MeetingProvider roomId="room-1" enabled onSessionEnded={onSessionEnded}>
+      <MeetingProvider roomId="room-1" clientSessionId="client-1" enabled onSessionEnded={onSessionEnded}>
         <StatusProbe />
       </MeetingProvider>
     );
@@ -152,7 +156,7 @@ describe('MeetingProvider', () => {
     // The mocked LiveKitRoom fires onDisconnected during unmount, but this was a
     // deliberate authorization/participation change rather than network failure.
     rerender(
-      <MeetingProvider roomId="room-1" enabled={false} onSessionEnded={onSessionEnded}>
+      <MeetingProvider roomId="room-1" clientSessionId="client-1" enabled={false} onSessionEnded={onSessionEnded}>
         <StatusProbe />
       </MeetingProvider>
     );
@@ -167,7 +171,7 @@ describe('MeetingProvider -- recoverable disconnect', () => {
     mockedCreateMeetingToken.mockResolvedValue({ server_url: 'wss://x', participant_token: 'tok' });
     const onSessionEnded = vi.fn();
     render(
-      <MeetingProvider roomId="room-1" enabled onSessionEnded={onSessionEnded}>
+      <MeetingProvider roomId="room-1" clientSessionId="client-1" enabled onSessionEnded={onSessionEnded}>
         <StatusProbe />
       </MeetingProvider>
     );
@@ -191,7 +195,7 @@ describe('MeetingProvider -- connection attempt isolation', () => {
       .mockResolvedValueOnce({ server_url: 'wss://x', participant_token: 'new-token' });
     const onSessionEnded = vi.fn();
     render(
-      <MeetingProvider roomId="room-1" enabled onSessionEnded={onSessionEnded}>
+      <MeetingProvider roomId="room-1" clientSessionId="client-1" enabled onSessionEnded={onSessionEnded}>
         <StatusProbe />
         <RetryConnectionProbe />
       </MeetingProvider>
@@ -206,5 +210,56 @@ describe('MeetingProvider -- connection attempt isolation', () => {
     await act(async () => { original?.onDisconnected?.(); });
     expect(onSessionEnded).not.toHaveBeenCalled();
     expect(screen.getByTestId('livekit-error').textContent).toBe('');
+  });
+});
+
+
+describe('MeetingProvider -- durable takeover fencing', () => {
+  it('terminates a superseded connection without exposing retry', async () => {
+    mockedCreateMeetingToken.mockResolvedValue({ server_url: 'wss://x', participant_token: 'tok' });
+    mockedCheckMeetingSession.mockResolvedValue({ active: true });
+    const transferred = vi.fn();
+    const onSessionEnded = vi.fn();
+    render(
+      <MeetingProvider roomId="room-1" clientSessionId="client-1" enabled
+        onTransferred={transferred} onSessionEnded={onSessionEnded}>
+        <StatusProbe />
+      </MeetingProvider>
+    );
+    await waitFor(() => expect(screen.getByTestId('connected').textContent).toBe('true'));
+    mockedCheckMeetingSession.mockResolvedValue({ active: false });
+    await act(async () => {
+      lastLiveKitRoomProps?.onDisconnected?.(DisconnectReason.DUPLICATE_IDENTITY);
+    });
+    await waitFor(() => expect(transferred).toHaveBeenCalledTimes(1));
+    expect(onSessionEnded).not.toHaveBeenCalled();
+    expect(screen.queryByTestId('livekit-room')).not.toBeInTheDocument();
+  });
+
+  it('does not mistake a temporary network failure for takeover', async () => {
+    mockedCreateMeetingToken.mockResolvedValue({ server_url: 'wss://x', participant_token: 'tok' });
+    mockedCheckMeetingSession.mockRejectedValue(new Error('Temporary network outage'));
+    const transferred = vi.fn();
+    render(
+      <MeetingProvider roomId="room-1" clientSessionId="client-1" enabled onTransferred={transferred}>
+        <StatusProbe />
+      </MeetingProvider>
+    );
+    await waitFor(() => expect(screen.getByTestId('connected').textContent).toBe('true'));
+    await act(async () => { lastLiveKitRoomProps?.onDisconnected?.(); });
+    expect(transferred).not.toHaveBeenCalled();
+    expect(screen.getByTestId('livekit-error').textContent).toContain('Kết nối video đã bị ngắt');
+  });
+
+  it('a stale token response (HTTP 409) transfers the UI rather than offering another retry', async () => {
+    mockedCreateMeetingToken.mockRejectedValue(new ApiError(409, 'Stale session'));
+    const transferred = vi.fn();
+    render(
+      <MeetingProvider roomId="room-1" clientSessionId="client-1" enabled onTransferred={transferred}>
+        <StatusProbe />
+      </MeetingProvider>
+    );
+    await waitFor(() => expect(transferred).toHaveBeenCalledTimes(1));
+    expect(screen.queryByTestId('livekit-room')).not.toBeInTheDocument();
   });
 });

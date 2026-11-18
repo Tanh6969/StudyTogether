@@ -21,7 +21,7 @@ vi.mock('@livekit/components-react', () => ({
 }));
 
 function renderControls(connected: boolean, disabled = false) {
-  const value: MeetingContextValue = { status: connected ? 'ready' : 'loading', error: null, retry: vi.fn(), connected, liveKitError: null };
+  const value: MeetingContextValue = { status: connected ? 'ready' : 'loading', error: null, retry: vi.fn(), connected, liveKitError: null, transferred: false };
   return render(
     <MeetingContext.Provider value={value}>
       <MeetingControls disabled={disabled} />

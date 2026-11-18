@@ -47,6 +47,12 @@ def validate_preview_target() -> None:
         raise RuntimeError("Missing real LiveKit configuration")
     if os.getenv("LIVEKIT_API_KEY") == "previewkey" or os.getenv("LIVEKIT_URL", "").endswith(".invalid"):
         raise RuntimeError("Placeholder LiveKit config cannot be used in shared mode")
+    # Media-session ownership is stored on private local PostgreSQL in review.
+    # Never apply migration 011 or write the coordinator to Supabase production.
+    if os.getenv("MEETING_SESSION_REQUIRED", "").lower() in ("true", "1", "yes"):
+        coordinator_url = urlsplit(os.getenv("MEETING_SESSION_DATABASE_URL", ""))
+        if coordinator_url.hostname != "127.0.0.1" or coordinator_url.port != 6544:
+            raise RuntimeError("Shared-production media coordinator must use private loopback PostgreSQL")
 
 
 validate_preview_target()

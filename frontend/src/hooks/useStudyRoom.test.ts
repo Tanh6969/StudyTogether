@@ -4,6 +4,7 @@ import { useAuth } from './useAuth';
 import { useStudyRoomMembersRealtime } from './useStudyRoomMembersRealtime';
 import { listGroupMembers } from '../lib/group.api';
 import { ApiError } from '../lib/apiClient';
+import { setOwnedMediaSession, clearOwnedMediaSession } from '../lib/meetingOwnerState';
 import {
   getStudyRoom,
   getStudyRoomSession,
@@ -104,6 +105,7 @@ beforeEach(() => {
   mockedListMembers.mockReset().mockResolvedValue([]);
   mockedListModeration.mockReset().mockResolvedValue([]);
   mockedLeaveOnUnload.mockReset();
+  clearOwnedMediaSession('room-1', 'media-1');
 });
 
 describe('useStudyRoom -- leave-on-unload cleanup', () => {
@@ -115,9 +117,21 @@ describe('useStudyRoom -- leave-on-unload cleanup', () => {
     const { result } = renderHook(() => useStudyRoom('room-1'));
     await waitFor(() => expect(result.current.isCurrentUserMember).toBe(true));
 
+    setOwnedMediaSession('room-1', 'media-1');
     window.dispatchEvent(new Event('pagehide'));
 
-    expect(mockedLeaveOnUnload).toHaveBeenCalledWith('room-1', '2026-08-19T00:00:00Z');
+    expect(mockedLeaveOnUnload).toHaveBeenCalledWith('room-1', '2026-08-19T00:00:00Z', 'media-1');
+  });
+
+  it('does not let a superseded tab revoke the replacement session on pagehide', async () => {
+    mockedGetStudyRoom.mockResolvedValue(makeRoom());
+    mockedGetSession.mockResolvedValue({ room_id: 'room-1', room_status: 'active', member: makeMember(), can_connect: true });
+    mockedListMembers.mockResolvedValue([makeMember()]);
+    const { result } = renderHook(() => useStudyRoom('room-1'));
+    await waitFor(() => expect(result.current.isCurrentUserMember).toBe(true));
+    // This tab has a valid DB membership, but no media claim (superseded).
+    window.dispatchEvent(new Event('pagehide'));
+    expect(mockedLeaveOnUnload).not.toHaveBeenCalled();
   });
 
   it('does not fire a beacon leave on pagehide when the caller has no active membership', async () => {
@@ -140,9 +154,10 @@ describe('useStudyRoom -- leave-on-unload cleanup', () => {
     const { result, unmount } = renderHook(() => useStudyRoom('room-1'));
     await waitFor(() => expect(result.current.isCurrentUserMember).toBe(true));
 
+    setOwnedMediaSession('room-1', 'media-1');
     unmount();
 
-    expect(mockedLeaveOnUnload).toHaveBeenCalledWith('room-1', '2026-08-19T00:00:00Z');
+    expect(mockedLeaveOnUnload).toHaveBeenCalledWith('room-1', '2026-08-19T00:00:00Z', 'media-1');
   });
 
   it('does not fire a leave on unmount when the caller was never an active member', async () => {
@@ -317,7 +332,9 @@ describe('useStudyRoom -- cross-room identity and generation isolation', () => {
     expect(result.current.room?.id).not.toBe('room-1');
     expect(result.current.members).toEqual([]);
     expect(mockedListModeration).not.toHaveBeenCalledWith('room-2');
-    expect(mockedLeaveOnUnload).toHaveBeenCalledWith('room-1', makeMember().joined_at);
+    // Without a confirmed media owner this old view must never send a leave
+    // that could invalidate a newer tab's membership.
+    expect(mockedLeaveOnUnload).not.toHaveBeenCalled();
   });
 
   it('cannot call unconditional leave before our own join generation is confirmed', async () => {
@@ -340,7 +357,7 @@ describe('useStudyRoom -- cross-room identity and generation isolation', () => {
     const { result } = renderHook(() => useStudyRoom('room-1'));
     await waitFor(() => expect(result.current.isCurrentUserMember).toBe(true));
     await act(async () => { await result.current.leave(); });
-    expect(mockedLeaveRoom).toHaveBeenCalledWith('room-1', makeMember().joined_at);
+    expect(mockedLeaveRoom).toHaveBeenCalledWith('room-1', makeMember().joined_at, null);
     expect(result.current.isCurrentUserMember).toBe(false);
   });
 });

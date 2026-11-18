@@ -43,7 +43,7 @@ const members: StudyRoomMember[] = [
 ];
 
 function renderGrid(contextValue: Partial<MeetingContextValue>, unavailableReason?: string) {
-  const value: MeetingContextValue = { status: 'idle', error: null, retry: vi.fn(), connected: false, liveKitError: null, ...contextValue };
+  const value: MeetingContextValue = { status: 'idle', error: null, retry: vi.fn(), connected: false, liveKitError: null, transferred: false, ...contextValue };
   return render(
     <MeetingContext.Provider value={value}>
       <MeetingVideoGrid members={members} currentUserId="user-1" currentUserName="Minh Anh" unavailableReason={unavailableReason} />
@@ -56,6 +56,12 @@ describe('MeetingVideoGrid', () => {
     mockParticipants.length = 0;
     mockCameraTrackRefs.length = 0;
     mockScreenShareTrackRefs.length = 0;
+  });
+
+  it('shows a terminal transferred notice with no retry control', () => {
+    renderGrid({ transferred: true, status: 'ready' });
+    expect(screen.getByText('Cuộc gọi đã chuyển sang tab hoặc thiết bị khác')).toBeInTheDocument();
+    expect(screen.queryByText('Kết nối lại')).not.toBeInTheDocument();
   });
 
   it('shows the ended-room message without waiting on a token request', () => {
