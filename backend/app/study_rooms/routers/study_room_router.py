@@ -29,7 +29,10 @@ from app.core.permissions import (
 from app.db.session import get_db_session
 from app.db.enums import ModerationAction, StudyRoomMemberRole
 from app.groups.services.group_service import GroupsService
-from app.meetings.dto.meeting_dto import MeetingTokenResponse
+from app.meetings.dto.meeting_dto import (
+    MeetingTokenRequest, MeetingTokenResponse, MeetingSessionClaim, MeetingSessionStatus,
+)
+from app.meetings.services.meeting_session_service import meeting_session_service
 from app.meetings.services.livekit_service import LiveKitService
 from app.profiles.services.profile_service import ProfilesService
 from app.study_rooms.dto.study_room_dto import (
@@ -391,6 +394,7 @@ async def leave_room(
     session: AsyncSession = Depends(get_db_session),
     expected_joined_at: datetime | None = None,
     disconnect_livekit: bool = False,
+    client_session_id: uuid.UUID | None = None,
 ):
     """Leave current membership, with optional generation-safe explicit leave.
 
@@ -408,6 +412,17 @@ async def leave_room(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Membership not found"
         )
+    if settings.meeting_session_required and client_session_id is None:
+        raise HTTPException(
+            status.HTTP_409_CONFLICT, "A media session identifier is required to leave this room"
+        )
+    # A stale tab closing/reloading must not revoke another tab's newly
+    # claimed media session. Older clients remain supported on the legacy API
+    # until strict session rollout is enabled for all deployed clients.
+    if client_session_id is not None and not await meeting_session_service.is_owner(
+        room_id, current_user.id, client_session_id
+    ):
+        return StudyRoomMemberResponse.model_validate(member)
     try:
         if expected_joined_at is not None:
             # Atomic compare-and-leave: prevents a new join that commits after the
@@ -689,9 +704,44 @@ async def list_moderation(
 # --- Meeting (LiveKit) ---
 
 
+@router.post("/{room_id}/meeting/claim", response_model=MeetingSessionStatus)
+async def claim_meeting_session(
+    room_id: uuid.UUID,
+    request: MeetingSessionClaim,
+    current_user: CurrentUser = Depends(get_current_user),
+    session: AsyncSession = Depends(get_db_session),
+):
+    """Only explicit prejoin action can replace an existing media session.
+
+    Membership and authorization are read from the regular study-room DB.
+    State is saved in the coordinator database, NOT study_room_members.
+    """
+    room = await _get_active_room_or_404(session, room_id)
+    if not await can_join_room_meeting(session, room, current_user.id):
+        raise HTTPException(status.HTTP_403_FORBIDDEN, "You do not have access to this study room")
+    await meeting_session_service.claim(room_id, current_user.id, request.client_session_id)
+    return MeetingSessionStatus(active=True)
+
+
+@router.get("/{room_id}/meeting/owner", response_model=MeetingSessionStatus)
+async def check_meeting_owner(
+    room_id: uuid.UUID,
+    client_session_id: uuid.UUID,
+    current_user: CurrentUser = Depends(get_current_user),
+    session: AsyncSession = Depends(get_db_session),
+):
+    """Side-effect-free ownership check for cross-device takeover detection."""
+    room = await _get_active_room_or_404(session, room_id)
+    if not await can_join_room_meeting(session, room, current_user.id):
+        raise HTTPException(status.HTTP_403_FORBIDDEN, "You do not have access to this study room")
+    owned = await meeting_session_service.is_owner(room_id, current_user.id, client_session_id)
+    return MeetingSessionStatus(active=owned)
+
+
 @router.post("/{room_id}/meeting/token", response_model=MeetingTokenResponse)
 async def create_meeting_token(
     room_id: uuid.UUID,
+    request: MeetingTokenRequest | None = None,
     current_user: CurrentUser = Depends(get_current_user),
     session: AsyncSession = Depends(get_db_session),
 ):
@@ -707,6 +757,19 @@ async def create_meeting_token(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="You do not have access to this study room"
         )
+
+    if request is None:
+        if settings.meeting_session_required:
+            raise HTTPException(status.HTTP_400_BAD_REQUEST, "Media session ID is required")
+    else:
+        if not await meeting_session_service.is_owner(
+            room_id, current_user.id, request.client_session_id
+        ):
+            # Crucially a refresh never claims ownership. The older tab cannot
+            # reacquire a LiveKit identity just by pressing Retry.
+            raise HTTPException(
+                status.HTTP_409_CONFLICT, "Media session was transferred to another tab or device"
+            )
 
     # Canonical display-name fallback hierarchy (display_name -> username -> None, never a
     # raw id/email) -- LiveKit's own SDK-level fallback (bare `identity`, a UUID) only

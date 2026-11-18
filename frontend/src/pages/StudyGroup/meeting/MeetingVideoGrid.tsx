@@ -47,7 +47,15 @@ interface MeetingVideoGridProps {
 }
 
 export function MeetingVideoGrid({ members, currentUserId, currentUserName, currentUserAvatarUrl, unavailableReason, onRetryMembership }: MeetingVideoGridProps) {
-  const { status, error, retry, connected, liveKitError } = useMeetingContext();
+  const { status, error, retry, connected, liveKitError, transferred } = useMeetingContext();
+
+  if (transferred) {
+    return <MeetingStatusMessage
+      icon={<AlertTriangle size={32} color="#FBBF24" />}
+      title="Cuộc gọi đã chuyển sang tab hoặc thiết bị khác"
+      subtitle="Phiên này đã kết thúc. Bạn có thể quay về nhóm và chủ động tham gia lại nếu muốn chuyển cuộc gọi về đây."
+    />;
+  }
 
   if (unavailableReason) {
     return <MeetingStatusMessage icon={<VideoOff size={32} />} title={unavailableReason} />;

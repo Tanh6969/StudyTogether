@@ -15,12 +15,20 @@ authorization system or replace LiveKit's own connection management.
    client step. Do NOT make joining depend on a separate roster GET succeeding.
    Concurrent first joins by the same account are idempotent successes: the
    losing unique-constraint INSERT reads back the winner's active membership.
-3. **In-room**: Backend token issuance (`POST /meeting/token`) performs its own
-   authorization. Protected moderation history, chat and in-room activities are
-   enabled only after room membership has been confirmed.
-4. **Connected call**: LiveKit maintains its own media connection and participant
-   roster, distinct from persisted study-room membership.
-5. **Leave/revocation/end**: The backend is authoritative. A successful leave
+3. **Explicit media ownership**: The prejoin action allocates a tab-local
+   random UUID and calls `POST /study-rooms/{id}/meeting/claim`, which atomically
+   replaces the previous media owner for that **(room,user)** pair in a durable
+   private PostgreSQL coordinator. Merely rendering, reconnecting or refreshing
+   the page must never claim or replace another owner.
+4. **In-room**: `POST /meeting/token` performs its own authorization AND
+   checks the existing media owner's session ID before minting a LiveKit JWT.
+   A stale token refresh returns 409 and does NOT change ownership.
+   Protected moderation history, chat and room activities still depend on
+   separate room membership authorization.
+5. **Connected call**: LiveKit maintains media transport and its roster
+   independently from both persisted room membership and the new media
+   ownership claim. `GET /meeting/owner` is a read-only freshness check.
+6. **Leave/revocation/end**: The backend is authoritative. A successful leave
    locally marks membership inactive; subsequent backend reads reconcile state.
    A token 401/403/404 is surfaced as a terminal authorization/session error.
 
@@ -47,8 +55,11 @@ authorization system or replace LiveKit's own connection management.
 - A tab may only issue an explicit leave with a confirmed `joined_at` generation.
   Without that generation, leaving the UI is a no-op for backend membership;
   it must not evict an active session opened in another tab.
-- Route-change cleanup retains the old room's generation until that room's
-  effect cleanup has run, then may conditionally leave the old membership.
+- Route-change/pagehide cleanup retains the old room generation but may
+  conditionally leave only when the tab has its own confirmed media claim.
+  It sends `client_session_id`: the backend rejects cleanup from an owner
+  superseded by another tab, preventing the old tab from revoking new media.
+  An old tab with DB membership but no media claim must NOT fire unload leave.
 - A background room metadata refresh must not toggle the page-wide initial
   loading state, because that unmounts and recreates the LiveKit provider.
 - Token request status is NOT media connection status:
@@ -65,11 +76,30 @@ authorization system or replace LiveKit's own connection management.
 - Backend conversation reads and writes use the SAME `can_access_conversation`
   permission: active group membership alone is NOT authorization for a private channel.
 - Backend must reject unsigned frontend mock identity tokens in every environment.
-- After LiveKit exhausts transient reconnection and disconnects, retain the
-  room UI, refresh metadata non-disruptively, surface the disconnect and allow
-  an explicit fresh-token retry. Never reload the entire page as recovery.
-  A teardown callback from a previous LiveKit token must not be treated as a
-  disconnect of the current attempt; explicit leave/disable is not a network error.
+- LiveKit `DUPLICATE_IDENTITY` is a **signal**, not the sole authority: check
+  the backend media owner. If the owner has changed, the old tab unmounts
+  LiveKit, exits the call layout, and displays a terminal transferred notice,
+  with NO automatic retry. To reclaim, the user must return to the room list,
+  open prejoin again and explicitly click Join.
+- Media owner is also checked read-only at connect time, on window focus
+  and every five seconds, so cross-device takeover works even if LiveKit
+  emits an unexpected reason. Network failures do not imply takeover.
+- When a disconnect is not a takeover, keep normal LiveKit network recovery,
+  refresh metadata without unmounting the room, and permit a retry with
+  the SAME `client_session_id`. The backend rejects this if ownership changed
+  while the user was offline. A teardown callback from an old token cannot
+  invalidate the current connection.
+- Durable owner state uses a private PostgreSQL table and atomic UPSERT,
+  not memory/localStorage or a Supabase Realtime stream. Its storage must be
+  shared between backend workers in any eventual multi-instance deployment.
+- Media owner is NOT membership: changing the video tab must not revoke
+  chat, message history or stored room permissions by default.
+- **LiveKit caveat:** LiveKit JWTs remain valid until expiry; a malicious
+  client manually reusing an old previously issued JWT can attempt to connect
+  even after backend token refresh is fenced. Normal browser UI and API cannot
+  silently reclaim. A stronger server-level guarantee would require a
+  controlled LiveKit webhook/participant-eviction integration, tested before
+  production rollout. Never describe app-level fencing as JWT revocation.
 
 ## Regression contract
 
@@ -83,7 +113,22 @@ Relevant frontend tests:
 
 Backend token and permission tests remain authoritative. They must run before
 a release, followed by two-user testing with actual Supabase and LiveKit.
-No database schema changes are needed; the new backend API reads existing tables. Backend and frontend must deploy together after review.
+Migration `backend/db/migrations/011_meeting_media_session_owner.sql` adds a
+private `meeting_internal.media_session` table on the coordinator database.
+For the current preview it was applied **only on local PostgreSQL (127.0.0.1:6544)**,
+not the shared Supabase production DB; the preview uses
+`MEETING_SESSION_DATABASE_URL` and `MEETING_SESSION_REQUIRED=true`.
+Production rollout later requires choosing a durable shared coordinator,
+running migration 011 there through normal review/backup, and atomically
+shipping frontend + backend + strict-mode configuration. Do not enable strict
+mode on production backend without migrating the coordinator first.
+
+New tests: `backend/tests/test_meeting_media_owner.py` (authorization,
+stale token 409, strict legacy gate, stale unload), local-only PostgreSQL
+race test in `tests/integration/test_meeting_media_owner_local_pg.py`, and
+frontend takeover/no-retry/timeout/unload tests. Legacy media JWT identity
+remains the user UUID, preserving existing LiveKit moderation, roster and
+whiteboard mappings. Backend and frontend must deploy together after review.
 
 ## Operational notes
 

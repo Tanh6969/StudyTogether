@@ -16,6 +16,9 @@ function toMeetingTokenError(err: unknown): MeetingTokenError {
     if (err.status === 403) {
       return { status: 403, message: 'Bạn không có quyền tham gia cuộc gọi của phòng học này.' };
     }
+    if (err.status === 409) {
+      return { status: 409, message: 'Cuộc gọi đã được chuyển sang tab hoặc thiết bị khác.' };
+    }
     if (err.status === 404) {
       return { status: 404, message: 'Phòng học không tồn tại hoặc không còn khả dụng.' };
     }
@@ -31,7 +34,7 @@ export type MeetingTokenStatus = 'idle' | 'loading' | 'ready' | 'error';
  * The backend (`can_join_room_meeting`) is the sole authority on whether the current user may
  * join the meeting -- this hook only relays its response or rejection, never second-guesses it.
  */
-export function useMeetingToken(roomId: string | undefined, enabled: boolean) {
+export function useMeetingToken(roomId: string | undefined, enabled: boolean, clientSessionId: string) {
   const [status, setStatus] = useState<MeetingTokenStatus>('idle');
   const [data, setData] = useState<MeetingTokenResponse | null>(null);
   const [error, setError] = useState<MeetingTokenError | null>(null);
@@ -41,7 +44,7 @@ export function useMeetingToken(roomId: string | undefined, enabled: boolean) {
   const TOKEN_TIMEOUT_MS = 15000;
 
   const fetchToken = useCallback(async () => {
-    if (!roomId) return;
+    if (!roomId || !clientSessionId) return;
     activeRequestRef.current?.abort();
     const controller = new AbortController();
     activeRequestRef.current = controller;
@@ -54,7 +57,7 @@ export function useMeetingToken(roomId: string | undefined, enabled: boolean) {
     setStatus('loading');
     setError(null);
     try {
-      const token = await createMeetingToken(roomId, controller.signal);
+      const token = await createMeetingToken(roomId, clientSessionId, controller.signal);
       if (requestIdRef.current !== requestId) return;
       setData(token);
       setStatus('ready');
@@ -69,7 +72,7 @@ export function useMeetingToken(roomId: string | undefined, enabled: boolean) {
       clearTimeout(timeout);
       if (activeRequestRef.current === controller) activeRequestRef.current = null;
     }
-  }, [roomId]);
+  }, [roomId, clientSessionId]);
 
   useEffect(() => {
     if (!enabled) {

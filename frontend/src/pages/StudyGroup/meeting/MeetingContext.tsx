@@ -9,6 +9,8 @@ export interface MeetingContextValue {
   /** True once the LiveKit room connection itself is established (after a 'ready' token). */
   connected: boolean;
   liveKitError: Error | null;
+  /** True when another tab/device has explicitly taken the media session. */
+  transferred: boolean;
 }
 
 export const MeetingContext = createContext<MeetingContextValue>({
@@ -17,6 +19,7 @@ export const MeetingContext = createContext<MeetingContextValue>({
   retry: () => {},
   connected: false,
   liveKitError: null,
+  transferred: false,
 });
 
 export const useMeetingContext = () => useContext(MeetingContext);

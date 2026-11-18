@@ -3,6 +3,7 @@ import { useAuth } from './useAuth';
 import { useStudyRoomMembersRealtime } from './useStudyRoomMembersRealtime';
 import { useRoomModerationRealtime } from './useRoomModerationRealtime';
 import { ApiError } from '../lib/apiClient';
+import { getOwnedMediaSession } from '../lib/meetingOwnerState';
 import { listGroupMembers } from '../lib/group.api';
 import type { GroupMember } from '../lib/group.types';
 import { RoomRank, roomPermissionsFor, roomRankOf } from '../lib/roomPermissions';
@@ -309,7 +310,11 @@ export function useStudyRoom(roomId: string | undefined) {
     const leaveThisRoomIfActive = () => {
       const generation = activeJoinGenerationRef.current;
       if (generation?.roomId === roomId) {
-        leaveStudyRoomOnUnload(roomId, generation.joinedAt);
+        // Only the media-owning tab may submit an unload leave. The backend
+        // independently checks its current session ID, so a superseded tab
+        // cannot revoke the membership of its replacement.
+        const mediaSessionId = getOwnedMediaSession(roomId);
+        if (mediaSessionId) leaveStudyRoomOnUnload(roomId, generation.joinedAt, mediaSessionId);
       }
     };
     window.addEventListener('pagehide', leaveThisRoomIfActive);
@@ -363,7 +368,7 @@ export function useStudyRoom(roomId: string | undefined) {
       // Without our own confirmed generation, we do not own the right to
       // close the account's newer participation (possibly from another tab).
       if (!joinedAt) return;
-      const member = await leaveStudyRoom(roomId, joinedAt);
+      const member = await leaveStudyRoom(roomId, joinedAt, getOwnedMediaSession(roomId));
       sessionRequestRevision.current++;
       const superseded = !!joinedAt && member.joined_at !== joinedAt;
       setSessionMember(superseded ? null : member);

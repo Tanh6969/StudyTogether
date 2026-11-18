@@ -40,11 +40,11 @@ export function joinStudyRoom(roomId: string): Promise<StudyRoomMember> {
 }
 
 /** Backend derives the leaving member from the bearer token — this can only leave the caller's own membership. */
-export function leaveStudyRoom(roomId: string, joinedAt?: string): Promise<StudyRoomMember> {
+export function leaveStudyRoom(roomId: string, joinedAt?: string, clientSessionId?: string | null): Promise<StudyRoomMember> {
   // Explicit leave of a known join generation is atomic at the database boundary.
   // The server must never evict LiveKit when that generation was superseded.
   const generation = joinedAt
-    ? `?expected_joined_at=${encodeURIComponent(joinedAt)}&disconnect_livekit=true`
+    ? `?expected_joined_at=${encodeURIComponent(joinedAt)}&disconnect_livekit=true${clientSessionId ? `&client_session_id=${encodeURIComponent(clientSessionId)}` : ''}`
     : '';
   return apiClient.post<StudyRoomMember>(`/study-rooms/${roomId}/leave${generation}`);
 }
@@ -58,11 +58,11 @@ export function leaveStudyRoom(roomId: string, joinedAt?: string): Promise<Study
  * already left), and the caller can't observe the outcome anyway since the page is on its
  * way out — errors are deliberately swallowed.
  */
-export function leaveStudyRoomOnUnload(roomId: string, joinedAt: string): void {
+export function leaveStudyRoomOnUnload(roomId: string, joinedAt: string, clientSessionId: string): void {
   // Version the request by membership join time: a delayed unload must never revoke
   // a new login's session. The server also skips LiveKit eviction for this path.
   apiClient.post<StudyRoomMember>(
-    `/study-rooms/${roomId}/leave?expected_joined_at=${encodeURIComponent(joinedAt)}`,
+    `/study-rooms/${roomId}/leave?expected_joined_at=${encodeURIComponent(joinedAt)}&client_session_id=${encodeURIComponent(clientSessionId)}`,
     undefined,
     { keepalive: true },
   ).catch(() => {});
