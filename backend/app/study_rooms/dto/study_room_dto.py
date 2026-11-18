@@ -53,9 +53,9 @@ class StudyRoomResponse(BaseModel):
     conversation_id: uuid.UUID | None
     whiteboard_state: dict | None = None
     presentation_state: dict | None = None
-    # People currently inside the room (study_room_members with left_at NULL). Filled in by
-    # the list/detail endpoints; replaces the old waiting/active status as the "live" signal.
-    active_member_count: int = 0
+    # Number of LiveKit media participants, not durable study_room_members rows.
+    # None means the presence provider is unavailable; do not display fake "0".
+    active_member_count: int | None = None
 
 
 class StudyRoomMemberCreate(BaseModel):

@@ -374,6 +374,13 @@ export function StudyRoom() {
   }
 
   const inRoomCount = participants.length;
+  // Permission controls are for people connected to this call, never
+  // everyone whose saved study_room_members row lacks a left_at timestamp.
+  // Membership still supplies authorization and rank, LiveKit supplies presence.
+  const connectedRoomMembers = useMemo(() => {
+    const identities = new Set(callParticipants.map((person) => person.identity));
+    return members.filter((member) => !member.left_at && identities.has(member.user_id));
+  }, [members, callParticipants]);
 
   // Pre-join lobby: lets the user preview/toggle camera & mic (and pick a device) before the
   // LiveKit connection is made, instead of connecting with audio/video hardcoded on immediately.
@@ -595,7 +602,7 @@ export function StudyRoom() {
       {permissions.canModerate && (
         <WhiteboardPermissionsModal
           isOpen={isWhiteboardPermissionsOpen}
-          members={members}
+          members={connectedRoomMembers}
           currentUserId={currentUserId}
           myRank={myRank}
           rankOf={rankOf}

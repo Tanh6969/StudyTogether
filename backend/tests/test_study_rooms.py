@@ -52,9 +52,9 @@ def no_room_scoped_roles(monkeypatch):
 
 @pytest.fixture(autouse=True)
 def no_active_member_counts(monkeypatch):
-    """list/get now attach `active_member_count` via one grouped query; the fake session can't
-    answer it, so default it to "nobody inside"."""
-    monkeypatch.setattr(study_room_router.service, "active_member_counts", AsyncMock(return_value={}))
+    """Room-count badges use LiveKit, not historical membership rows.
+    No LiveKit traffic is allowed in unit tests."""
+    monkeypatch.setattr(study_room_router.livekit_service, "connected_counts", AsyncMock(return_value={}))
 
 
 @pytest.fixture
@@ -2679,7 +2679,7 @@ async def test_start_and_end_endpoints_are_gone(async_client, as_fake_user):
 async def test_list_rooms_reports_active_member_count(async_client, monkeypatch, as_fake_user):
     room = _make_room()
     monkeypatch.setattr(study_room_router.service, "list_by_group", AsyncMock(return_value=[room]))
-    monkeypatch.setattr(study_room_router.service, "active_member_counts", AsyncMock(return_value={room.id: 3}))
+    monkeypatch.setattr(study_room_router.livekit_service, "connected_counts", AsyncMock(return_value={room.id: 3}))
 
     response = await async_client.get("/study-rooms/", params={"group_id": str(room.group_id)}, headers=AUTH_HEADERS)
     assert response.status_code == 200
@@ -2824,3 +2824,91 @@ async def test_concurrent_first_join_returns_existing_member_after_unique_confli
     assert response.json()['user_id'] == str(as_fake_user.id)
     assert response.json()['left_at'] is None
     assert member_lookup.await_count == 2
+
+# --- Truthful media presence: persisted membership is never online status ---
+
+async def test_presence_excludes_stale_membership_and_includes_live_user(
+    async_client, monkeypatch, as_fake_user
+):
+    room = _make_room()
+    connected = _room_member(room.id, uuid.uuid4())
+    ghost = _room_member(room.id, uuid.uuid4())  # left_at is still NULL!
+    monkeypatch.setattr(study_room_router.service, "get_by_id", AsyncMock(return_value=room))
+    monkeypatch.setattr(study_room_router, "can_view_room", AsyncMock(return_value=True))
+    monkeypatch.setattr(study_room_router.service, "list_members",
+                        AsyncMock(return_value=[connected, ghost]))
+    monkeypatch.setattr(study_room_router.livekit_service, "connected_user_ids",
+                        AsyncMock(return_value={connected.user_id}))
+    response = await async_client.get(f"/study-rooms/{room.id}/presence", headers=AUTH_HEADERS)
+    assert response.status_code == 200, response.text
+    assert [item["user_id"] for item in response.json()] == [str(connected.user_id)]
+
+
+async def test_presence_empty_livekit_is_real_zero_even_if_db_has_ghosts(
+    async_client, monkeypatch, as_fake_user
+):
+    room = _make_room()
+    monkeypatch.setattr(study_room_router.service, "get_by_id", AsyncMock(return_value=room))
+    monkeypatch.setattr(study_room_router, "can_view_room", AsyncMock(return_value=True))
+    member_list = AsyncMock()
+    monkeypatch.setattr(study_room_router.service, "list_members", member_list)
+    monkeypatch.setattr(study_room_router.livekit_service, "connected_user_ids",
+                        AsyncMock(return_value=set()))
+    response = await async_client.get(f"/study-rooms/{room.id}/presence", headers=AUTH_HEADERS)
+    assert response.status_code == 200
+    assert response.json() == []
+    member_list.assert_not_awaited()
+
+
+async def test_presence_livekit_failure_does_not_fabricate_empty_room(
+    async_client, monkeypatch, as_fake_user
+):
+    room = _make_room()
+    monkeypatch.setattr(study_room_router.service, "get_by_id", AsyncMock(return_value=room))
+    monkeypatch.setattr(study_room_router, "can_view_room", AsyncMock(return_value=True))
+    monkeypatch.setattr(study_room_router.livekit_service, "connected_user_ids",
+                        AsyncMock(side_effect=RuntimeError("upstream offline")))
+    response = await async_client.get(f"/study-rooms/{room.id}/presence", headers=AUTH_HEADERS)
+    assert response.status_code == 503
+
+
+async def test_presence_private_room_does_not_leak_livekit_users(
+    async_client, monkeypatch, as_fake_user
+):
+    room = _make_room(is_private=True)
+    monkeypatch.setattr(study_room_router.service, "get_by_id", AsyncMock(return_value=room))
+    monkeypatch.setattr(study_room_router, "can_view_room", AsyncMock(return_value=False))
+    getter = AsyncMock()
+    monkeypatch.setattr(study_room_router.livekit_service, "connected_user_ids", getter)
+    response = await async_client.get(f"/study-rooms/{room.id}/presence", headers=AUTH_HEADERS)
+    assert response.status_code == 403
+    getter.assert_not_awaited()
+
+
+async def test_room_count_is_livekit_not_saved_memberships(
+    async_client, monkeypatch, as_fake_user
+):
+    room = _make_room()
+    monkeypatch.setattr(study_room_router.service, "list_by_group", AsyncMock(return_value=[room]))
+    stored_members = AsyncMock(return_value={room.id: 21})
+    monkeypatch.setattr(study_room_router.service, "active_member_counts", stored_members)
+    monkeypatch.setattr(study_room_router.livekit_service, "connected_counts",
+                        AsyncMock(return_value={room.id: 1}))
+    response = await async_client.get("/study-rooms/", params={"group_id": str(room.group_id)},
+                                      headers=AUTH_HEADERS)
+    assert response.status_code == 200
+    assert response.json()[0]["active_member_count"] == 1
+    stored_members.assert_not_awaited()
+
+
+async def test_room_count_unknown_not_fake_zero_on_livekit_failure(
+    async_client, monkeypatch, as_fake_user
+):
+    room = _make_room()
+    monkeypatch.setattr(study_room_router.service, "list_by_group", AsyncMock(return_value=[room]))
+    monkeypatch.setattr(study_room_router.livekit_service, "connected_counts",
+                        AsyncMock(side_effect=RuntimeError("upstream offline")))
+    response = await async_client.get("/study-rooms/", params={"group_id": str(room.group_id)},
+                                      headers=AUTH_HEADERS)
+    assert response.status_code == 200
+    assert response.json()[0]["active_member_count"] is None

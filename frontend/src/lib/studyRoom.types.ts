@@ -33,8 +33,8 @@ export interface StudyRoom {
   conversation_id: string | null;
   whiteboard_state: Record<string, any> | null;
   presentation_state: PresentationState | null;
-  /** People currently inside the room -- the "live" signal now that there is no start/end. */
-  active_member_count?: number;
+  /** Current LiveKit connections. null means unknown/provider unavailable, not zero. */
+  active_member_count?: number | null;
 }
 
 /** The shared "Slide Bài giảng" deck's current state -- `asset_path` is a Storage object path
