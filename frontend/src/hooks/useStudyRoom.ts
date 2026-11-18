@@ -67,6 +67,10 @@ export function useStudyRoom(roomId: string | undefined) {
   const [roomError, setRoomError] = useState<StudyRoomError | null>(null);
   const [membersError, setMembersError] = useState<StudyRoomError | null>(null);
   const [actionError, setActionError] = useState<StudyRoomError | null>(null);
+  // All member-list refresh paths share one revision, so a slow old response cannot
+  // overwrite the result of a newer refresh or a successful join/leave.
+  const memberRequestRevision = useRef(0);
+  const moderationRequestRevision = useRef(0);
 
   const loadRoom = useCallback(async () => {
     if (!roomId) {
@@ -88,27 +92,54 @@ export function useStudyRoom(roomId: string | undefined) {
     }
   }, [roomId]);
 
+  // Refresh metadata without unmounting an active LiveKit connection. A temporary
+  // network error is not evidence that a previously loaded room has disappeared.
+  const refreshRoom = useCallback(async () => {
+    if (!roomId) return;
+    try {
+      setRoom(await getStudyRoom(roomId));
+      setRoomError(null);
+    } catch (err) {
+      if (err instanceof ApiError && (err.status === 403 || err.status === 404)) {
+        setRoomError(toStudyRoomError(err));
+        setRoom(null);
+      } else {
+        console.warn('[StudyRoom] Background refresh failed; retaining active call', err);
+      }
+    }
+  }, [roomId]);
+
   const loadMembers = useCallback(async () => {
     if (!roomId || !isLoggedIn) return;
+    const revision = ++memberRequestRevision.current;
     try {
       const data = await listStudyRoomMembers(roomId, true);
+      if (revision !== memberRequestRevision.current) return;
       setMembers(data);
       setMembersError(null);
     } catch (err) {
-      // A 403 here just means "not currently an active member/host" — that's an
-      // expected pre-join state, not a failure to surface loudly.
-      setMembers([]);
+      if (revision !== memberRequestRevision.current) return;
+      // Transport failure is UNKNOWN, not an empty roster. An explicit permission
+      // denial or missing room, by contrast, must invalidate local participation.
+      if (err instanceof ApiError && (err.status === 401 || err.status === 403 || err.status === 404)) {
+        setMembers([]);
+      }
       setMembersError(toStudyRoomError(err));
     }
   }, [roomId, isLoggedIn]);
 
   const loadModeration = useCallback(async () => {
     if (!roomId || !isLoggedIn) return;
+    const revision = ++moderationRequestRevision.current;
     try {
       const data = await listStudyRoomModeration(roomId);
+      if (revision !== moderationRequestRevision.current) return;
       setModerationActions(data);
-    } catch {
-      // Supplementary data only (hand-raise / moderation-mute indicators); safe to ignore.
+    } catch (err) {
+      if (revision !== moderationRequestRevision.current) return;
+      // Supplementary data failure must not interrupt video; retain the last
+      // known indicators and emit a diagnostic rather than silently hiding it.
+      console.warn('[StudyRoom] Moderation history unavailable', err);
     }
   }, [roomId, isLoggedIn]);
 
@@ -131,9 +162,8 @@ export function useStudyRoom(roomId: string | undefined) {
 
   useEffect(() => {
     if (!room) return;
-    loadMembers();
-    loadModeration();
-  }, [room, loadMembers, loadModeration]);
+    void loadMembers();
+  }, [room, loadMembers]);
 
   useEffect(() => {
     loadGroupMembers();
@@ -159,7 +189,6 @@ export function useStudyRoom(roomId: string | undefined) {
   useStudyRoomMembersRealtime(room ? roomId ?? null : null, loadMembers);
   // Raised hands / moderation mutes: without this, another participant's hand only showed
   // up after a full reload (see db/migrations/005_room_tasks.sql).
-  useRoomModerationRealtime(room ? roomId ?? null : null, loadModeration);
 
   const currentMember = useMemo(
     () => members.find((m) => m.user_id === currentUserId) ?? null,
@@ -167,6 +196,20 @@ export function useStudyRoom(roomId: string | undefined) {
   );
 
   const isCurrentUserMember = !!currentMember && !currentMember.left_at;
+
+  // Read protected moderation data only after room membership is confirmed.
+  // The chat hook already uses the same participation boundary.
+  useEffect(() => {
+    if (room && isCurrentUserMember) {
+      void loadModeration();
+    } else {
+      // A late response from a prior membership generation must not reveal
+      // moderation data after the user has left or been removed.
+      moderationRequestRevision.current++;
+      setModerationActions([]);
+    }
+  }, [room, isCurrentUserMember, loadModeration]);
+  useRoomModerationRealtime(room && isCurrentUserMember ? roomId ?? null : null, loadModeration);
 
   const rankOf = useCallback(
     (userId: string | null | undefined) => roomRankOf(userId, groupMembers, members),
@@ -228,8 +271,14 @@ export function useStudyRoom(roomId: string | undefined) {
     if (!roomId) return;
     setActionError(null);
     try {
-      await joinStudyRoom(roomId);
-      await loadMembers();
+      // POST /join is the authoritative acknowledgement for this user's session;
+      // a separate roster GET must never turn a successful join into an idle call.
+      const member = await joinStudyRoom(roomId);
+      memberRequestRevision.current++;
+      setMembers((previous) => [...previous.filter((entry) => entry.user_id !== member.user_id), member]);
+      setMembersError(null);
+      // Fetch the full roster independently; a transient failure retains the join acknowledgement.
+      void loadMembers();
     } catch (err) {
       setActionError(toStudyRoomError(err));
       throw err;
@@ -240,8 +289,10 @@ export function useStudyRoom(roomId: string | undefined) {
     if (!roomId) return;
     setActionError(null);
     try {
-      await leaveStudyRoom(roomId);
-      await loadMembers();
+      const member = await leaveStudyRoom(roomId);
+      memberRequestRevision.current++;
+      setMembers((previous) => [...previous.filter((entry) => entry.user_id !== member.user_id), member]);
+      void loadMembers();
     } catch (err) {
       setActionError(toStudyRoomError(err));
       throw err;
@@ -298,13 +349,13 @@ export function useStudyRoom(roomId: string | undefined) {
       setActionError(null);
       try {
         await transferStudyRoomHost(roomId, userId);
-        await Promise.all([loadMembers(), loadRoom()]);
+        await Promise.all([loadMembers(), refreshRoom()]);
       } catch (err) {
         setActionError(toStudyRoomError(err));
         throw err;
       }
     },
-    [roomId, loadMembers, loadRoom]
+    [roomId, loadMembers, refreshRoom]
   );
 
   return {
@@ -331,6 +382,6 @@ export function useStudyRoom(roomId: string | undefined) {
     changeMemberRole,
     transferHost,
     refetchMembers: loadMembers,
-    refetchRoom: loadRoom,
+    refetchRoom: refreshRoom,
   };
 }

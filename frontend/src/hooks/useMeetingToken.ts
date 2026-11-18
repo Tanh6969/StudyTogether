@@ -36,36 +36,56 @@ export function useMeetingToken(roomId: string | undefined, enabled: boolean) {
   const [data, setData] = useState<MeetingTokenResponse | null>(null);
   const [error, setError] = useState<MeetingTokenError | null>(null);
   const requestIdRef = useRef(0);
+  const activeRequestRef = useRef<AbortController | null>(null);
+  // A stalled HTTP connection must never leave the call UI loading indefinitely.
+  const TOKEN_TIMEOUT_MS = 15000;
 
   const fetchToken = useCallback(async () => {
     if (!roomId) return;
+    activeRequestRef.current?.abort();
+    const controller = new AbortController();
+    activeRequestRef.current = controller;
     const requestId = ++requestIdRef.current;
+    let timedOut = false;
+    const timeout = setTimeout(() => {
+      timedOut = true;
+      controller.abort();
+    }, TOKEN_TIMEOUT_MS);
     setStatus('loading');
     setError(null);
     try {
-      const token = await createMeetingToken(roomId);
+      const token = await createMeetingToken(roomId, controller.signal);
       if (requestIdRef.current !== requestId) return;
       setData(token);
       setStatus('ready');
     } catch (err) {
       if (requestIdRef.current !== requestId) return;
       setData(null);
-      setError(toMeetingTokenError(err));
+      setError(timedOut
+        ? { status: null, message: 'Yêu cầu tham gia cuộc gọi đã quá thời gian chờ. Vui lòng thử lại.' }
+        : toMeetingTokenError(err));
       setStatus('error');
+    } finally {
+      clearTimeout(timeout);
+      if (activeRequestRef.current === controller) activeRequestRef.current = null;
     }
   }, [roomId]);
 
   useEffect(() => {
     if (!enabled) {
-      // Invalidates any in-flight request so a late response can't resurrect a stale token
-      // after the meeting was disabled (e.g. the user left the room mid-fetch).
+      // A late HTTP response must not re-enable a session after leave/kick.
       requestIdRef.current++;
+      activeRequestRef.current?.abort();
       setStatus('idle');
       setData(null);
       setError(null);
       return;
     }
-    fetchToken();
+    void fetchToken();
+    return () => {
+      requestIdRef.current++;
+      activeRequestRef.current?.abort();
+    };
   }, [enabled, fetchToken]);
 
   return { status, data, error, retry: fetchToken };

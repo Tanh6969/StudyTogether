@@ -65,7 +65,13 @@ describe('MeetingVideoGrid', () => {
 
   it('shows a loading state while the token request/connection is in progress', () => {
     renderGrid({ status: 'loading' });
-    expect(screen.getByText('Đang kết nối cuộc gọi...')).toBeInTheDocument();
+    expect(screen.getByText('Đang xin quyền kết nối cuộc gọi...')).toBeInTheDocument();
+  });
+
+  it('distinguishes an idle request from an in-flight token request', () => {
+    renderGrid({ status: 'idle' });
+    expect(screen.getByText('Chưa thể bắt đầu cuộc gọi')).toBeInTheDocument();
+    expect(screen.queryByText('Đang xin quyền kết nối cuộc gọi...')).not.toBeInTheDocument();
   });
 
   it('shows a retryable error state when the token request is rejected', async () => {

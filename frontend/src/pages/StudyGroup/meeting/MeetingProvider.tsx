@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import type { ReactNode } from 'react';
 import { LiveKitRoom, RoomAudioRenderer, StartAudio, useParticipants } from '@livekit/components-react';
 import { useMeetingToken } from '../../../hooks/useMeetingToken';
@@ -64,17 +64,26 @@ export function MeetingProvider({
   const { status, data, error, retry } = useMeetingToken(roomId, enabled);
   const [connected, setConnected] = useState(false);
   const [liveKitError, setLiveKitError] = useState<Error | null>(null);
+  // A token identifies one connection attempt. Ignore late callbacks from a
+  // superseded attempt (e.g. the prior LiveKitRoom unmounting during retry).
+  const activeTokenRef = useRef<string | null>(null);
+  activeTokenRef.current = status === 'ready' ? data?.participant_token ?? null : null;
+  const retryConnection = () => {
+    setLiveKitError(null);
+    setConnected(false);
+    void retry();
+  };
 
   if (status !== 'ready' || !data) {
     return (
-      <MeetingContext.Provider value={{ status, error, retry, connected: false, liveKitError: null }}>
+      <MeetingContext.Provider value={{ status, error, retry: retryConnection, connected: false, liveKitError: null }}>
         {children}
       </MeetingContext.Provider>
     );
   }
 
   return (
-    <MeetingContext.Provider value={{ status, error, retry, connected, liveKitError }}>
+    <MeetingContext.Provider value={{ status, error, retry: retryConnection, connected, liveKitError }}>
       {/* display:contents keeps LiveKitRoom's wrapper <div> out of the page's flex layout. */}
       <LiveKitRoom
         serverUrl={data.server_url}
@@ -87,14 +96,21 @@ export function MeetingProvider({
           videoCaptureDefaults: videoDeviceId ? { deviceId: videoDeviceId } : undefined,
         }}
         onConnected={() => {
+          if (activeTokenRef.current !== data.participant_token) return;
           setConnected(true);
           setLiveKitError(null);
         }}
         onDisconnected={() => {
+          if (activeTokenRef.current !== data.participant_token) return;
           setConnected(false);
+          // LiveKit has already exhausted transient recovery: make the failure
+          // visible and retryable instead of an endless 'connecting' indicator.
+          setLiveKitError((previous) => previous ?? new Error('Kết nối video đã bị ngắt. Vui lòng thử kết nối lại.'));
+          // Background metadata refresh must not unmount this provider.
           onSessionEnded?.();
         }}
         onError={(err) => {
+          if (activeTokenRef.current !== data.participant_token) return;
           setConnected(false);
           setLiveKitError(err);
         }}
