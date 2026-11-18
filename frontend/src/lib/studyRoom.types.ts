@@ -60,6 +60,15 @@ export interface StudyRoomMember {
   user: UserSummary;
 }
 
+/** The current user's backend-authoritative room session. Different from the
+ * shared member roster (which is used for rendering other people, not access). */
+export interface StudyRoomSession {
+  room_id: string;
+  room_status: StudyRoomStatus;
+  member: StudyRoomMember | null;
+  can_connect: boolean;
+}
+
 /** Mirrors StudyRoomCreate (app/study_rooms/dto/study_room_dto.py). No `host_id` field:
  * the room host is always the authenticated caller, never client-supplied. */
 export interface StudyRoomCreate {

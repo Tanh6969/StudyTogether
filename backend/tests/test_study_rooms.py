@@ -2685,3 +2685,142 @@ async def test_list_rooms_reports_active_member_count(async_client, monkeypatch,
     assert response.status_code == 200
     assert response.json()[0]["active_member_count"] == 3
 
+
+
+# --- Current-user session: authoritative contract, separate from roster ---
+
+async def test_room_session_requires_auth(async_client):
+    response = await async_client.get(f"/study-rooms/{uuid.uuid4()}/session")
+    assert response.status_code == 401
+
+
+async def test_room_session_denies_unviewable_room(async_client, monkeypatch, as_fake_user):
+    room = _make_room(is_private=True)
+    monkeypatch.setattr(study_room_router.service, "get_by_id", AsyncMock(return_value=room))
+    monkeypatch.setattr(study_room_router, "can_view_room", AsyncMock(return_value=False))
+    get_member = AsyncMock()
+    monkeypatch.setattr(study_room_router.service, "get_member", get_member)
+    response = await async_client.get(f"/study-rooms/{room.id}/session", headers=AUTH_HEADERS)
+    assert response.status_code == 403
+    get_member.assert_not_awaited()
+
+
+async def test_room_session_prejoin_returns_no_membership_without_403(async_client, monkeypatch, as_fake_user):
+    room = _make_room()
+    monkeypatch.setattr(study_room_router.service, "get_by_id", AsyncMock(return_value=room))
+    monkeypatch.setattr(study_room_router, "can_view_room", AsyncMock(return_value=True))
+    monkeypatch.setattr(study_room_router.service, "get_member", AsyncMock(return_value=None))
+    response = await async_client.get(f"/study-rooms/{room.id}/session", headers=AUTH_HEADERS)
+    assert response.status_code == 200
+    assert response.json()["member"] is None
+    assert response.json()["can_connect"] is False
+
+
+async def test_room_session_active_participant_can_connect(async_client, monkeypatch, as_fake_user):
+    room = _make_room()
+    member = _room_member(room.id, as_fake_user.id)
+    monkeypatch.setattr(study_room_router.service, "get_by_id", AsyncMock(return_value=room))
+    monkeypatch.setattr(study_room_router, "can_view_room", AsyncMock(return_value=True))
+    monkeypatch.setattr(study_room_router.service, "get_member", AsyncMock(return_value=member))
+    response = await async_client.get(f"/study-rooms/{room.id}/session", headers=AUTH_HEADERS)
+    assert response.status_code == 200
+    assert response.json()["member"]["user_id"] == str(as_fake_user.id)
+    assert response.json()["can_connect"] is True
+    assert response.json()["room_status"] == "active"
+
+
+async def test_room_session_left_participant_cannot_connect(async_client, monkeypatch, as_fake_user):
+    room = _make_room()
+    member = _room_member(room.id, as_fake_user.id, left_at=datetime.now(timezone.utc))
+    monkeypatch.setattr(study_room_router.service, "get_by_id", AsyncMock(return_value=room))
+    monkeypatch.setattr(study_room_router, "can_view_room", AsyncMock(return_value=True))
+    monkeypatch.setattr(study_room_router.service, "get_member", AsyncMock(return_value=member))
+    response = await async_client.get(f"/study-rooms/{room.id}/session", headers=AUTH_HEADERS)
+    assert response.status_code == 200
+    assert response.json()["member"]["left_at"] is not None
+    assert response.json()["can_connect"] is False
+
+
+async def test_room_session_ended_room_cannot_connect(async_client, monkeypatch, as_fake_user):
+    room = _make_room(status=StudyRoomStatus.ENDED)
+    member = _room_member(room.id, as_fake_user.id)
+    monkeypatch.setattr(study_room_router.service, "get_by_id", AsyncMock(return_value=room))
+    monkeypatch.setattr(study_room_router, "can_view_room", AsyncMock(return_value=True))
+    monkeypatch.setattr(study_room_router.service, "get_member", AsyncMock(return_value=member))
+    response = await async_client.get(f"/study-rooms/{room.id}/session", headers=AUTH_HEADERS)
+    assert response.status_code == 200
+    assert response.json()["can_connect"] is False
+    assert response.json()["room_status"] == "ended"
+
+
+async def test_generation_safe_explicit_leave_eviction_after_success(
+    async_client, monkeypatch, as_fake_user
+):
+    """Explicit leave of the same generation evicts LiveKit after commit."""
+    room = _make_room()
+    member = _room_member(room.id, as_fake_user.id)
+    monkeypatch.setattr(study_room_router.service, "get_by_id", AsyncMock(return_value=room))
+    monkeypatch.setattr(study_room_router.service, "get_member", AsyncMock(return_value=member))
+    conditional_leave = AsyncMock(return_value=datetime.now(timezone.utc))
+    remove = AsyncMock()
+    monkeypatch.setattr(study_room_router.service, "leave_if_join_generation", conditional_leave)
+    monkeypatch.setattr(study_room_router.livekit_service, "remove_participant", remove)
+    response = await async_client.post(
+        f"/study-rooms/{room.id}/leave",
+        params={"expected_joined_at": member.joined_at.isoformat(), "disconnect_livekit": True},
+        headers=AUTH_HEADERS,
+    )
+    assert response.status_code == 200
+    assert response.json()["left_at"] is not None
+    conditional_leave.assert_awaited_once_with(ANY, room.id, as_fake_user.id, member.joined_at)
+    remove.assert_awaited_once_with(room.id, as_fake_user.id)
+
+
+async def test_stale_explicit_leave_does_not_kick_newer_session(
+    async_client, monkeypatch, as_fake_user
+):
+    """A lagging old tab must neither mark the newer generation left nor evict it."""
+    room = _make_room()
+    latest = _room_member(room.id, as_fake_user.id)
+    old_join = latest.joined_at - timedelta(seconds=15)
+    monkeypatch.setattr(study_room_router.service, "get_by_id", AsyncMock(return_value=room))
+    monkeypatch.setattr(study_room_router.service, "get_member", AsyncMock(return_value=latest))
+    conditional_leave = AsyncMock(return_value=None)
+    remove = AsyncMock()
+    monkeypatch.setattr(study_room_router.service, "leave_if_join_generation", conditional_leave)
+    monkeypatch.setattr(study_room_router.livekit_service, "remove_participant", remove)
+    response = await async_client.post(
+        f"/study-rooms/{room.id}/leave",
+        params={"expected_joined_at": old_join.isoformat(), "disconnect_livekit": True},
+        headers=AUTH_HEADERS,
+    )
+    assert response.status_code == 200
+    assert response.json()["left_at"] is None
+    assert response.json()["joined_at"] == latest.joined_at.isoformat().replace('+00:00', 'Z')
+    remove.assert_not_awaited()
+
+
+async def test_concurrent_first_join_returns_existing_member_after_unique_conflict(
+    async_client, monkeypatch, as_fake_user
+):
+    """A racing first join is an idempotent success, not an exposed SQL 400."""
+    from sqlalchemy.exc import IntegrityError
+
+    room = _make_room()
+    winner = _room_member(room.id, as_fake_user.id)
+    monkeypatch.setattr(study_room_router.service, "get_by_id", AsyncMock(return_value=room))
+    member_lookup = AsyncMock(side_effect=[None, winner])
+    monkeypatch.setattr(study_room_router.service, "get_member", member_lookup)
+    _mock_group_membership(monkeypatch, _group_member(room.group_id, as_fake_user.id))
+
+    pg_error = Exception('duplicate membership')
+    pg_error.diag = MagicMock(constraint_name='study_room_members_room_id_user_id_key')
+    monkeypatch.setattr(
+        study_room_router.service, "join",
+        AsyncMock(side_effect=IntegrityError('INSERT INTO study_room_members', {}, pg_error)),
+    )
+    response = await async_client.post(f'/study-rooms/{room.id}/join', headers=AUTH_HEADERS)
+    assert response.status_code == 200
+    assert response.json()['user_id'] == str(as_fake_user.id)
+    assert response.json()['left_at'] is None
+    assert member_lookup.await_count == 2

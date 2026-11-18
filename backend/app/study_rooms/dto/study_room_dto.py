@@ -77,6 +77,18 @@ class StudyRoomMemberResponse(BaseModel):
     user: UserSummary
 
 
+class StudyRoomSessionResponse(BaseModel):
+    """Authoritative current-user participation; independent from the shared member roster.
+
+    Returning a left member row is intentional: the client can render the lobby without
+    confusing a successful GET with permission to access protected room activities.
+    """
+    room_id: uuid.UUID
+    room_status: StudyRoomStatus
+    member: StudyRoomMemberResponse | None
+    can_connect: bool
+
+
 class TransferHostRequest(BaseModel):
     user_id: uuid.UUID
 

@@ -28,6 +28,17 @@ const AccountSettingsPage = lazy(() =>
   import('../pages/AccountSettingsPage').then(({ AccountSettingsPage }) => ({ default: AccountSettingsPage }))
 );
 
+// Preview can reuse existing Supabase Auth for login, but must not mutate the
+// production Auth account registry/passwords until a staging Auth project exists.
+const PREVIEW_MODE = import.meta.env.VITE_PREVIEW_MODE === 'true';
+const PreviewAuthDisabled = () => (
+  <main style={{ minHeight: '100vh', display: 'grid', placeContent: 'center', padding: 24, textAlign: 'center' }}>
+    <h2>Chức năng tài khoản tạm khóa trên bản nghiệm thu</h2>
+    <p>Bản thử nghiệm chỉ cho đăng nhập tài khoản đã có. Đăng ký và thay đổi mật khẩu đang tắt để bảo vệ tài khoản thật.</p>
+    <a href="/login">Quay lại đăng nhập</a>
+  </main>
+);
+
 const ProtectedRoute = ({ children }: { children?: React.ReactNode }) => {
   const { isLoggedIn, loading } = useAuth();
 
@@ -46,9 +57,9 @@ export function AppRoutes() {
     <Suspense fallback={<PageLoadingSkeleton />}>
       <Routes>
         <Route path="/login" element={<LoginPage />} />
-        <Route path="/register" element={<RegisterPage />} />
-        <Route path="/forgot-password" element={<ForgotPasswordPage />} />
-        <Route path="/update-password" element={<UpdatePasswordPage />} />
+        <Route path="/register" element={PREVIEW_MODE ? <PreviewAuthDisabled /> : <RegisterPage />} />
+        <Route path="/forgot-password" element={PREVIEW_MODE ? <PreviewAuthDisabled /> : <ForgotPasswordPage />} />
+        <Route path="/update-password" element={PREVIEW_MODE ? <PreviewAuthDisabled /> : <UpdatePasswordPage />} />
         <Route path="/room/:id" element={<ProtectedRoute><StudyRoom /></ProtectedRoute>} />
         <Route path="/" element={<Layout />}>
           <Route path="invitations/:secret" element={<InvitationPreviewPage />} />
@@ -58,7 +69,7 @@ export function AppRoutes() {
             <Route index element={<Navigate to="/groups" replace />} />
             <Route path="groups" element={<StudyRooms />} />
             <Route path="groups/:id" element={<StudyGroupDetail />} />
-            <Route path="settings" element={<AccountSettingsPage />} />
+            <Route path="settings" element={PREVIEW_MODE ? <PreviewAuthDisabled /> : <AccountSettingsPage />} />
           </Route>
 
           <Route path="*" element={<Navigate to="/" replace />} />

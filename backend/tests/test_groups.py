@@ -148,6 +148,12 @@ async def test_service_create_does_not_insert_owner_membership_itself():
                 obj.id = uuid.uuid4()
 
     session.flush = fake_flush
+    # GroupsService re-SELECTs the freshly flushed Group to load its streak.
+    # AsyncMock.execute alone returns a coroutine for scalar_one(), which is not
+    # the synchronous SQLAlchemy Result contract. Model the actual Result here.
+    result = MagicMock()
+    result.scalar_one.side_effect = lambda: session.add.call_args_list[0].args[0]
+    session.execute = AsyncMock(return_value=result)
 
     service = GroupsService()
     group = await service.create(session, GroupCreate(name="Group"), owner_id=owner_id)
