@@ -28,6 +28,7 @@ class LiveKitService:
     *created* here -- LiveKit Cloud creates it on first participant join -- but it can now
     be explicitly closed (`close_room`) rather than only ever left to its own
     `empty_timeout`."""
+    """Fix TODO: Sửa thêm webhook để kiểm tra xem người đó đã thoát chưa"""
 
     def create_participant_token(
         self,
