@@ -195,7 +195,7 @@ export function LoginPage() {
             <div>
               <div style={{display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8}}>
                 <label style={{fontSize: 14, fontWeight: '600', color: '#334155'}}>Mật khẩu</label>
-                <Link to="/forgot-password" style={{fontSize: 13, fontWeight: '600', color: '#3B82F6', textDecoration: 'none'}}>Quên mật khẩu?</Link>
+                {import.meta.env.VITE_PREVIEW_MODE !== 'true' && <Link to="/forgot-password" style={{fontSize: 13, fontWeight: '600', color: '#3B82F6', textDecoration: 'none'}}>Quên mật khẩu?</Link>}
               </div>
               <div style={{position: 'relative'}}>
                 <Lock size={18} color="#94A3B8" style={{position: 'absolute', left: 16, top: '50%', transform: 'translateY(-50%)'}} />
@@ -276,7 +276,9 @@ export function LoginPage() {
 
           <div style={{marginTop: 32, textAlign: 'center'}}>
             <p style={{color: '#64748B', fontSize: 14, margin: 0}}>
-              Chưa có tài khoản? <Link to="/register" style={{color: '#00236F', fontWeight: '700', textDecoration: 'none'}}>Đăng ký ngay</Link>
+              {import.meta.env.VITE_PREVIEW_MODE === 'true'
+                ? 'Bản nghiệm thu dùng tài khoản hiện có; chức năng đăng ký và đổi mật khẩu đang tạm khóa.'
+                : <>Chưa có tài khoản? <Link to="/register" style={{color: '#00236F', fontWeight: '700', textDecoration: 'none'}}>Đăng ký ngay</Link></>}
             </p>
           </div>
         </div>

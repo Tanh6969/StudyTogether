@@ -17,7 +17,7 @@ describe('useMeetingToken', () => {
   });
 
   it('stays idle and never calls the backend when disabled', () => {
-    const { result } = renderHook(() => useMeetingToken('room-1', false));
+    const { result } = renderHook(() => useMeetingToken('room-1', false, 'client-1'));
     expect(result.current.status).toBe('idle');
     expect(mockedCreateMeetingToken).not.toHaveBeenCalled();
   });
@@ -30,10 +30,10 @@ describe('useMeetingToken', () => {
       })
     );
 
-    const { result } = renderHook(() => useMeetingToken('room-1', true));
+    const { result } = renderHook(() => useMeetingToken('room-1', true, 'client-1'));
 
     await waitFor(() => expect(result.current.status).toBe('loading'));
-    expect(mockedCreateMeetingToken).toHaveBeenCalledWith('room-1');
+    expect(mockedCreateMeetingToken).toHaveBeenCalledWith('room-1', 'client-1', expect.any(AbortSignal));
 
     act(() => resolveToken({ server_url: 'wss://livekit.example.com', participant_token: 'tok-123' }));
 
@@ -45,7 +45,7 @@ describe('useMeetingToken', () => {
   it('maps a 403 rejection to an "not authorized" error, mirroring the backend as authoritative', async () => {
     mockedCreateMeetingToken.mockRejectedValue(new ApiError(403, 'Forbidden'));
 
-    const { result } = renderHook(() => useMeetingToken('room-1', true));
+    const { result } = renderHook(() => useMeetingToken('room-1', true, 'client-1'));
 
     await waitFor(() => expect(result.current.status).toBe('error'));
     expect(result.current.error).toEqual({
@@ -55,10 +55,18 @@ describe('useMeetingToken', () => {
     expect(result.current.data).toBeNull();
   });
 
+  it('reports stale media-session refresh as 409 and never issues a replacement token', async () => {
+    mockedCreateMeetingToken.mockRejectedValue(new ApiError(409, 'Media session transferred'));
+    const { result } = renderHook(() => useMeetingToken('room-1', true, 'old-client'));
+    await waitFor(() => expect(result.current.status).toBe('error'));
+    expect(result.current.error?.status).toBe(409);
+    expect(result.current.error?.message).toContain('thiết bị khác');
+  });
+
   it('maps a 404 rejection to a "room unavailable" error', async () => {
     mockedCreateMeetingToken.mockRejectedValue(new ApiError(404, 'Not Found'));
 
-    const { result } = renderHook(() => useMeetingToken('room-1', true));
+    const { result } = renderHook(() => useMeetingToken('room-1', true, 'client-1'));
 
     await waitFor(() => expect(result.current.status).toBe('error'));
     expect(result.current.error?.status).toBe(404);
@@ -67,7 +75,7 @@ describe('useMeetingToken', () => {
 
   it('resets to idle and discards any result once disabled again', async () => {
     mockedCreateMeetingToken.mockResolvedValue({ server_url: 'wss://x', participant_token: 't' });
-    const { result, rerender } = renderHook(({ enabled }) => useMeetingToken('room-1', enabled), {
+    const { result, rerender } = renderHook(({ enabled }) => useMeetingToken('room-1', enabled, 'client-1'), {
       initialProps: { enabled: true },
     });
     await waitFor(() => expect(result.current.status).toBe('ready'));
@@ -80,7 +88,7 @@ describe('useMeetingToken', () => {
 
   it('retry() re-requests a fresh token', async () => {
     mockedCreateMeetingToken.mockResolvedValueOnce({ server_url: 'wss://x', participant_token: 'first' });
-    const { result } = renderHook(() => useMeetingToken('room-1', true));
+    const { result } = renderHook(() => useMeetingToken('room-1', true, 'client-1'));
     await waitFor(() => expect(result.current.status).toBe('ready'));
 
     mockedCreateMeetingToken.mockResolvedValueOnce({ server_url: 'wss://x', participant_token: 'second' });
@@ -90,5 +98,41 @@ describe('useMeetingToken', () => {
 
     expect(result.current.data?.participant_token).toBe('second');
     expect(mockedCreateMeetingToken).toHaveBeenCalledTimes(2);
+  });
+});
+
+describe('useMeetingToken -- stalled or revoked requests', () => {
+  it('aborts a stalled token request and shows a retryable timeout instead of indefinite loading', async () => {
+    vi.useFakeTimers();
+    try {
+      mockedCreateMeetingToken.mockImplementation((_roomId, _sessionId, signal) => new Promise((_resolve, reject) => {
+        signal?.addEventListener('abort', () => reject(new DOMException('Aborted', 'AbortError')), { once: true });
+      }));
+      const { result } = renderHook(() => useMeetingToken('room-1', true, 'client-1'));
+      expect(result.current.status).toBe('loading');
+
+      await act(async () => { await vi.advanceTimersByTimeAsync(15001); });
+      expect(result.current.status).toBe('error');
+      expect(result.current.error?.message).toContain('quá thời gian chờ');
+      expect(result.current.data).toBeNull();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('ignores an in-flight token response after participation is disabled', async () => {
+    let resolveToken!: (value: MeetingTokenResponse) => void;
+    mockedCreateMeetingToken.mockImplementation(() => new Promise<MeetingTokenResponse>((resolve) => {
+      resolveToken = resolve;
+    }));
+    const { result, rerender } = renderHook(({ enabled }) => useMeetingToken('room-1', enabled, 'client-1'), {
+      initialProps: { enabled: true },
+    });
+    await waitFor(() => expect(result.current.status).toBe('loading'));
+    rerender({ enabled: false });
+
+    await act(async () => resolveToken({ server_url: 'wss://x', participant_token: 'late' }));
+    expect(result.current.status).toBe('idle');
+    expect(result.current.data).toBeNull();
   });
 });

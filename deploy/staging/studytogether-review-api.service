@@ -1,0 +1,25 @@
+[Unit]
+Description=StudyTogether isolated review FastAPI
+After=network-online.target studytogether-review-postgres.service
+Wants=network-online.target
+# Local PostgreSQL is optional: shared-production preview uses Supabase hosted DB.
+# No hard dependency on the local database in the approved shared mode.
+StartLimitIntervalSec=0
+
+[Service]
+Type=simple
+User=mcppro
+Group=mcppro
+EnvironmentFile=/srv/mcppro/workspaces/studytogether-session-env/preview.env
+Environment=PYTHONPATH=/srv/mcppro/workspaces/studytogether-room-lifecycle-20261118/backend:/srv/mcppro/workspaces/studytogether-room-lifecycle-20261118/deploy/staging
+WorkingDirectory=/srv/mcppro/workspaces/studytogether-room-lifecycle-20261118/backend
+ExecStart=/opt/studytogether/venv/bin/uvicorn preview_app:app --host 127.0.0.1 --port 8181 --workers 1
+Restart=on-failure
+RestartSec=5
+MemoryMax=550M
+CPUQuota=70%
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

@@ -53,9 +53,9 @@ class StudyRoomResponse(BaseModel):
     conversation_id: uuid.UUID | None
     whiteboard_state: dict | None = None
     presentation_state: dict | None = None
-    # People currently inside the room (study_room_members with left_at NULL). Filled in by
-    # the list/detail endpoints; replaces the old waiting/active status as the "live" signal.
-    active_member_count: int = 0
+    # Number of LiveKit media participants, not durable study_room_members rows.
+    # None means the presence provider is unavailable; do not display fake "0".
+    active_member_count: int | None = None
 
 
 class StudyRoomMemberCreate(BaseModel):
@@ -75,6 +75,18 @@ class StudyRoomMemberResponse(BaseModel):
     left_at: datetime | None
     # See GroupMemberResponse.user -- same canonical-identity convention.
     user: UserSummary
+
+
+class StudyRoomSessionResponse(BaseModel):
+    """Authoritative current-user participation; independent from the shared member roster.
+
+    Returning a left member row is intentional: the client can render the lobby without
+    confusing a successful GET with permission to access protected room activities.
+    """
+    room_id: uuid.UUID
+    room_status: StudyRoomStatus
+    member: StudyRoomMemberResponse | None
+    can_connect: bool
 
 
 class TransferHostRequest(BaseModel):

@@ -84,43 +84,15 @@ async def list_messages(
     current_user: CurrentUser = Depends(get_current_user),
     session: AsyncSession = Depends(get_db_session),
 ):
-    """List messages in a conversation (channel, room, or direct), paginated with a cursor. Requires the caller to have access to the conversation."""
-    from sqlalchemy import select
-    from app.conversations.entities.conversation_entity import Conversation
-    from app.channels.entities.channel_entity import Channel
-    from app.groups.entities.group_entity import GroupMember
-    from app.db.enums import MemberStatus, ConversationType
+    """List messages with the SAME canonical authorization used by send/get/edit.
 
-    # TỐI ƯU HÓA: Gom 4 query (Conversation -> Channel -> GroupMember -> Permission) thành 1 Query duy nhất
-    stmt = (
-        select(Conversation, Channel, GroupMember)
-        .outerjoin(Channel, Conversation.channel_id == Channel.id)
-        .outerjoin(
-            GroupMember,
-            (GroupMember.group_id == Channel.group_id) &
-            (GroupMember.user_id == current_user.id) &
-            (GroupMember.status == MemberStatus.ACTIVE)
-        )
-        .where(Conversation.id == conversation_id)
-    )
-    result = await session.execute(stmt)
-    row = result.first()
-    
-    if not row:
-        raise HTTPException(status.HTTP_404_NOT_FOUND, "Conversation not found")
-        
-    conversation, channel, group_member = row
-    
-    # Authorize nhanh bằng data đã JOIN
-    if conversation.type == ConversationType.CHANNEL:
-        if not channel or channel.deleted_at is not None:
-            raise HTTPException(status.HTTP_403_FORBIDDEN, "You do not have access to this conversation")
-        if not group_member:
-            raise HTTPException(status.HTTP_403_FORBIDDEN, "You do not have access to this conversation")
-        # Bỏ qua check is_private cho đơn giản trong demo hoặc có thể check thêm ChannelMember
-    else:
-        # Fallback cho Room / Direct
-        await _authorize(session, conversation, current_user.id)
+    The old one-query shortcut checked active group membership for channels but
+    skipped private channel_members authorization, exposing private history to any
+    group member. Reuse can_access_conversation instead of duplicating a partial
+    access rule in this route. Authorization correctness outweighs one extra read.
+    """
+    conversation = await _load_conversation(session, conversation_id)
+    await _authorize(session, conversation, current_user.id)
 
     try:
         messages, next_cursor = await message_service.list_by_conversation(

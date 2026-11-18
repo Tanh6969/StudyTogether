@@ -55,9 +55,13 @@ class SupabaseAuthService:
         self._jwk_client = PyJWKClient(settings.supabase_jwks_url, cache_keys=True, lifespan=3600)
     """Dev lại verify"""
     def verify(self, token: str) -> dict[str, Any]:
+        # The frontend's mock credentials are never valid backend credentials.
+        # Accepting an unsigned development token here would allow identity
+        # impersonation on a real deployment, regardless of Supabase settings.
         if token.startswith("dev-token-"):
-            user_id = token.replace("dev-token-", "")
-            return {"sub": user_id, "email": "user1@study.local", "role": "authenticated"}
+            raise HTTPException(
+                status.HTTP_401_UNAUTHORIZED, "Invalid or expired token", headers=_UNAUTHORIZED_HEADERS
+            )
 
         # ── Cache hit: skip all network calls ────────────────────────────────
         cached = _cache_get(token)

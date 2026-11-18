@@ -3,12 +3,14 @@ import { useAuth } from './useAuth';
 import { useStudyRoomMembersRealtime } from './useStudyRoomMembersRealtime';
 import { useRoomModerationRealtime } from './useRoomModerationRealtime';
 import { ApiError } from '../lib/apiClient';
+import { getOwnedMediaSession } from '../lib/meetingOwnerState';
 import { listGroupMembers } from '../lib/group.api';
 import type { GroupMember } from '../lib/group.types';
 import { RoomRank, roomPermissionsFor, roomRankOf } from '../lib/roomPermissions';
 import {
   deleteStudyRoom,
   getStudyRoom,
+  getStudyRoomSession,
   joinStudyRoom,
   leaveStudyRoom,
   leaveStudyRoomOnUnload,
@@ -61,14 +63,24 @@ export function useStudyRoom(roomId: string | undefined) {
 
   const [room, setRoom] = useState<StudyRoom | null>(null);
   const [members, setMembers] = useState<StudyRoomMember[]>([]);
+  const [sessionMember, setSessionMember] = useState<StudyRoomMember | null>(null);
+  const [sessionResolved, setSessionResolved] = useState(false);
+  const [sessionError, setSessionError] = useState<StudyRoomError | null>(null);
   const [moderationActions, setModerationActions] = useState<RoomModerationAction[]>([]);
   const [groupMembers, setGroupMembers] = useState<GroupMember[]>([]);
   const [loading, setLoading] = useState(true);
   const [roomError, setRoomError] = useState<StudyRoomError | null>(null);
   const [membersError, setMembersError] = useState<StudyRoomError | null>(null);
   const [actionError, setActionError] = useState<StudyRoomError | null>(null);
+  // All member-list refresh paths share one revision, so a slow old response cannot
+  // overwrite the result of a newer refresh or a successful join/leave.
+  const roomRequestRevision = useRef(0);
+  const memberRequestRevision = useRef(0);
+  const sessionRequestRevision = useRef(0);
+  const moderationRequestRevision = useRef(0);
 
   const loadRoom = useCallback(async () => {
+    const revision = ++roomRequestRevision.current;
     if (!roomId) {
       setRoom(null);
       setRoomError({ status: null, message: 'Thiếu mã phòng học.' });
@@ -79,42 +91,103 @@ export function useStudyRoom(roomId: string | undefined) {
     setRoomError(null);
     try {
       const data = await getStudyRoom(roomId);
-      setRoom(data);
+      if (revision === roomRequestRevision.current) setRoom(data);
     } catch (err) {
-      setRoom(null);
-      setRoomError(toStudyRoomError(err));
+      if (revision === roomRequestRevision.current) {
+        setRoom(null);
+        setRoomError(toStudyRoomError(err));
+      }
     } finally {
-      setLoading(false);
+      if (revision === roomRequestRevision.current) setLoading(false);
     }
   }, [roomId]);
 
+  // Refresh metadata without unmounting an active LiveKit connection. A temporary
+  // network error is not evidence that a previously loaded room has disappeared.
+  const refreshRoom = useCallback(async () => {
+    if (!roomId) return;
+    try {
+      setRoom(await getStudyRoom(roomId));
+      setRoomError(null);
+    } catch (err) {
+      if (err instanceof ApiError && (err.status === 403 || err.status === 404)) {
+        setRoomError(toStudyRoomError(err));
+        setRoom(null);
+      } else {
+        console.warn('[StudyRoom] Background refresh failed; retaining active call', err);
+      }
+    }
+  }, [roomId]);
+
+  // The current user's authority is not inferred from the roster: a roster GET
+  // may fail or be stale while the authenticated user has an active session.
+  const loadSession = useCallback(async () => {
+    if (!roomId || !isLoggedIn) return;
+    const revision = ++sessionRequestRevision.current;
+    try {
+      const snapshot = await getStudyRoomSession(roomId);
+      if (revision !== sessionRequestRevision.current) return;
+      setSessionMember(snapshot.member);
+      setSessionResolved(true);
+      setSessionError(null);
+    } catch (err) {
+      if (revision !== sessionRequestRevision.current) return;
+      if (err instanceof ApiError && [401, 403, 404].includes(err.status)) {
+        setSessionMember(null);
+        setSessionResolved(true);
+      }
+      // Transient session-read failures preserve a last confirmed join. The
+      // LiveKit token endpoint still independently checks server permissions.
+      setSessionError(toStudyRoomError(err));
+    }
+  }, [roomId, isLoggedIn]);
+
   const loadMembers = useCallback(async () => {
     if (!roomId || !isLoggedIn) return;
+    const revision = ++memberRequestRevision.current;
     try {
       const data = await listStudyRoomMembers(roomId, true);
+      if (revision !== memberRequestRevision.current) return;
       setMembers(data);
       setMembersError(null);
     } catch (err) {
-      // A 403 here just means "not currently an active member/host" — that's an
-      // expected pre-join state, not a failure to surface loudly.
-      setMembers([]);
+      if (revision !== memberRequestRevision.current) return;
+      // Transport failure is UNKNOWN, not an empty roster. An explicit permission
+      // denial or missing room, by contrast, must invalidate local participation.
+      if (err instanceof ApiError && (err.status === 401 || err.status === 403 || err.status === 404)) {
+        setMembers([]);
+        // The roster's visibility gate and /session share active group access.
+        // Never retain local participation after an explicit access denial.
+        sessionRequestRevision.current++;
+        setSessionMember(null);
+        setSessionResolved(true);
+        setSessionError(toStudyRoomError(err));
+      }
       setMembersError(toStudyRoomError(err));
     }
   }, [roomId, isLoggedIn]);
 
   const loadModeration = useCallback(async () => {
     if (!roomId || !isLoggedIn) return;
+    const revision = ++moderationRequestRevision.current;
     try {
       const data = await listStudyRoomModeration(roomId);
+      if (revision !== moderationRequestRevision.current) return;
       setModerationActions(data);
-    } catch {
-      // Supplementary data only (hand-raise / moderation-mute indicators); safe to ignore.
+    } catch (err) {
+      if (revision !== moderationRequestRevision.current) return;
+      // Supplementary data failure must not interrupt video; retain the last
+      // known indicators and emit a diagnostic rather than silently hiding it.
+      console.warn('[StudyRoom] Moderation history unavailable', err);
     }
   }, [roomId, isLoggedIn]);
 
   // Group roles feed the room ranks (owner > host > group moderator > editor > participant,
   // lib/roomPermissions.ts). UX-only: the backend re-checks the same rule on every request.
-  const groupId = room?.group_id ?? null;
+  // A stale response or same-component :id navigation must never grant access
+  // to another room or show its previous members/moderation data.
+  const activeRoom = room?.id === roomId ? room : null;
+  const groupId = activeRoom?.group_id ?? null;
   const loadGroupMembers = useCallback(async () => {
     if (!groupId || !isLoggedIn) return;
     try {
@@ -130,10 +203,10 @@ export function useStudyRoom(roomId: string | undefined) {
   }, [loadRoom]);
 
   useEffect(() => {
-    if (!room) return;
-    loadMembers();
-    loadModeration();
-  }, [room, loadMembers, loadModeration]);
+    if (!activeRoom) return;
+    void loadMembers();
+    void loadSession();
+  }, [activeRoom?.id, loadMembers, loadSession]);
 
   useEffect(() => {
     loadGroupMembers();
@@ -148,29 +221,53 @@ export function useStudyRoom(roomId: string | undefined) {
   // pending, disconnects, or misses an event (documented gap: Postgres Changes evaluates RLS
   // against an UPDATE's post-image, see 026's header) -- worst case is a 10s-stale count
   // instead of an indefinitely-stale one.
+  const reconcileMembership = useCallback(() => {
+    void loadMembers();
+    void loadSession();
+  }, [loadMembers, loadSession]);
+
   useEffect(() => {
-    if (!room) return;
-    const interval = setInterval(loadMembers, 10000);
+    if (!activeRoom) return;
+    const interval = setInterval(reconcileMembership, 10000);
     return () => clearInterval(interval);
-  }, [room, loadMembers]);
+  }, [activeRoom?.id, reconcileMembership]);
 
   // Near-instant member list refresh on any INSERT/UPDATE to this room's study_room_members
   // rows (join/leave/kick/role-change) -- see useStudyRoomMembersRealtime.ts and 026's header.
-  useStudyRoomMembersRealtime(room ? roomId ?? null : null, loadMembers);
+  useStudyRoomMembersRealtime(activeRoom ? roomId ?? null : null, reconcileMembership);
   // Raised hands / moderation mutes: without this, another participant's hand only showed
   // up after a full reload (see db/migrations/005_room_tasks.sql).
-  useRoomModerationRealtime(room ? roomId ?? null : null, loadModeration);
 
-  const currentMember = useMemo(
-    () => members.find((m) => m.user_id === currentUserId) ?? null,
-    [members, currentUserId]
-  );
+  // Session authority is never inferred from a possibly stale/shared roster.
+  // No /session response yet means unconfirmed access, not active membership.
+  const currentMember = sessionResolved && sessionMember?.room_id === roomId ? sessionMember : null;
 
   const isCurrentUserMember = !!currentMember && !currentMember.left_at;
 
+  // Read protected moderation data only after room membership is confirmed.
+  // The chat hook already uses the same participation boundary.
+  useEffect(() => {
+    if (activeRoom && isCurrentUserMember) {
+      void loadModeration();
+    } else {
+      // A late response from a prior membership generation must not reveal
+      // moderation data after the user has left or been removed.
+      moderationRequestRevision.current++;
+      setModerationActions([]);
+    }
+  }, [activeRoom, isCurrentUserMember, loadModeration]);
+  useRoomModerationRealtime(activeRoom && isCurrentUserMember ? roomId ?? null : null, loadModeration);
+
+  const activeMembers = useMemo(() => members.filter((m) => m.room_id === roomId), [members, roomId]);
+  const memberView = useMemo(() =>
+    currentMember
+      ? [...activeMembers.filter((member) => member.user_id !== currentUserId), currentMember]
+      : activeMembers.filter((member) => member.user_id !== currentUserId),
+    [activeMembers, currentMember, currentUserId]
+  );
   const rankOf = useCallback(
-    (userId: string | null | undefined) => roomRankOf(userId, groupMembers, members),
-    [groupMembers, members]
+    (userId: string | null | undefined) => roomRankOf(userId, groupMembers, memberView),
+    [groupMembers, memberView]
   );
   const myRank = rankOf(currentUserId);
   const permissions = useMemo(() => roomPermissionsFor(myRank), [myRank]);
@@ -198,18 +295,32 @@ export function useStudyRoom(roomId: string | undefined) {
   // A ref (not `isCurrentUserMember` in the cleanup's closure) is required for the second
   // case: effect cleanups close over the render they were created in, so without it the
   // cleanup could act on a stale membership flag from whenever the effect last re-ran.
-  const activeJoinGenerationRef = useRef(isCurrentUserMember ? currentMember?.joined_at ?? null : null);
-  activeJoinGenerationRef.current = isCurrentUserMember ? currentMember?.joined_at ?? null : null;
+  // Retain the previous room's own join generation until its effect cleanup
+  // runs. Clearing this ref synchronously on a :id change makes navigation
+  // silently skip the previous room's conditional leave.
+  const activeJoinGenerationRef = useRef<{ roomId: string; joinedAt: string } | null>(null);
+  if (isCurrentUserMember && currentMember?.joined_at && roomId) {
+    activeJoinGenerationRef.current = { roomId, joinedAt: currentMember.joined_at };
+  } else if (activeJoinGenerationRef.current?.roomId === roomId) {
+    activeJoinGenerationRef.current = null;
+  }
 
   useEffect(() => {
     if (!roomId) return;
-    const handlePageHide = () => {
-      if (activeJoinGenerationRef.current) leaveStudyRoomOnUnload(roomId, activeJoinGenerationRef.current);
+    const leaveThisRoomIfActive = () => {
+      const generation = activeJoinGenerationRef.current;
+      if (generation?.roomId === roomId) {
+        // Only the media-owning tab may submit an unload leave. The backend
+        // independently checks its current session ID, so a superseded tab
+        // cannot revoke the membership of its replacement.
+        const mediaSessionId = getOwnedMediaSession(roomId);
+        if (mediaSessionId) leaveStudyRoomOnUnload(roomId, generation.joinedAt, mediaSessionId);
+      }
     };
-    window.addEventListener('pagehide', handlePageHide);
+    window.addEventListener('pagehide', leaveThisRoomIfActive);
     return () => {
-      window.removeEventListener('pagehide', handlePageHide);
-      if (activeJoinGenerationRef.current) leaveStudyRoomOnUnload(roomId, activeJoinGenerationRef.current);
+      window.removeEventListener('pagehide', leaveThisRoomIfActive);
+      leaveThisRoomIfActive();
     };
   }, [roomId]);
 
@@ -228,8 +339,18 @@ export function useStudyRoom(roomId: string | undefined) {
     if (!roomId) return;
     setActionError(null);
     try {
-      await joinStudyRoom(roomId);
-      await loadMembers();
+      // POST /join is the authoritative acknowledgement for this user's session;
+      // a separate roster GET must never turn a successful join into an idle call.
+      const member = await joinStudyRoom(roomId);
+      sessionRequestRevision.current++;
+      setSessionMember(member);
+      setSessionResolved(true);
+      setSessionError(null);
+      memberRequestRevision.current++;
+      setMembers((previous) => [...previous.filter((entry) => entry.user_id !== member.user_id), member]);
+      setMembersError(null);
+      // Fetch the full roster independently; a transient failure retains the join acknowledgement.
+      void loadMembers();
     } catch (err) {
       setActionError(toStudyRoomError(err));
       throw err;
@@ -240,13 +361,29 @@ export function useStudyRoom(roomId: string | undefined) {
     if (!roomId) return;
     setActionError(null);
     try {
-      await leaveStudyRoom(roomId);
-      await loadMembers();
+      // A stale tab cannot close a newer join generation in another tab.
+      // A successful conditional response still reports the database membership;
+      // if its generation changed, close only this tab's local UI.
+      const joinedAt = currentMember?.joined_at;
+      // Without our own confirmed generation, we do not own the right to
+      // close the account's newer participation (possibly from another tab).
+      if (!joinedAt) return;
+      const member = await leaveStudyRoom(roomId, joinedAt, getOwnedMediaSession(roomId));
+      sessionRequestRevision.current++;
+      const superseded = !!joinedAt && member.joined_at !== joinedAt;
+      setSessionMember(superseded ? null : member);
+      setSessionResolved(true);
+      setSessionError(null);
+      memberRequestRevision.current++;
+      if (!superseded) {
+        setMembers((previous) => [...previous.filter((entry) => entry.user_id !== member.user_id), member]);
+        void loadMembers();
+      }
     } catch (err) {
       setActionError(toStudyRoomError(err));
       throw err;
     }
-  }, [roomId, loadMembers]);
+  }, [roomId, currentMember?.joined_at, loadMembers]);
 
   const moderate = useCallback(
     async (targetUserId: string, action: ModerationAction) => {
@@ -298,21 +435,22 @@ export function useStudyRoom(roomId: string | undefined) {
       setActionError(null);
       try {
         await transferStudyRoomHost(roomId, userId);
-        await Promise.all([loadMembers(), loadRoom()]);
+        await Promise.all([loadMembers(), refreshRoom()]);
       } catch (err) {
         setActionError(toStudyRoomError(err));
         throw err;
       }
     },
-    [roomId, loadMembers, loadRoom]
+    [roomId, loadMembers, refreshRoom]
   );
 
   return {
-    room,
-    members,
+    room: activeRoom,
+    members: activeMembers,
     loading,
     roomError,
     membersError,
+    sessionError,
     actionError,
     clearActionError: () => setActionError(null),
     currentUserId,
@@ -330,7 +468,7 @@ export function useStudyRoom(roomId: string | undefined) {
     moderate,
     changeMemberRole,
     transferHost,
-    refetchMembers: loadMembers,
-    refetchRoom: loadRoom,
+    refetchMembers: reconcileMembership,
+    refetchRoom: refreshRoom,
   };
 }

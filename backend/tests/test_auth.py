@@ -26,3 +26,12 @@ async def test_me_returns_current_user(async_client):
     assert response.status_code == 200
     body = response.json()
     assert body == {"id": str(fake_user.id), "email": "user@example.com", "role": "authenticated"}
+
+
+async def test_backend_rejects_unverified_frontend_mock_token(async_client):
+    """A mock client identity must never bypass Supabase signature validation."""
+    response = await async_client.get(
+        '/auth/me',
+        headers={'Authorization': 'Bearer dev-token-10000000-0000-0000-0000-000000000001'},
+    )
+    assert response.status_code == 401

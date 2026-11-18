@@ -18,6 +18,11 @@ class Settings(BaseSettings):
     livekit_api_key: str
     livekit_api_secret: str
     livekit_token_ttl_seconds: int = 600
+    # Strict media session ownership: rollout requires migration 011.
+    # Preview may point this at private local PostgreSQL while sharing real
+    # Supabase for room membership/auth, without production schema changes.
+    meeting_session_required: bool = False
+    meeting_session_database_url: str | None = None
     cors_allowed_origins: str = "http://localhost:5173,http://localhost:5174,http://127.0.0.1:5173,http://127.0.0.1:5174"
 
     # Invitations
