@@ -83,9 +83,18 @@ should be passed off as a connected call.
    hand raising, chat, join/leave/rejoin, kick, permissions, network
    loss/reconnect, and room end, across browsers.
 4. Coordinate backend+frontend release only after PM acceptance.
-5. **Security priority:** Original production backend contained an unsigned
-   development-token acceptance path. This review branch closes it, but
-   production is unchanged pending PM release approval.
+5. **Security priority, evidence 2026-11-18:** Public API ingress rejects
+   synthetic unsigned development tokens (HTTP 403 from Caddy) via an explicit
+   header-matching rule in `/etc/caddy/Caddyfile`; the production FastAPI
+   listener is bound to 127.0.0.1:8000 only. A single read-only `/auth/me`
+   check against that loopback listener nevertheless returned HTTP 200 for a
+   synthetic unsigned development token, confirming that backend verification
+   remains insufficient behind the gateway. No data was read or modified.
+   A minimal independent hotfix exists in local branch
+   `fix/security-block-unsigned-dev-token-20261118` at commit `d257b24`,
+   based on production SHA `e1828af`: 100/100 auth/meeting/permission tests
+   passed. Both the hotfix and feature branch remain **undeployed**, pending
+   PM approval. Do not describe the external route as currently bypassed.
 
 Three least-privilege systemd units are prepared under `deploy/staging/`:
 `studytogether-review-postgres.service`, `studytogether-review-api.service`,
