@@ -12,7 +12,30 @@ interface NotificationDropdownModalProps {
   // and after unmount) -- the caller passes a RefObject<HTMLButtonElement | null>, so this
   // prop must accept that instead of the old non-nullable RefObject<HTMLElement>.
   triggerRef?: React.RefObject<HTMLElement | null>;
+  /** 'below' (default): drops down under the bell in the top header.
+   *  'above': phone bottom bar -- a full-width sheet that opens upward above the bar. */
+  placement?: 'below' | 'above';
 }
+
+const BELOW_POSITION: React.CSSProperties = {
+  position: 'absolute',
+  top: 48,
+  right: 0,
+  width: 420,
+  maxWidth: 'calc(100vw - 32px)',
+};
+
+/** Fixed to the viewport so the 420px panel never runs off a phone screen; sits just above
+ *  the floating bottom bar (bar height + its bottom gap + safe area) and scrolls if the
+ *  screen is short. */
+const ABOVE_POSITION: React.CSSProperties = {
+  position: 'fixed',
+  left: 12,
+  right: 12,
+  bottom: 'calc(84px + env(safe-area-inset-bottom))',
+  maxHeight: 'calc(100dvh - 120px - env(safe-area-inset-bottom))',
+  overflowY: 'auto',
+};
 
 const TABS: { key: NotificationCategory; label: string }[] = [
   { key: 'all', label: 'Tất cả' },
@@ -25,6 +48,7 @@ export const NotificationDropdownModal: React.FC<NotificationDropdownModalProps>
   isOpen,
   onClose,
   triggerRef,
+  placement = 'below',
 }) => {
   const modalRef = useRef<HTMLDivElement>(null);
   const tabBarRef = useRef<HTMLDivElement>(null);
@@ -108,18 +132,15 @@ export const NotificationDropdownModal: React.FC<NotificationDropdownModalProps>
     <div
       ref={modalRef}
       style={{
-        position: 'absolute',
-        top: 48,
-        right: 0,
-        width: 420,
-        maxWidth: 'calc(100vw - 32px)',
+        ...(placement === 'above' ? ABOVE_POSITION : BELOW_POSITION),
         backgroundColor: 'white',
         borderRadius: 16,
         boxShadow: '0 20px 25px -5px rgba(0, 0, 0, 0.1), 0 8px 10px -6px rgba(0, 0, 0, 0.1), 0 0 0 1px rgba(0, 0, 0, 0.05)',
         zIndex: 9999,
         display: 'flex',
         flexDirection: 'column',
-        overflow: 'hidden',
+        // 'above' scrolls as a whole on short phone screens (see ABOVE_POSITION).
+        ...(placement === 'above' ? {} : { overflow: 'hidden' as const }),
         animation: 'fadeIn 0.15s ease-out',
       }}
     >

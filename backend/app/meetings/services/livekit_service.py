@@ -12,15 +12,29 @@ from livekit.api import (
     RoomParticipantIdentity,
     ServerError,
     ServerErrorCode,
+    TokenVerifier,
     VideoGrants,
+    WebhookReceiver,
 )
 from livekit.protocol.models import TrackSource, ParticipantInfo
 
 from app.core.config import settings
 
+_STUDY_ROOM_PREFIX = "study-room-"
+
 
 def study_room_livekit_name(room_id: uuid.UUID) -> str:
-    return f"study-room-{room_id}"
+    return f"{_STUDY_ROOM_PREFIX}{room_id}"
+
+
+def parse_study_room_livekit_name(name: str) -> uuid.UUID | None:
+    """Inverse of `study_room_livekit_name`; None for any room this app didn't name."""
+    if not name.startswith(_STUDY_ROOM_PREFIX):
+        return None
+    try:
+        return uuid.UUID(name[len(_STUDY_ROOM_PREFIX):])
+    except ValueError:
+        return None
 
 
 class LiveKitService:
@@ -30,7 +44,16 @@ class LiveKitService:
     KICK/MUTE/UNMUTE/end/delete handling. The LiveKit room itself is still never explicitly
     *created* here -- LiveKit Cloud creates it on first participant join -- but it can now
     be explicitly closed (`close_room`) rather than only ever left to its own
-    `empty_timeout`."""
+    `empty_timeout`.
+
+    Passive disconnects (phone killed the tab, network dropped, browser crashed) are
+    reported back by LiveKit's `participant_left` webhook -- see
+    app/meetings/routers/livekit_webhook_router.py."""
+
+    def webhook_receiver(self) -> WebhookReceiver:
+        """Verifies LiveKit webhook signatures (JWT signed with our API secret, carrying
+        the sha256 of the body) before an event is trusted."""
+        return WebhookReceiver(TokenVerifier(settings.livekit_api_key, settings.livekit_api_secret))
 
     def create_participant_token(
         self,
@@ -99,6 +122,25 @@ class LiveKitService:
                 # Other LiveKit identities are not authenticated StudyTogether users.
                 continue
         return connected
+
+    async def is_participant_connected(self, room_id: uuid.UUID, identity: uuid.UUID) -> bool:
+        """Whether LiveKit currently holds ANY session for `identity` in this room,
+        including one still JOINING (e.g. a phone reconnecting with a fresh token).
+
+        Missing room/participant means False; a transport/API failure propagates so the
+        caller can stay conservative instead of treating "unknown" as "gone"."""
+        async with self._room_api() as lkapi:
+            try:
+                participant = await asyncio.wait_for(
+                    lkapi.room.get_participant(
+                        RoomParticipantIdentity(room=study_room_livekit_name(room_id), identity=str(identity))
+                    ), timeout=6
+                )
+            except ServerError as error:
+                if self._is_not_found(error):
+                    return False
+                raise
+        return participant.state != ParticipantInfo.State.DISCONNECTED
 
     async def connected_counts(self, room_ids: list[uuid.UUID]) -> dict[uuid.UUID, int]:
         """One LiveKit rooms RPC for the visible rooms, not N participant RPCs.

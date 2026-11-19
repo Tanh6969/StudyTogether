@@ -295,3 +295,34 @@ async def test_close_room_infra_error_propagates(monkeypatch):
 
     with pytest.raises(ServerError):
         await service.close_room(uuid.uuid4())
+
+
+# --- is_participant_connected (webhook re-check) ---
+
+
+async def test_is_participant_connected_true_for_active_or_joining(monkeypatch):
+    from livekit.protocol.models import ParticipantInfo
+    room_mock = MagicMock()
+    room_mock.get_participant = AsyncMock(return_value=ParticipantInfo(state=ParticipantInfo.State.JOINING))
+    service = _service_with_fake_room(monkeypatch, room_mock)
+    room_id, identity = uuid.uuid4(), uuid.uuid4()
+
+    assert await service.is_participant_connected(room_id, identity) is True
+    request = room_mock.get_participant.call_args.args[0]
+    assert request.room == study_room_livekit_name(room_id)
+    assert request.identity == str(identity)
+
+
+async def test_is_participant_connected_false_when_not_found(monkeypatch):
+    room_mock = MagicMock()
+    room_mock.get_participant = AsyncMock(side_effect=_not_found_error())
+    service = _service_with_fake_room(monkeypatch, room_mock)
+    assert await service.is_participant_connected(uuid.uuid4(), uuid.uuid4()) is False
+
+
+async def test_is_participant_connected_propagates_infra_errors(monkeypatch):
+    room_mock = MagicMock()
+    room_mock.get_participant = AsyncMock(side_effect=_infra_error())
+    service = _service_with_fake_room(monkeypatch, room_mock)
+    with pytest.raises(ServerError):
+        await service.is_participant_connected(uuid.uuid4(), uuid.uuid4())

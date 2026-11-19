@@ -18,6 +18,10 @@ class Settings(BaseSettings):
     livekit_api_key: str
     livekit_api_secret: str
     livekit_token_ttl_seconds: int = 600
+    # After a passive `participant_left` webhook, wait this long and re-check LiveKit
+    # before closing the study_room_members row, so a phone that reconnects quickly
+    # (new tab, network handover) keeps its membership.
+    livekit_webhook_leave_grace_seconds: float = 20.0
     # Strict media session ownership: rollout requires migration 011.
     # Preview may point this at private local PostgreSQL while sharing real
     # Supabase for room membership/auth, without production schema changes.

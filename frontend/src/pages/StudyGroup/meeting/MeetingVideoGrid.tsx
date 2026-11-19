@@ -9,6 +9,7 @@ import type { StudyRoomMember } from '../../../lib/studyRoom.types';
 import { getAvatarColor, getAvatarInitials } from '../../../utils/avatarUtils';
 import { getDisplayName } from '../../../utils/userDisplay';
 import { useMeetingContext } from './MeetingContext';
+import { useIsMobile } from '../../../hooks/useIsMobile';
 
 interface MeetingStatusMessageProps {
   icon: ReactNode;
@@ -111,6 +112,7 @@ export function MeetingVideoGrid({ members, currentUserId, currentUserName, curr
 }
 
 function ConnectedGrid({ members, currentUserId, currentUserName, currentUserAvatarUrl }: Omit<MeetingVideoGridProps, 'unavailableReason'>) {
+  const isMobile = useIsMobile();
   const participants = useParticipants();
   const cameraTrackRefs = useTracks([Track.Source.Camera], { onlySubscribed: false });
   // Screen-share tracks are identified via LiveKit's own `Track.Source.ScreenShare`, never by
@@ -175,8 +177,11 @@ function ConnectedGrid({ members, currentUserId, currentUserName, currentUserAva
         style={{
           flex: 1,
           display: 'grid',
-          gridTemplateColumns: participants.length > 4 ? 'repeat(3, 1fr)' : 'repeat(2, 1fr)',
-          gap: 16,
+          // Phones: a single tile fills the width; otherwise 2 columns (3 would be thumbnails).
+          gridTemplateColumns: isMobile
+            ? (participants.length > 1 ? 'repeat(2, 1fr)' : '1fr')
+            : participants.length > 4 ? 'repeat(3, 1fr)' : 'repeat(2, 1fr)',
+          gap: isMobile ? 8 : 16,
           alignContent: 'center',
         }}
       >

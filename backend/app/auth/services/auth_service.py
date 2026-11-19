@@ -53,7 +53,7 @@ class SupabaseAuthService:
 
     def __init__(self) -> None:
         self._jwk_client = PyJWKClient(settings.supabase_jwks_url, cache_keys=True, lifespan=3600)
-
+    """Dev lại verify"""
     def verify(self, token: str) -> dict[str, Any]:
         # The frontend's mock credentials are never valid backend credentials.
         # Accepting an unsigned development token here would allow identity

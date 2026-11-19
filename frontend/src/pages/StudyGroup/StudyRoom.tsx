@@ -16,11 +16,15 @@ import {
   UsersRound,
   Pencil,
   Trash2,
-  Image as ImageIcon
+  Image as ImageIcon,
+  WifiOff,
+  X,
 } from 'lucide-react';
 import type { ReactNode } from 'react';
 import { useAuth } from '../../hooks/useAuth';
 import { useStudyRoom } from '../../hooks/useStudyRoom';
+import { useIsMobile } from '../../hooks/useIsMobile';
+import { useRoomConnectionWatch } from '../../hooks/useRoomConnectionWatch';
 import { claimMeetingSession } from '../../lib/meeting.api';
 import { setOwnedMediaSession } from '../../lib/meetingOwnerState';
 import { useRoomMessages } from '../../hooks/useRoomMessages';
@@ -63,9 +67,13 @@ interface CenteredRoomMessageProps {
   children?: ReactNode;
 }
 
+// `dvh` follows the phone's visible viewport (address bar shown/hidden); `vh` alone
+// pushes the bottom controls under mobile browser chrome.
+const FULL_HEIGHT = '100dvh';
+
 function CenteredRoomMessage({ title, subtitle, onBack, children }: CenteredRoomMessageProps) {
   return (
-    <div style={{width: '100vw', height: '100vh', background: '#0F172A', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 8, padding: 24, fontFamily: 'Inter, sans-serif', textAlign: 'center'}}>
+    <div style={{width: '100%', minHeight: FULL_HEIGHT, boxSizing: 'border-box', background: '#0F172A', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 8, padding: 24, fontFamily: 'Inter, sans-serif', textAlign: 'center'}}>
       <h1 style={{color: 'white', fontSize: 20, fontWeight: '700', margin: 0}}>{title}</h1>
       {subtitle && <p style={{color: '#94A3B8', fontSize: 14, margin: '4px 0 12px', maxWidth: 420}}>{subtitle}</p>}
       {children}
@@ -118,7 +126,16 @@ export function StudyRoom() {
   const [activeSidebarTab, setActiveSidebarTab] = useState<'tasks' | 'chat' | 'music'>('tasks');
   const [activeBoardTab, setActiveBoardTab] = useState<'whiteboard' | 'presentation'>('whiteboard');
 
-  const [isSidebarOpen, setIsSidebarOpen] = useState(true);
+  const isMobile = useIsMobile();
+  // On a phone the sidebar is a full-screen sheet over the call, so it starts closed.
+  const [isSidebarOpen, setIsSidebarOpen] = useState(() => !isMobile);
+  useEffect(() => {
+    setIsSidebarOpen(!isMobile);
+  }, [isMobile]);
+  const openSidebarTab = useCallback((tab: 'tasks' | 'chat' | 'music') => {
+    setActiveSidebarTab(tab);
+    setIsSidebarOpen(true);
+  }, []);
   const showGame = useCallback(() => setActiveMode('game'), []);
   const showMusic = useCallback(() => {
     setIsSidebarOpen(true);
@@ -156,7 +173,42 @@ export function StudyRoom() {
     if (activeMode === 'whiteboard') setWhiteboardOpened(true);
   }, [activeMode]);
 
+  // Coming back to a backgrounded phone tab: the backend may have closed this
+  // membership after a passive disconnect (LiveKit webhook) -- re-read it now.
+  const resyncAfterResume = useCallback(() => {
+    void refetchMembers();
+    void refetchRoom();
+  }, [refetchMembers, refetchRoom]);
+  const { isOnline } = useRoomConnectionWatch(resyncAfterResume);
+
+  // Membership ended while this page was in the call, without the user pressing
+  // "Rời phòng": a passive disconnect closed by the server, or a kick.
+  const leavingRef = useRef(false);
+  const wasInCallRef = useRef(false);
+  const [membershipLost, setMembershipLost] = useState(false);
+  useEffect(() => {
+    if (!lobbyConfirmed) {
+      wasInCallRef.current = false;
+      return;
+    }
+    if (isCurrentUserMember) {
+      wasInCallRef.current = true;
+      setMembershipLost(false);
+    } else if (wasInCallRef.current && !leavingRef.current) {
+      setMembershipLost(true);
+    }
+  }, [lobbyConfirmed, isCurrentUserMember]);
+
+  const handleRejoinAfterLoss = () => {
+    setMembershipLost(false);
+    wasInCallRef.current = false;
+    setClientSessionId(null);
+    setLobbyConfirmed(false);
+    setCallParticipants([]);
+  };
+
   const handleLeaveRoom = async () => {
+    leavingRef.current = true;
     if (document.fullscreenElement && document.exitFullscreen) {
       document.exitFullscreen().catch(() => {});
     }
@@ -387,8 +439,8 @@ export function StudyRoom() {
   // both joins the room and confirms the media setup in one action, instead of a separate screen.
   if (callTransferred) {
     return (
-      <div style={{ width: '100vw', height: '100vh', display: 'flex', flexDirection: 'column',
-        justifyContent: 'center', alignItems: 'center', gap: 16, padding: 28,
+      <div style={{ width: '100%', minHeight: FULL_HEIGHT, boxSizing: 'border-box', display: 'flex', flexDirection: 'column',
+        justifyContent: 'center', alignItems: 'center', gap: 16, padding: isMobile ? 20 : 28,
         background: '#0F172A', color: '#E2E8F0', textAlign: 'center' }}>
         <VideoIcon size={42} color="#FBBF24" />
         <h2 style={{ margin: 0, fontSize: 22 }}>Cuộc gọi đã chuyển sang tab hoặc thiết bị khác</h2>
@@ -403,6 +455,31 @@ export function StudyRoom() {
           Quay về nhóm
         </button>
       </div>
+    );
+  }
+
+  if (membershipLost) {
+    return (
+      <CenteredRoomMessage
+        title="Bạn đã bị ngắt khỏi phòng học"
+        subtitle="Kết nối của bạn bị gián đoạn quá lâu (ví dụ: tắt màn hình, chuyển ứng dụng hoặc mất mạng), hoặc bạn đã được mời ra khỏi phòng."
+      >
+        <WifiOff size={36} color="#FBBF24" style={{ order: -1, marginBottom: 8 }} />
+        <div style={{ display: 'flex', flexDirection: isMobile ? 'column' : 'row', gap: 10, width: isMobile ? '100%' : 'auto', maxWidth: 360, marginTop: 8 }}>
+          <button
+            onClick={handleRejoinAfterLoss}
+            style={{ border: 0, borderRadius: 10, padding: '12px 20px', background: '#2563EB', color: 'white', cursor: 'pointer', fontWeight: 600, fontSize: 15 }}
+          >
+            Tham gia lại
+          </button>
+          <button
+            onClick={() => navigate(`/groups/${room.group_id}`)}
+            style={{ border: 0, borderRadius: 10, padding: '12px 20px', background: '#334155', color: 'white', cursor: 'pointer', fontWeight: 500, fontSize: 15 }}
+          >
+            Quay về nhóm
+          </button>
+        </div>
+      </CenteredRoomMessage>
     );
   }
 
@@ -465,39 +542,58 @@ export function StudyRoom() {
       onShowGame={showGame}
       onShowMusic={showMusic}
     >
-    <div style={{width: '100vw', height: '100vh', background: '#0F172A', display: 'flex', flexDirection: 'column', overflow: 'hidden', fontFamily: 'Inter, sans-serif'}}>
+    <div style={{width: '100%', height: FULL_HEIGHT, background: '#0F172A', display: 'flex', flexDirection: 'column', overflow: 'hidden', fontFamily: 'Inter, sans-serif'}}>
 
-      {/* Top Header Bar */}
-      <header style={{height: 64, background: '#1E293B', borderBottom: '1px solid #334155', padding: '0 24px', display: 'flex', justifyContent: 'space-between', alignItems: 'center', zIndex: 20, position: 'relative'}}>
+      {/* Top Header Bar -- one row on desktop; on phones the mode tabs drop to a second row. */}
+      <header style={isMobile
+        ? {background: '#1E293B', borderBottom: '1px solid #334155', padding: '8px 12px', paddingTop: 'max(8px, env(safe-area-inset-top))', display: 'flex', flexWrap: 'wrap', alignItems: 'center', rowGap: 8, columnGap: 8, zIndex: 20, position: 'relative'}
+        : {height: 64, background: '#1E293B', borderBottom: '1px solid #334155', padding: '0 24px', display: 'flex', justifyContent: 'space-between', alignItems: 'center', zIndex: 20, position: 'relative'}}>
 
         {/* Left Info & Back button */}
-        <div style={{display: 'flex', alignItems: 'center', gap: 16}}>
+        <div style={{display: 'flex', alignItems: 'center', gap: isMobile ? 8 : 16, minWidth: 0, flex: isMobile ? 1 : undefined}}>
           <button
             onClick={handleLeaveRoom}
-            style={{background: '#334155', border: 'none', color: 'white', padding: '8px 12px', borderRadius: 8, cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 6, fontSize: 13, fontWeight: '500'}}
+            aria-label="Rời phòng"
+            style={{background: '#334155', border: 'none', color: 'white', padding: isMobile ? 8 : '8px 12px', borderRadius: 8, cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 6, fontSize: 13, fontWeight: '500', flexShrink: 0}}
           >
-            <ArrowLeft size={16} /> Rời phòng
+            <ArrowLeft size={16} /> {!isMobile && 'Rời phòng'}
           </button>
 
-          <div style={{height: 24, width: 1, background: '#475569'}} />
+          {!isMobile && <div style={{height: 24, width: 1, background: '#475569'}} />}
 
-          <div style={{display: 'flex', alignItems: 'center', gap: 10}}>
-            <div style={{width: 10, height: 10, borderRadius: '50%', background: '#10B981', boxShadow: '0 0 10px #10B981'}} />
-            <h1 style={{fontSize: 16, fontWeight: '600', color: 'white', margin: 0, whiteSpace: 'nowrap'}}>
-              {room.name} • <span style={{color: '#94A3B8', fontWeight: '400'}}>{inRoomCount > 0 ? `${inRoomCount} người đang học` : 'Đang mở'}</span>
-            </h1>
-            <span title="Vai trò của bạn trong phòng" style={{padding: '2px 8px', borderRadius: 999, background: '#334155', color: '#CBD5E1', fontSize: 11, fontWeight: 600, whiteSpace: 'nowrap'}}>
-              {ROOM_RANK_LABEL[myRank]}
-            </span>
+          <div style={{display: 'flex', alignItems: 'center', gap: isMobile ? 8 : 10, minWidth: 0}}>
+            <div style={{width: 10, height: 10, borderRadius: '50%', background: '#10B981', boxShadow: '0 0 10px #10B981', flexShrink: 0}} />
+            {isMobile ? (
+              <div style={{minWidth: 0, lineHeight: 1.25}}>
+                <h1 style={{fontSize: 14, fontWeight: 600, color: 'white', margin: 0, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis'}}>{room.name}</h1>
+                <div style={{fontSize: 11, color: '#94A3B8', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis'}}>
+                  {inRoomCount > 0 ? `${inRoomCount} người đang học` : 'Đang mở'} · {ROOM_RANK_LABEL[myRank]}
+                </div>
+              </div>
+            ) : (
+              <>
+                <h1 style={{fontSize: 16, fontWeight: '600', color: 'white', margin: 0, whiteSpace: 'nowrap'}}>
+                  {room.name} • <span style={{color: '#94A3B8', fontWeight: '400'}}>{inRoomCount > 0 ? `${inRoomCount} người đang học` : 'Đang mở'}</span>
+                </h1>
+                <span title="Vai trò của bạn trong phòng" style={{padding: '2px 8px', borderRadius: 999, background: '#334155', color: '#CBD5E1', fontSize: 11, fontWeight: 600, whiteSpace: 'nowrap'}}>
+                  {ROOM_RANK_LABEL[myRank]}
+                </span>
+              </>
+            )}
           </div>
         </div>
 
         {/* Center Mode Switcher Tabs */}
-        <div style={{position: 'absolute', left: '50%', transform: 'translateX(-50%)', background: '#0F172A', padding: 4, borderRadius: 10, border: '1px solid #334155', display: 'flex', gap: 4}}>
-          <button 
+        <div style={isMobile
+          ? {order: 3, flexBasis: '100%', background: '#0F172A', padding: 3, borderRadius: 10, border: '1px solid #334155', display: 'flex', gap: 3}
+          : {position: 'absolute', left: '50%', transform: 'translateX(-50%)', background: '#0F172A', padding: 4, borderRadius: 10, border: '1px solid #334155', display: 'flex', gap: 4}}>
+          <button
             onClick={() => setActiveMode('video')}
             style={{
-              padding: '6px 16px', 
+              flex: isMobile ? 1 : undefined,
+              justifyContent: 'center',
+              whiteSpace: 'nowrap',
+              padding: isMobile ? '7px 6px' : '6px 16px',
               borderRadius: 8, 
               border: 'none', 
               background: activeMode === 'video' ? '#2563EB' : 'transparent', 
@@ -511,12 +607,15 @@ export function StudyRoom() {
               transition: 'all 0.2s'
             }}
           >
-            <VideoIcon size={16} /> Gọi Video ({participants.length})
+            <VideoIcon size={16} /> {isMobile ? `Video (${participants.length})` : `Gọi Video (${participants.length})`}
           </button>
-          <button 
+          <button
             onClick={() => setActiveMode('whiteboard')}
             style={{
-              padding: '6px 16px', 
+              flex: isMobile ? 1 : undefined,
+              justifyContent: 'center',
+              whiteSpace: 'nowrap',
+              padding: isMobile ? '7px 6px' : '6px 16px',
               borderRadius: 8, 
               border: 'none', 
               background: activeMode === 'whiteboard' ? '#2563EB' : 'transparent', 
@@ -530,18 +629,18 @@ export function StudyRoom() {
               transition: 'all 0.2s'
             }}
           >
-            <Pencil size={16} /> Bảng Trắng
+            <Pencil size={16} /> {isMobile ? 'Bảng' : 'Bảng Trắng'}
           </button>
           <GameModeTab
             active={activeMode === 'game'}
             onClick={() => setActiveMode('game')}
-            style={(active) => ({padding: '6px 16px', borderRadius: 8, border: 'none', background: active ? '#2563EB' : 'transparent', color: active ? 'white' : '#94A3B8', fontSize: 13, fontWeight: '600', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 8, transition: 'all 0.2s'})}
+            style={(active) => ({flex: isMobile ? 1 : undefined, justifyContent: 'center', whiteSpace: 'nowrap', padding: isMobile ? '7px 6px' : '6px 16px', borderRadius: 8, border: 'none', background: active ? '#2563EB' : 'transparent', color: active ? 'white' : '#94A3B8', fontSize: 13, fontWeight: '600', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 8, transition: 'all 0.2s'})}
           />
         </div>
 
         {/* Right Timer & Status */}
-        <div style={{display: 'flex', alignItems: 'center', gap: 12}}>
-          {actionError && (
+        <div style={{display: 'flex', alignItems: 'center', gap: isMobile ? 6 : 12, flexShrink: 0}}>
+          {actionError && !isMobile && (
             <div
               onClick={clearActionError}
               title="Bấm để ẩn thông báo"
@@ -572,7 +671,7 @@ export function StudyRoom() {
               onMouseOver={e => { e.currentTarget.style.borderColor = '#2563EB'; e.currentTarget.style.color = '#93C5FD'; }}
               onMouseOut={e => { e.currentTarget.style.borderColor = '#475569'; e.currentTarget.style.color = '#94A3B8'; }}
             >
-              <UsersRound size={16} /> Quyền trong phòng
+              <UsersRound size={16} /> {!isMobile && 'Quyền trong phòng'}
             </button>
           )}
           {permissions.canManageRoom && (
@@ -586,11 +685,27 @@ export function StudyRoom() {
               <Trash2 size={16} />
             </button>
           )}
-          <div title="Thời gian bạn đã học trong phòng lần này" style={{background: '#334155', padding: '6px 14px', borderRadius: 8, color: '#38BDF8', fontSize: 14, fontFamily: 'monospace', fontWeight: '600'}}>
+          <div title="Thời gian bạn đã học trong phòng lần này" style={{background: '#334155', padding: isMobile ? '5px 8px' : '6px 14px', borderRadius: 8, color: '#38BDF8', fontSize: isMobile ? 12 : 14, fontFamily: 'monospace', fontWeight: '600'}}>
             {elapsedSeconds !== null ? formatTime(elapsedSeconds) : '00:00:00'}
           </div>
         </div>
       </header>
+
+      {/* Connection / error banners: visible on every screen size, never squeezed into the header. */}
+      {!isOnline && (
+        <div role="status" style={{display: 'flex', alignItems: 'center', gap: 8, padding: '8px 14px', background: '#78350F', color: '#FEF3C7', fontSize: 13, zIndex: 19}}>
+          <WifiOff size={16} style={{flexShrink: 0}} />
+          <span>Mất kết nối mạng. Cuộc gọi sẽ tự kết nối lại khi có mạng — đừng tắt màn hình hoặc chuyển ứng dụng quá lâu.</span>
+        </div>
+      )}
+      {actionError && isMobile && (
+        <div role="alert" style={{display: 'flex', alignItems: 'center', gap: 8, padding: '8px 14px', background: '#450A0A', color: '#FCA5A5', fontSize: 13, zIndex: 19}}>
+          <span style={{flex: 1}}>{actionError.message}</span>
+          <button onClick={clearActionError} aria-label="Ẩn thông báo" style={{background: 'none', border: 'none', color: '#FCA5A5', padding: 4, cursor: 'pointer', display: 'flex'}}>
+            <X size={16} />
+          </button>
+        </div>
+      )}
 
       <InviteModal
         isOpen={isInviteModalOpen}
@@ -619,7 +734,7 @@ export function StudyRoom() {
       {/* Modal: Xác nhận xóa phòng học */}
       {isDeleteRoomModalOpen && (
         <div style={{ position: 'fixed', top: 0, left: 0, right: 0, bottom: 0, backgroundColor: 'rgba(0, 0, 0, 0.5)', display: 'flex', justifyContent: 'center', alignItems: 'center', zIndex: 200 }}>
-          <div style={{ background: '#1E293B', borderRadius: 12, width: 420, padding: 32, display: 'flex', flexDirection: 'column', position: 'relative', boxShadow: '0px 10px 25px rgba(0, 0, 0, 0.3)', border: '1px solid #334155' }}>
+          <div style={{ background: '#1E293B', borderRadius: 12, width: 'min(420px, calc(100% - 32px))', boxSizing: 'border-box', padding: isMobile ? 20 : 32, display: 'flex', flexDirection: 'column', position: 'relative', boxShadow: '0px 10px 25px rgba(0, 0, 0, 0.3)', border: '1px solid #334155' }}>
             <button
               onClick={() => { if (!isDeletingRoom) { setIsDeleteRoomModalOpen(false); clearActionError(); } }}
               disabled={isDeletingRoom}
@@ -670,7 +785,7 @@ export function StudyRoom() {
         
         {/* MODE A: LIVEKIT VIDEO CALL VIEW */}
         {activeMode === 'video' && (
-          <div style={{flex: 1, padding: 20, display: 'flex', flexDirection: 'column', gap: 16, overflowY: 'auto', background: '#0F172A'}}>
+          <div style={{flex: 1, minWidth: 0, padding: isMobile ? 8 : 20, display: 'flex', flexDirection: 'column', gap: isMobile ? 8 : 16, overflowY: 'auto', background: '#0F172A'}}>
             <MeetingVideoGrid
               members={members}
               currentUserId={currentUserId}
@@ -689,8 +804,8 @@ export function StudyRoom() {
           <div style={{flex: 1, display: activeMode === 'whiteboard' ? 'flex' : 'none', flexDirection: 'column', background: '#F8FAFC', minWidth: 0}}>
             
             {/* Board Sub-header */}
-            <div style={{height: 48, background: 'white', borderBottom: '1px solid #E2E8F0', padding: '0 20px', display: 'flex', justifyContent: 'space-between', alignItems: 'center'}}>
-              <div style={{display: 'flex', gap: 8}}>
+            <div style={{height: 48, background: 'white', borderBottom: '1px solid #E2E8F0', padding: isMobile ? '0 8px' : '0 20px', display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8, overflowX: 'auto'}}>
+              <div style={{display: 'flex', gap: isMobile ? 4 : 8, whiteSpace: 'nowrap'}}>
                 <button 
                   onClick={() => setActiveBoardTab('whiteboard')}
                   style={{padding: '6px 14px', borderRadius: 6, border: 'none', background: activeBoardTab === 'whiteboard' ? '#EFF6FF' : 'transparent', color: activeBoardTab === 'whiteboard' ? '#1D4ED8' : '#64748B', fontWeight: '600', fontSize: 13, cursor: 'pointer'}}
@@ -701,12 +816,12 @@ export function StudyRoom() {
                   onClick={() => setActiveBoardTab('presentation')}
                   style={{padding: '6px 14px', borderRadius: 6, border: 'none', background: activeBoardTab === 'presentation' ? '#EFF6FF' : 'transparent', color: activeBoardTab === 'presentation' ? '#1D4ED8' : '#64748B', fontWeight: '600', fontSize: 13, cursor: 'pointer'}}
                 >
-                  📄 Slide Bài giảng{room.presentation_state ? ` (${room.presentation_state.file_name})` : ''}
+                  📄 {isMobile ? 'Slide' : `Slide Bài giảng${room.presentation_state ? ` (${room.presentation_state.file_name})` : ''}`}
                 </button>
               </div>
 
               {/* Action buttons */}
-              <div style={{display: 'flex', gap: 12}}>
+              <div style={{display: isMobile ? 'none' : 'flex', gap: 12}}>
                 <button style={{display: 'flex', alignItems: 'center', gap: 6, padding: '4px 12px', background: '#F1F5F9', border: '1px solid #CBD5E1', borderRadius: 6, fontSize: 12, fontWeight: '500', color: '#334155', cursor: 'pointer'}}>
                   <Download size={14} /> Tải bảng (PNG)
                 </button>
@@ -745,12 +860,29 @@ export function StudyRoom() {
 
         {/* RIGHT COLLAPSIBLE SIDEBAR WITH SLEEK EDGE TOGGLE */}
         {isSidebarOpen ? (
-          <aside style={{width: 'min(40vw, 420px)', minWidth: 340, background: '#1E293B', borderLeft: '1px solid #334155', display: 'flex', flexDirection: 'column', zIndex: 10, position: 'relative'}}>
-            
+          <aside style={isMobile
+            ? {position: 'absolute', inset: 0, background: '#1E293B', display: 'flex', flexDirection: 'column', zIndex: 40}
+            : {width: 'min(40vw, 420px)', minWidth: 340, background: '#1E293B', borderLeft: '1px solid #334155', display: 'flex', flexDirection: 'column', zIndex: 10, position: 'relative'}}>
+
+            {/* Phone: the sheet covers the call, so it needs its own visible close bar. */}
+            {isMobile && (
+              <div style={{display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '6px 8px 6px 14px', background: '#0F172A', borderBottom: '1px solid #334155'}}>
+                <span style={{color: '#E2E8F0', fontSize: 14, fontWeight: 600}}>Tiện ích phòng học</span>
+                <button
+                  onClick={() => setIsSidebarOpen(false)}
+                  aria-label="Đóng thanh tiện ích"
+                  style={{background: '#334155', border: 'none', color: 'white', borderRadius: 8, padding: 8, display: 'flex', cursor: 'pointer'}}
+                >
+                  <X size={18} />
+                </button>
+              </div>
+            )}
+
             {/* Collapse Edge Handle */}
-            <button 
+            <button
               onClick={() => setIsSidebarOpen(false)}
               style={{
+                display: isMobile ? 'none' : 'flex',
                 position: 'absolute',
                 top: '50%',
                 left: -14,
@@ -762,7 +894,6 @@ export function StudyRoom() {
                 width: 26,
                 height: 48,
                 borderRadius: '8px 0 0 8px',
-                display: 'flex',
                 alignItems: 'center',
                 justifyContent: 'center',
                 cursor: 'pointer',
@@ -939,7 +1070,8 @@ export function StudyRoom() {
                       onChange={(e) => setChatInput(e.target.value)}
                       onKeyDown={(e) => e.key === 'Enter' && handleSendMessage()}
                       disabled={!room?.conversation_id || isSendingMessage || !!messageBan}
-                      style={{flex: 1, padding: '10px 14px', background: '#1E293B', border: '1px solid #334155', borderRadius: 8, outline: 'none', color: 'white', fontSize: 13, opacity: !room?.conversation_id || isSendingMessage || messageBan ? 0.6 : 1}}
+                      // 16px on phones: iOS Safari zooms the whole page into any smaller input.
+                      style={{flex: 1, minWidth: 0, padding: '10px 14px', background: '#1E293B', border: '1px solid #334155', borderRadius: 8, outline: 'none', color: 'white', fontSize: isMobile ? 16 : 13, opacity: !room?.conversation_id || isSendingMessage || messageBan ? 0.6 : 1}}
                     />
                     <button
                       onClick={handleSendMessage}
@@ -954,9 +1086,9 @@ export function StudyRoom() {
             )}
 
           </aside>
-        ) : (
-          /* Sleek Right-Edge Chevron Handle when closed */
-          <button 
+        ) : isMobile ? null : (
+          /* Sleek Right-Edge Chevron Handle when closed (phones use the footer buttons) */
+          <button
             onClick={() => setIsSidebarOpen(true)}
             style={{
               position: 'absolute',
@@ -985,16 +1117,22 @@ export function StudyRoom() {
       </div>
 
       {/* Floating Bottom Control Dock */}
-      <footer style={{height: 60, background: '#1E293B', borderTop: '1px solid #334155', padding: '0 24px', display: 'flex', justifyContent: 'space-between', alignItems: 'center', zIndex: 30, position: 'relative'}}>
-        
+      <footer style={isMobile
+        ? {background: '#1E293B', borderTop: '1px solid #334155', padding: '8px 8px', paddingBottom: 'max(8px, env(safe-area-inset-bottom))', display: 'flex', justifyContent: 'center', alignItems: 'center', zIndex: 30, position: 'relative'}
+        : {height: 60, background: '#1E293B', borderTop: '1px solid #334155', padding: '0 24px', display: 'flex', justifyContent: 'space-between', alignItems: 'center', zIndex: 30, position: 'relative'}}>
+
         {/* Left indicators */}
-        <div style={{display: 'flex', alignItems: 'center', gap: 12, color: '#94A3B8', fontSize: 13}}>
-          <Sparkles size={18} color="#38BDF8" />
-          <span>StudyTogether Call Room v2.0</span>
-        </div>
+        {!isMobile && (
+          <div style={{display: 'flex', alignItems: 'center', gap: 12, color: '#94A3B8', fontSize: 13}}>
+            <Sparkles size={18} color="#38BDF8" />
+            <span>StudyTogether Call Room v2.0</span>
+          </div>
+        )}
 
         {/* Center Control Buttons */}
-        <div style={{position: 'absolute', left: '50%', transform: 'translateX(-50%)', display: 'flex', alignItems: 'center', gap: 12}}>
+        <div style={isMobile
+          ? {display: 'flex', alignItems: 'center', justifyContent: 'space-evenly', width: '100%', maxWidth: 420, gap: 6}
+          : {position: 'absolute', left: '50%', transform: 'translateX(-50%)', display: 'flex', alignItems: 'center', gap: 12}}>
           
           {/* Mic / Camera — real LiveKit track state, see meeting/MeetingControls.tsx. */}
           <MeetingControls disabled={false} />
@@ -1022,6 +1160,28 @@ export function StudyRoom() {
           >
             <Hand size={20} />
           </button>
+
+          {/* Phone: the sidebar has no edge handle, so tasks/chat open from here. */}
+          {isMobile && (
+            <>
+              <button
+                onClick={() => openSidebarTab('tasks')}
+                aria-label="Nhiệm vụ"
+                title="Nhiệm vụ"
+                style={{width: 42, height: 42, borderRadius: '50%', border: 'none', background: '#334155', color: 'white', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center'}}
+              >
+                <Sparkles size={20} />
+              </button>
+              <button
+                onClick={() => openSidebarTab('chat')}
+                aria-label="Trò chuyện"
+                title="Trò chuyện"
+                style={{width: 42, height: 42, borderRadius: '50%', border: 'none', background: '#334155', color: 'white', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center'}}
+              >
+                <MessageSquare size={20} />
+              </button>
+            </>
+          )}
 
           {/* Leave Room Button */}
           <button 

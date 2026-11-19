@@ -1,6 +1,7 @@
 import { getDb, newId, nowIso, saveDb } from './db';
 import { DEFAULT_MOCK_EMAIL } from './seed';
-import { MOCK_LATENCY_MS } from './config';
+import { MOCK_LATENCY_MS, USE_MOCK } from './config';
+import { handleStudyRoomSubroute, mockPassiveDisconnect, MockNotHandled } from './studyRooms';
 import type { Group, GroupCreate, GroupMember } from '../lib/group.types';
 import type { Profile } from '../lib/profile.types';
 import type { Message, MessageListResponse } from '../lib/message.types';
@@ -122,6 +123,12 @@ function notFound(resource: string): never {
   throw new Error(`${resource} không tồn tại trong dữ liệu mẫu.`);
 }
 
+if (USE_MOCK && typeof window !== 'undefined') {
+  // Browser-console helper, mock mode only -- see mockPassiveDisconnect in studyRooms.ts.
+  (window as unknown as { mockPassiveDisconnect: (roomId?: string) => number }).mockPassiveDisconnect =
+    (roomId?: string) => mockPassiveDisconnect(currentUserId(), roomId);
+}
+
 /** Handles the API endpoints needed by the basic, local-only demo. */
 export async function mockApiRequest<T>(path: string, method: MockMethod, body?: unknown): Promise<T> {
   await new Promise((resolve) => setTimeout(resolve, MOCK_LATENCY_MS));
@@ -231,6 +238,14 @@ export async function mockApiRequest<T>(path: string, method: MockMethod, body?:
     result = db.channels.filter((channel) => channel.group_id === groupId && !channel.deleted_at);
   } else if (route.startsWith('/channels/') && method === 'GET') {
     result = db.channels.find((channel) => channel.id === route.slice('/channels/'.length)) ?? notFound('Kênh');
+  } else if (/^\/study-rooms\/[^/]+\/.+$/.test(route)) {
+    // In-room endpoints (session, join/leave, members, meeting, tasks...) -- see studyRooms.ts.
+    try {
+      result = handleStudyRoomSubroute(route, url.searchParams, method, body, viewerId);
+    } catch (error) {
+      if (error instanceof MockNotHandled) notFound(`API mẫu ${method} ${route}`);
+      throw error;
+    }
   } else if (route === '/study-rooms' && method === 'GET') {
     const groupId = url.searchParams.get('group_id');
     result = db.rooms.filter((room) => room.group_id === groupId && !room.deleted_at);
