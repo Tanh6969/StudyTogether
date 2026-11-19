@@ -164,11 +164,13 @@ export function PreJoinLobby({
   };
 
   return (
-    <div style={{width: '100vw', height: '100vh', background: '#0F172A', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', padding: 24, fontFamily: 'Inter, sans-serif'}}>
-      <div style={{display: 'flex', gap: 32, maxWidth: 880, width: '100%', alignItems: 'stretch', flexWrap: 'wrap', justifyContent: 'center'}}>
+    // minHeight + scroll (not a fixed 100vh): on a phone the preview, device pickers and
+    // join button are taller than the screen and must stay reachable.
+    <div style={{width: '100%', minHeight: '100dvh', boxSizing: 'border-box', overflowY: 'auto', background: '#0F172A', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', padding: 'clamp(12px, 4vw, 24px)', fontFamily: 'Inter, sans-serif'}}>
+      <div style={{display: 'flex', gap: 'clamp(16px, 4vw, 32px)', maxWidth: 880, width: '100%', alignItems: 'stretch', flexWrap: 'wrap', justifyContent: 'center'}}>
 
         {/* Video preview panel */}
-        <div style={{flex: '1 1 420px', maxWidth: 480}}>
+        <div style={{flex: '1 1 300px', maxWidth: 480, minWidth: 0}}>
           <div style={{position: 'relative', width: '100%', aspectRatio: '16 / 9', background: '#1E293B', border: '1px solid #334155', borderRadius: 16, overflow: 'hidden', display: 'flex', alignItems: 'center', justifyContent: 'center'}}>
             <video
               ref={videoRef}
@@ -231,7 +233,7 @@ export function PreJoinLobby({
         </div>
 
         {/* Info & device settings panel */}
-        <div style={{flex: '1 1 320px', maxWidth: 360, display: 'flex', flexDirection: 'column', justifyContent: 'center', gap: 20, paddingTop: 8}}>
+        <div style={{flex: '1 1 280px', maxWidth: 360, minWidth: 0, display: 'flex', flexDirection: 'column', justifyContent: 'center', gap: 20, paddingTop: 8}}>
           <div>
             <h1 style={{color: 'white', fontSize: 22, fontWeight: '700', margin: 0}}>{roomName}</h1>
             {roomSubtitle && <p style={{color: '#94A3B8', fontSize: 13, margin: '6px 0 0'}}>{roomSubtitle}</p>}
