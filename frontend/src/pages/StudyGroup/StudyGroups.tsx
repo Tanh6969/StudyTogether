@@ -1,5 +1,6 @@
 import { useState, useRef, useEffect, useCallback } from 'react';
-import { ChevronDown, ChevronRight, UserPlus, Users, ArrowRight, Flame } from 'lucide-react';
+import type { ReactNode } from 'react';
+import { ChevronDown, ChevronLeft, ChevronRight, UserPlus, Users, ArrowRight, Flame } from 'lucide-react';
 import { Link, useNavigate, useSearchParams } from 'react-router-dom';
 import { useAuth } from '../../hooks/useAuth';
 import { getGroups, getMyGroups, createGroup, joinGroup, getMemberCounts, getMyMemberships } from '../../lib/group.api';
@@ -27,30 +28,22 @@ function roleLabel(role: GroupMemberRole | null): string {
     return 'Thành viên';
 }
 
-function getStreakColor(streak: number) {
-    if (streak === 0) return '#94A3B8'; // Gray for 0
-    if (streak < 3) return '#F59E0B'; // Amber
-    if (streak < 10) return '#EA580C'; // Orange
-    if (streak < 30) return '#E11D48'; // Rose/Red
-    return '#3B82F6'; // Blue fire
+/** Streak tiers: gray 0 · amber <3 · orange <10 · rose <30 · blue 30+ (text = icon color). */
+function getStreakClasses(streak: number) {
+    if (streak === 0) return 'text-slate-400 border-slate-400/20';
+    if (streak < 3) return 'text-amber-500 border-amber-500/20';
+    if (streak < 10) return 'text-orange-600 border-orange-600/20';
+    if (streak < 30) return 'text-rose-600 border-rose-600/20';
+    return 'text-blue-500 border-blue-500/20';
 }
 
 function GroupStreakBadge({ streak }: { streak?: GroupStreak }) {
     const currentStreak = streak?.current_streak || 0;
-    const color = getStreakColor(currentStreak);
-    
+
     return (
-        <div style={{
-            position: 'absolute', top: 12, right: 12, zIndex: 10,
-            background: 'white', borderRadius: 20, padding: '4px 10px',
-            display: 'flex', alignItems: 'center', gap: 4,
-            boxShadow: '0 2px 8px rgba(0,0,0,0.15)',
-            border: `1px solid ${color}33`,
-        }}>
-            <Flame size={16} color={color} fill={color} />
-            <span style={{ color, fontSize: 13, fontWeight: 700, fontFamily: 'Inter' }}>
-                {currentStreak}
-            </span>
+        <div className={`absolute right-2 top-2 z-10 flex items-center gap-1 rounded-full border bg-white px-2 py-0.5 shadow-md sm:right-3 sm:top-3 sm:px-2.5 sm:py-1 ${getStreakClasses(currentStreak)}`}>
+            <Flame fill="currentColor" className="h-3.5 w-3.5 sm:h-4 sm:w-4" />
+            <span className="text-xs font-bold sm:text-[13px]">{currentStreak}</span>
         </div>
     );
 }
@@ -61,18 +54,187 @@ function GroupCover({ group }: { group: Group }) {
     if (group.background_url || group.avatar_url) {
         return (
             <img
-                style={{ width: '100%', height: '100%', objectFit: 'cover' }}
+                className="h-full w-full object-cover"
                 src={group.background_url ?? group.avatar_url ?? undefined}
                 alt={group.name}
             />
         );
     }
     return (
-        <div style={{ width: '100%', height: '100%', background: getAvatarColor(group.id), display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-            <span style={{ color: 'white', fontSize: 32, fontWeight: 700, fontFamily: 'Inter' }}>{getAvatarInitials(group.name)}</span>
+        // The color is computed per group at runtime, so it can't be a Tailwind class.
+        <div className="flex h-full w-full items-center justify-center" style={{ background: getAvatarColor(group.id) }}>
+            <span className="text-[32px] font-bold text-white">{getAvatarInitials(group.name)}</span>
         </div>
     );
 }
+
+/** Fixed card width (px) in the wide-screen grid. Keep in sync with the `280px` in
+ *  ROW_CLASSES; cards and StudyGroupCardSkeleton get their width from the row (`[&>*]:`). */
+export const GROUP_CARD_WIDTH = 280;
+
+/** Two layouts, switched at the narrowest screen that fits 3 cards in a row:
+ *    3 × 280px + 2 × 20px gap + 2 × 24px page padding = 928px.
+ *  - < 928px: a SLIDER that shows exactly 2 cards at a time. Each card is
+ *    (100% − gap) / 2 wide, the row scrolls sideways with snap, and a visible thin scroll
+ *    bar + the ← → buttons in CardSlider move it. pt-1/pb-3 leave room for the hover
+ *    lift/shadow and the scroll bar.
+ *  - ≥ 928px: wrapping grid of fixed 280px columns (auto-fill) -- 3, 4, up to 5 inside
+ *    the 1680px page cap -- left-aligned under the section titles; no slider controls. */
+const ROW_CLASSES = [
+    // < 928px: 2-up slider (16px gap on phones, 20px from 640px)
+    'flex snap-x snap-mandatory gap-4 overflow-x-auto scroll-smooth pb-3 pt-1 sm:gap-5',
+    '[&>*]:w-[calc((100%-1rem)/2)] sm:[&>*]:w-[calc((100%-1.25rem)/2)] [&>*]:shrink-0 [&>*]:snap-start',
+    // visible thin scroll bar ("thanh trượt"), Firefox + Chromium/Safari
+    '[scrollbar-color:#94A3B8_#E2E8F0] [scrollbar-width:thin]',
+    '[&::-webkit-scrollbar]:h-1.5 [&::-webkit-scrollbar-track]:rounded-full [&::-webkit-scrollbar-track]:bg-slate-200',
+    '[&::-webkit-scrollbar-thumb]:rounded-full [&::-webkit-scrollbar-thumb]:bg-slate-400',
+    // ≥ 928px: wrapping grid
+    'min-[928px]:grid min-[928px]:grid-cols-[repeat(auto-fill,280px)] min-[928px]:justify-start',
+    'min-[928px]:overflow-visible min-[928px]:pb-0 min-[928px]:pt-0 min-[928px]:sm:[&>*]:w-auto min-[928px]:[&>*]:w-auto lg:gap-6',
+].join(' ');
+
+const SLIDER_BUTTON_CLASSES =
+    'flex h-9 w-9 items-center justify-center rounded-full border border-slate-200 bg-white text-slate-700 shadow-sm transition hover:bg-slate-50 disabled:cursor-default disabled:opacity-40 disabled:hover:bg-white';
+
+/** The card row of one section. On small screens (< 928px) it is a 2-card slider with a
+ *  scroll bar and ← → buttons (each press moves by one card); on wide screens it is the
+ *  plain wrapping grid and the buttons are hidden. */
+export function CardSlider({ label, children }: { label: string; children: ReactNode }) {
+    const rowRef = useRef<HTMLDivElement>(null);
+    const [canPrev, setCanPrev] = useState(false);
+    const [canNext, setCanNext] = useState(false);
+
+    const updateButtons = useCallback(() => {
+        const row = rowRef.current;
+        if (!row) return;
+        setCanPrev(row.scrollLeft > 4);
+        setCanNext(row.scrollLeft + row.clientWidth < row.scrollWidth - 4);
+    }, []);
+
+    useEffect(() => {
+        const row = rowRef.current;
+        updateButtons();
+        row?.addEventListener('scroll', updateButtons, { passive: true });
+        window.addEventListener('resize', updateButtons);
+        return () => {
+            row?.removeEventListener('scroll', updateButtons);
+            window.removeEventListener('resize', updateButtons);
+        };
+    }, [updateButtons, children]);
+
+    const slide = (direction: -1 | 1) => {
+        const row = rowRef.current;
+        if (!row) return;
+        const card = row.firstElementChild as HTMLElement | null;
+        const gap = parseFloat(getComputedStyle(row).columnGap) || 0;
+        const step = card ? card.offsetWidth + gap : row.clientWidth / 2;
+        row.scrollBy?.({ left: direction * step, behavior: 'smooth' });
+    };
+
+    return (
+        <div className="mt-2">
+            <div ref={rowRef} role="region" aria-label={label} className={ROW_CLASSES}>
+                {children}
+            </div>
+            {(canPrev || canNext) && (
+                <div className="mt-2 flex items-center justify-end gap-2 min-[928px]:hidden">
+                    <button type="button" onClick={() => slide(-1)} disabled={!canPrev} aria-label="Xem nhóm trước" className={SLIDER_BUTTON_CLASSES}>
+                        <ChevronLeft size={18} />
+                    </button>
+                    <button type="button" onClick={() => slide(1)} disabled={!canNext} aria-label="Xem nhóm tiếp theo" className={SLIDER_BUTTON_CLASSES}>
+                        <ChevronRight size={18} />
+                    </button>
+                </div>
+            )}
+        </div>
+    );
+}
+
+/** Bottom-right card action. The negative margin + padding gives a ~40px touch target on
+ *  phones without changing the underlined-link look. Smaller text on phones, where two
+ *  cards share the screen. */
+const CTA_LINK_CLASSES =
+    '-my-2 flex shrink-0 items-center gap-1 py-2 text-xs font-semibold no-underline sm:gap-1.5 sm:text-sm [&>span]:border-b-[1.5px] [&>span]:pb-0.5';
+
+/** Small badge at the top of the card body (role / public-private). */
+const CARD_BADGE_CLASSES = 'flex h-full items-center whitespace-nowrap rounded border px-2 text-[11px] sm:px-3 sm:text-xs';
+
+/** One card, used by both sections; only the badge and the bottom-right action differ.
+ *  The width comes from the row (half the row in the phone slider, 280px in the grid).
+ *  Phones (< 640px, two ~160px cards side by side) use a compact version: cover 96px,
+ *  padding 12px, name text-sm. From 640px: cover 128px, padding 20px, name text-lg.
+ *
+ *  EQUAL SIZE, whatever the text: every block has a fixed height, so all cards are the
+ *  same height at every screen size (and the same width, set by the row):
+ *    cover h-24 / sm:h-32 · badge row h-5 / sm:h-6 (one line, overflow hidden)
+ *    name: always 2 lines reserved -- h-10 (2 × leading-5) / sm:h-12 (2 × leading-6)
+ *    description: always 2 lines reserved -- h-8 (2 × leading-4) / sm:h-10 (2 × leading-5)
+ *  Longer text is cut with "…" (line-clamp-2); shorter text leaves the space empty.
+ *  StudyGroupCardSkeleton reserves exactly the same heights. */
+function GroupCard({ group, activeMembersCount, badge, action }: {
+    group: Group;
+    activeMembersCount: number;
+    badge: ReactNode;
+    action: ReactNode;
+}) {
+    return (
+        <div className="flex min-w-0 flex-col overflow-hidden rounded-lg border border-slate-200 bg-white transition hover:-translate-y-0.5 hover:shadow-md">
+            <div className="relative h-24 shrink-0 bg-[#E5EEFF] sm:h-32">
+                <GroupStreakBadge streak={group.streak} />
+                <GroupCover group={group} />
+            </div>
+            <div className="flex flex-col p-3 sm:p-5">
+                <div className="mb-2 flex h-5 gap-2 overflow-hidden sm:mb-3 sm:h-6">{badge}</div>
+                <div title={group.name} className="mb-1 line-clamp-2 h-10 shrink-0 wrap-break-word text-sm font-semibold leading-5 text-[#0B1C30] sm:mb-2 sm:h-12 sm:text-lg sm:leading-6">
+                    {group.name}
+                </div>
+                <div className="mb-3 line-clamp-2 h-8 shrink-0 wrap-break-word text-xs leading-4 text-[#444651] sm:mb-5 sm:h-10 sm:text-sm sm:leading-5">
+                    {group.description || 'Chưa có mô tả.'}
+                </div>
+                <div className="flex items-center justify-between gap-2 border-t border-slate-300 pt-2.5 sm:gap-3 sm:pt-4">
+                    <div
+                        title={`${activeMembersCount} thành viên`}
+                        className="flex h-6 min-w-6 shrink-0 items-center justify-center rounded-full border-2 border-white bg-[#E5EEFF] px-1 text-[10px] font-semibold text-[#00236F] sm:h-7 sm:min-w-7"
+                    >
+                        +{activeMembersCount}
+                    </div>
+                    {action}
+                </div>
+            </div>
+        </div>
+    );
+}
+
+/** Collapsible section header ("Nhóm học của tôi" / "Khám phá nhóm học"). */
+function SectionHeader({ open, onToggle, title, subtitle }: {
+    open: boolean;
+    onToggle: () => void;
+    title: string;
+    subtitle: string;
+}) {
+    return (
+        <>
+            <div onClick={onToggle} className="flex cursor-pointer select-none items-center justify-between gap-3">
+                <div className="flex min-w-0 items-center gap-2.5">
+                    {open ? <ChevronDown size={22} className="shrink-0 text-[#0B1C30]" /> : <ChevronRight size={22} className="shrink-0 text-[#0B1C30]" />}
+                    <div className="text-xl font-semibold leading-8 text-[#0B1C30] sm:text-2xl">{title}</div>
+                </div>
+                <div className="shrink-0 text-[13px] font-medium text-slate-500">
+                    {open ? 'Ẩn danh sách' : 'Mở danh sách'}
+                </div>
+            </div>
+            <div className="-mt-2 pl-8 text-[13px] text-[#444651] sm:text-sm">{subtitle}</div>
+        </>
+    );
+}
+
+const MODAL_OVERLAY = 'fixed inset-0 z-[100] flex items-center justify-center bg-black/40 p-4';
+const MODAL_PANEL = 'relative flex w-full flex-col rounded-xl bg-white p-6 shadow-xl sm:p-8';
+const MODAL_CLOSE = 'absolute right-4 top-4 border-none bg-transparent text-lg text-slate-500 hover:text-slate-700 disabled:cursor-not-allowed';
+const BTN_SECONDARY = 'rounded-md border-none bg-slate-100 px-4 py-2.5 text-sm font-semibold text-slate-600 transition-colors hover:bg-slate-200 disabled:cursor-not-allowed disabled:hover:bg-slate-100';
+const BTN_PRIMARY = 'rounded-md border-none bg-[#00236F] px-4 py-2.5 text-sm font-semibold text-white transition-colors hover:bg-[#001a52] disabled:cursor-not-allowed disabled:bg-[#93A4C7]';
+const ERROR_BOX = 'mb-4 rounded-lg border border-red-200 bg-red-50 p-3 text-[13px] text-red-700';
+const FIELD_INPUT = 'w-full rounded-md border border-slate-300 px-3.5 py-2.5 text-sm outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-100 disabled:bg-slate-50';
 
 export function StudyRooms() {
     const navigate = useNavigate();
@@ -244,60 +406,41 @@ export function StudyRooms() {
     const myGroupsPagination = usePagination(myGroups, GROUPS_PAGE_SIZE);
     const discoverGroupsPagination = usePagination(discoverGroups, GROUPS_PAGE_SIZE);
 
+    const menuItemClasses = (banned: boolean) =>
+        `flex flex-col gap-0.5 px-4 py-3 ${banned ? 'cursor-not-allowed opacity-50' : 'cursor-pointer hover:bg-slate-50'}`;
+
     return (
-        <div style={{ width: '100%', height: 'calc(100vh - 64px)', overflowY: 'auto', background: 'linear-gradient(0deg, #F8FAFC 0%, #F8FAFC 100%), white', display: 'flex', justifyContent: 'center' }}>
-
-            {/* Responsive Grid Rules (Tối đa 5 nhóm học trên 1 hàng ngang) */}
-            <style>{`
-          .study-groups-grid {
-            display: grid;
-            grid-template-columns: repeat(1, 1fr);
-            gap: 24px;
-            width: 100%;
-          }
-          @media (min-width: 580px) {
-            .study-groups-grid { grid-template-columns: repeat(2, 1fr); }
-          }
-          @media (min-width: 860px) {
-            .study-groups-grid { grid-template-columns: repeat(3, 1fr); }
-          }
-          @media (min-width: 1180px) {
-            .study-groups-grid { grid-template-columns: repeat(4, 1fr); }
-          }
-          @media (min-width: 1480px) {
-            .study-groups-grid { grid-template-columns: repeat(5, 1fr); }
-          }
-        `}</style>
-
-            <div style={{ width: '100%', maxWidth: '100%', paddingLeft: 32, paddingRight: 32, paddingTop: 32, paddingBottom: 12, display: 'flex', flexDirection: 'column', gap: 36 }}>
+        <div>
+            {/* max-w keeps cards from stretching too wide on 2K/4K screens (5 cols max). */}
+            <div className="mx-auto flex w-full max-w-[1680px] flex-col gap-7 px-4 pb-3 pt-6 sm:gap-9 sm:px-6 sm:pt-8 lg:px-8">
 
                 {/* TOP HEADER CONTROLS (Thanh điều hướng & nút Tạo nhóm ở đầu trang) */}
-                <div style={{ alignSelf: 'stretch', justifyContent: 'space-between', alignItems: 'center', display: 'flex', flexWrap: 'wrap', gap: 16, borderBottom: '1px solid #E2E8F0', paddingBottom: 24 }}>
-                    <div style={{ flexDirection: 'column', gap: 4, display: 'flex' }}>
-                        <div style={{ color: '#0B1C30', fontSize: 28, fontFamily: 'Inter', fontWeight: '600', lineHeight: '36px' }}>
+                <div className="flex flex-wrap items-center justify-between gap-4 border-b border-slate-200 pb-6">
+                    <div className="flex flex-col gap-1">
+                        <h1 className="m-0 text-2xl font-semibold leading-9 text-[#0B1C30] sm:text-[28px]">
                             Quản lý & Khám phá nhóm học
-                        </div>
-                        <div style={{ color: '#444651', fontSize: 14, fontFamily: 'Inter', fontWeight: '400', lineHeight: '20px' }}>
+                        </h1>
+                        <p className="m-0 text-sm leading-5 text-[#444651]">
                             Tham gia, khởi tạo và theo dõi tiến độ các nhóm học tập của bạn.
-                        </div>
+                        </p>
                     </div>
-                    <div style={{ justifyContent: 'flex-start', alignItems: 'center', gap: 12, display: 'flex' }}>
-                        <div style={{ paddingLeft: 12, paddingRight: 12, paddingTop: 8, paddingBottom: 8, background: '#F8F9FF', outline: '1px #E2E8F0 solid', outlineOffset: '-1px', borderRadius: 6, display: 'flex', alignItems: 'center', gap: 8, cursor: 'pointer' }}>
-                            <div style={{ color: '#0B1C30', fontSize: 14, fontFamily: 'Inter', fontWeight: '400', lineHeight: '20px' }}>Sắp xếp: Mới nhất</div>
-                            <ChevronDown size={16} color="#6B7280" />
+                    <div className="flex items-center gap-3">
+                        <div className="flex cursor-pointer items-center gap-2 rounded-md border border-slate-200 bg-[#F8F9FF] px-3 py-2">
+                            <span className="text-sm leading-5 text-[#0B1C30]">Sắp xếp: Mới nhất</span>
+                            <ChevronDown size={16} className="text-gray-500" />
                         </div>
-                        <div style={{ position: 'relative' }} ref={menuRef}>
+                        <div className="relative" ref={menuRef}>
                             <div
                                 onClick={() => setIsMenuOpen(!isMenuOpen)}
-                                style={{ paddingLeft: 16, paddingRight: 16, paddingTop: 8, paddingBottom: 8, background: '#00236F', borderRadius: 6, display: 'flex', alignItems: 'center', gap: 8, cursor: 'pointer' }}
+                                className="flex cursor-pointer items-center gap-2 rounded-md bg-[#00236F] px-4 py-2 text-white hover:bg-[#001a52]"
                             >
-                                <UserPlus size={16} color="white" />
-                                <div style={{ color: 'white', fontSize: 14, fontFamily: 'Inter', fontWeight: '600', lineHeight: '20px' }}>Tham gia hoặc tạo nhóm</div>
+                                <UserPlus size={16} />
+                                <span className="text-sm font-semibold leading-5">Tham gia hoặc tạo nhóm</span>
                             </div>
 
                             {/* Dropdown Menu */}
                             {isMenuOpen && (
-                                <div style={{ position: 'absolute', top: '100%', right: 0, marginTop: 8, width: 220, background: 'white', borderRadius: 8, boxShadow: '0px 4px 12px rgba(0, 0, 0, 0.1)', border: '1px solid #E2E8F0', display: 'flex', flexDirection: 'column', zIndex: 50, overflow: 'hidden' }}>
+                                <div className="absolute right-0 top-full z-50 mt-2 flex w-56 flex-col overflow-hidden rounded-lg border border-slate-200 bg-white shadow-lg">
                                     <div
                                         onClick={() => {
                                             if (createGroupBan) return;
@@ -306,17 +449,13 @@ export function StudyRooms() {
                                             setIsCreateModalOpen(true);
                                         }}
                                         title={createGroupBan ? 'Bạn đang bị hạn chế tạo nhóm học tập' : undefined}
-                                        style={{ padding: '12px 16px', display: 'flex', flexDirection: 'column', gap: 2, cursor: createGroupBan ? 'not-allowed' : 'pointer', opacity: createGroupBan ? 0.5 : 1, borderBottom: '1px solid #F1F5F9' }}
-                                        onMouseEnter={(e) => e.currentTarget.style.backgroundColor = createGroupBan ? 'white' : '#F8FAFC'}
-                                        onMouseLeave={(e) => e.currentTarget.style.backgroundColor = 'white'}
+                                        className={`${menuItemClasses(!!createGroupBan)} border-b border-slate-100`}
                                     >
-                                        <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
-                                            <UserPlus size={18} color="#475569" />
-                                            <span style={{ fontSize: 14, color: '#0F172A', fontWeight: 500, fontFamily: 'Inter' }}>Tạo nhóm</span>
+                                        <div className="flex items-center gap-3">
+                                            <UserPlus size={18} className="text-slate-600" />
+                                            <span className="text-sm font-medium text-slate-900">Tạo nhóm</span>
                                         </div>
-                                        {createGroupBan && (
-                                            <span style={{ fontSize: 11, color: '#B45309', paddingLeft: 30 }}>Đang bị hạn chế</span>
-                                        )}
+                                        {createGroupBan && <span className="pl-7.5 text-[11px] text-amber-700">Đang bị hạn chế</span>}
                                     </div>
                                     <div
                                         onClick={() => {
@@ -325,17 +464,13 @@ export function StudyRooms() {
                                             setIsJoinModalOpen(true);
                                         }}
                                         title={joinGroupBan ? 'Bạn đang bị hạn chế tham gia nhóm học tập' : undefined}
-                                        style={{ padding: '12px 16px', display: 'flex', flexDirection: 'column', gap: 2, cursor: joinGroupBan ? 'not-allowed' : 'pointer', opacity: joinGroupBan ? 0.5 : 1 }}
-                                        onMouseEnter={(e) => e.currentTarget.style.backgroundColor = joinGroupBan ? 'white' : '#F8FAFC'}
-                                        onMouseLeave={(e) => e.currentTarget.style.backgroundColor = 'white'}
+                                        className={menuItemClasses(!!joinGroupBan)}
                                     >
-                                        <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
-                                            <UserPlus size={18} color="#475569" />
-                                            <span style={{ fontSize: 14, color: '#0F172A', fontWeight: 500, fontFamily: 'Inter' }}>Tham gia nhóm</span>
+                                        <div className="flex items-center gap-3">
+                                            <UserPlus size={18} className="text-slate-600" />
+                                            <span className="text-sm font-medium text-slate-900">Tham gia nhóm</span>
                                         </div>
-                                        {joinGroupBan && (
-                                            <span style={{ fontSize: 11, color: '#B45309', paddingLeft: 30 }}>Đang bị hạn chế</span>
-                                        )}
+                                        {joinGroupBan && <span className="pl-7.5 text-[11px] text-amber-700">Đang bị hạn chế</span>}
                                     </div>
                                 </div>
                             )}
@@ -345,94 +480,68 @@ export function StudyRooms() {
 
                 {/* Skeleton khi tải lần đầu */}
                 {isLoading && (
-                    <div style={{ display: 'flex', flexDirection: 'column', gap: 32 }}>
-                        {/* Section header skeleton */}
-                        <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
-                            <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-                                <div className="skeleton-pulse" style={{ width: 22, height: 22, borderRadius: 4 }} />
-                                <div className="skeleton-pulse" style={{ width: 200, height: 28, borderRadius: 6 }} />
+                    <div className="flex flex-col gap-8">
+                        {['w-[200px]', 'w-[220px]'].map((titleWidth) => (
+                            <div key={titleWidth} className="flex flex-col gap-4">
+                                <div className="flex items-center gap-2.5">
+                                    <div className="skeleton-pulse h-5.5 w-5.5 rounded" />
+                                    <div className={`skeleton-pulse h-7 rounded-md ${titleWidth}`} />
+                                </div>
+                                <CardSlider label="Đang tải nhóm học">
+                                    {[...Array(4)].map((_, i) => <StudyGroupCardSkeleton key={i} />)}
+                                </CardSlider>
                             </div>
-                            <div className="study-groups-grid" style={{ marginTop: 8 }}>
-                                {[...Array(4)].map((_, i) => <StudyGroupCardSkeleton key={i} />)}
-                            </div>
-                        </div>
-                        <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
-                            <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-                                <div className="skeleton-pulse" style={{ width: 22, height: 22, borderRadius: 4 }} />
-                                <div className="skeleton-pulse" style={{ width: 220, height: 28, borderRadius: 6 }} />
-                            </div>
-                            <div className="study-groups-grid" style={{ marginTop: 8 }}>
-                                {[...Array(4)].map((_, i) => <StudyGroupCardSkeleton key={i} />)}
-                            </div>
-                        </div>
+                        ))}
                     </div>
                 )}
 
                 {!isLoading && loadError && (
-                    <div role="alert" style={{ color: '#B91C1C', background: '#FEF2F2', border: '1px solid #FECACA', borderRadius: 8, padding: 16, fontSize: 14, display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12 }}>
+                    <div role="alert" className="flex items-center justify-between gap-3 rounded-lg border border-red-200 bg-red-50 p-4 text-sm text-red-700">
                         <span>{loadError}</span>
-                        <button type="button" onClick={() => void loadGroups()} style={{ flexShrink: 0, padding: '6px 14px', borderRadius: 6, border: '1px solid #FCA5A5', background: 'white', color: '#B91C1C', fontSize: 13, fontWeight: 600, cursor: 'pointer' }}>
+                        <button
+                            type="button"
+                            onClick={() => void loadGroups()}
+                            className="shrink-0 rounded-md border border-red-300 bg-white px-3.5 py-1.5 text-[13px] font-semibold text-red-700 hover:bg-red-50"
+                        >
                             Thử lại
                         </button>
                     </div>
                 )}
 
                 {!isLoading && !loadError && groups && groups.length === 0 && (
-                    <div style={{ color: '#64748B', fontSize: 14, padding: '24px 0' }}>Chưa có nhóm học công khai nào.</div>
+                    <div className="py-6 text-sm text-slate-500">Chưa có nhóm học công khai nào.</div>
                 )}
 
                 {!isLoading && !loadError && groups && (
                 <>
                 {/* SECTION 1: NHÓM HỌC CỦA TÔI */}
-                <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
-                    {/* Header Row kèm nút ẩn/hiện (Mũi tên không đuôi) */}
-                    <div
-                        onClick={() => setIsMyGroupsOpen(!isMyGroupsOpen)}
-                        style={{ cursor: 'pointer', userSelect: 'none', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}
-                    >
-                        <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-                            {isMyGroupsOpen ? <ChevronDown size={22} color="#0B1C30" /> : <ChevronRight size={22} color="#0B1C30" />}
-                            <div style={{ color: '#0B1C30', fontSize: 24, fontFamily: 'Inter', fontWeight: '600', lineHeight: '32px' }}>
-                                Nhóm học của tôi ({myGroups.length})
-                            </div>
-                        </div>
-                        <div style={{ fontSize: 13, color: '#64748B', fontWeight: '500' }}>
-                            {isMyGroupsOpen ? 'Ẩn danh sách' : 'Mở danh sách'}
-                        </div>
-                    </div>
-                    <div style={{ color: '#444651', fontSize: 14, fontFamily: 'Inter', marginTop: -8, paddingLeft: 32 }}>
-                        Các nhóm học bạn đã tham gia và đang hoạt động.
-                    </div>
-
-                    {/* My Groups Grid */}
+                <section className="flex flex-col gap-4">
+                    <SectionHeader
+                        open={isMyGroupsOpen}
+                        onToggle={() => setIsMyGroupsOpen(!isMyGroupsOpen)}
+                        title={`Nhóm học của tôi (${myGroups.length})`}
+                        subtitle="Các nhóm học bạn đã tham gia và đang hoạt động."
+                    />
                     {isMyGroupsOpen && (
-                        <div className="study-groups-grid" style={{ marginTop: 8 }}>
+                        <CardSlider label="Nhóm học của tôi">
                             {myGroupsPagination.pageItems.map(({ group, activeMembersCount, role }) => (
-                                <div key={group.id} style={{ background: 'white', borderRadius: 8, outline: '1px #E2E8F0 solid', outlineOffset: '-1px', display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
-                                    <div style={{ height: 128, position: 'relative', background: '#E5EEFF' }}>
-                                        <GroupStreakBadge streak={group.streak} />
-                                        <GroupCover group={group} />
-                                    </div>
-                                    <div style={{ padding: 24, display: 'flex', flexDirection: 'column', flex: 1 }}>
-                                        <div style={{ display: 'flex', gap: 8, marginBottom: 12 }}>
-                                            <div style={{ padding: '4px 12px', background: '#DCFCE7', outline: '1px #BBF7D0 solid', outlineOffset: '-1px', borderRadius: 4, color: '#15803D', fontSize: 12, fontFamily: 'Inter', fontWeight: '600' }}>{roleLabel(role)}</div>
-                                        </div>
-                                        <div style={{ color: '#0B1C30', fontSize: 20, fontFamily: 'Inter', fontWeight: '600', lineHeight: '28px', marginBottom: 8 }}>{group.name}</div>
-                                        <div style={{ color: '#444651', fontSize: 14, fontFamily: 'Inter', fontWeight: '400', lineHeight: '20px', marginBottom: 24, flex: 1 }}>{group.description || 'Chưa có mô tả.'}</div>
-                                        <div style={{ paddingTop: 16, borderTop: '1px solid #CBD5E1', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                                            <div style={{ display: 'flex', alignItems: 'center' }}>
-                                                <div style={{ width: 28, height: 28, background: '#E5EEFF', borderRadius: '50%', border: '2px solid white', display: 'flex', justifyContent: 'center', alignItems: 'center', zIndex: 0 }}>
-                                                    <div style={{ color: '#00236F', fontSize: 10, fontFamily: 'Inter', fontWeight: '600' }}>+{activeMembersCount}</div>
-                                                </div>
-                                            </div>
-                                            <Link to={`/groups/${group.id}`} style={{ color: '#00236F', fontSize: 14, fontFamily: 'Inter', fontWeight: '600', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 6, borderBottom: '1.5px solid #00236F', paddingBottom: 2, textDecoration: 'none' }}>
-                                                Vào nhóm <ArrowRight size={16} />
-                                            </Link>
-                                        </div>
-                                    </div>
-                                </div>
+                                <GroupCard
+                                    key={group.id}
+                                    group={group}
+                                    activeMembersCount={activeMembersCount}
+                                    badge={
+                                        <span className={`${CARD_BADGE_CLASSES} border-green-200 bg-green-100 font-semibold text-green-700`}>
+                                            {roleLabel(role)}
+                                        </span>
+                                    }
+                                    action={
+                                        <Link to={`/groups/${group.id}`} className={`${CTA_LINK_CLASSES} text-[#00236F] [&>span]:border-[#00236F] hover:opacity-80`}>
+                                            <span className="flex items-center gap-1 sm:gap-1.5">Vào nhóm <ArrowRight className="h-3.5 w-3.5 sm:h-4 sm:w-4" /></span>
+                                        </Link>
+                                    }
+                                />
                             ))}
-                        </div>
+                        </CardSlider>
                     )}
                     {isMyGroupsOpen && (
                         <Pagination
@@ -441,62 +550,42 @@ export function StudyRooms() {
                             onPageChange={myGroupsPagination.setPage}
                         />
                     )}
-                </div>
+                </section>
 
                 {/* SECTION 2: KHÁM PHÁ NHÓM HỌC */}
-                <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
-                    {/* Header Row kèm nút ẩn/hiện (Mũi tên không đuôi) */}
-                    <div
-                        onClick={() => setIsDiscoverOpen(!isDiscoverOpen)}
-                        style={{ cursor: 'pointer', userSelect: 'none', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}
-                    >
-                        <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-                            {isDiscoverOpen ? <ChevronDown size={22} color="#0B1C30" /> : <ChevronRight size={22} color="#0B1C30" />}
-                            <div style={{ color: '#0B1C30', fontSize: 24, fontFamily: 'Inter', fontWeight: '600', lineHeight: '32px' }}>
-                                {searchQuery ? `Kết quả tìm kiếm cho "${searchQuery}" (${discoverGroups.length})` : `Khám phá nhóm học (${discoverGroups.length})`}
-                            </div>
-                        </div>
-                        <div style={{ fontSize: 13, color: '#64748B', fontWeight: '500' }}>
-                            {isDiscoverOpen ? 'Ẩn danh sách' : 'Mở danh sách'}
-                        </div>
-                    </div>
-                    <div style={{ color: '#444651', fontSize: 14, fontFamily: 'Inter', marginTop: -8, paddingLeft: 32 }}>
-                        Tìm và tham gia các nhóm học tập phù hợp với bạn.
-                    </div>
-
-                    {/* Discover Grid Section */}
+                <section className="flex flex-col gap-4">
+                    <SectionHeader
+                        open={isDiscoverOpen}
+                        onToggle={() => setIsDiscoverOpen(!isDiscoverOpen)}
+                        title={searchQuery ? `Kết quả tìm kiếm cho "${searchQuery}" (${discoverGroups.length})` : `Khám phá nhóm học (${discoverGroups.length})`}
+                        subtitle="Tìm và tham gia các nhóm học tập phù hợp với bạn."
+                    />
                     {isDiscoverOpen && (
-                        <div className="study-groups-grid" style={{ marginTop: 8 }}>
+                        <CardSlider label={searchQuery ? 'Kết quả tìm kiếm nhóm học' : 'Khám phá nhóm học'}>
                             {discoverGroupsPagination.pageItems.map(({ group, activeMembersCount }) => (
-                                <div key={group.id} style={{ background: 'white', borderRadius: 8, outline: '1px #E2E8F0 solid', outlineOffset: '-1px', display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
-                                    <div style={{ height: 128, position: 'relative', background: '#E5EEFF' }}>
-                                        <GroupStreakBadge streak={group.streak} />
-                                        <GroupCover group={group} />
-                                    </div>
-                                    <div style={{ padding: 24, display: 'flex', flexDirection: 'column', flex: 1 }}>
-                                        <div style={{ display: 'flex', gap: 8, marginBottom: 12 }}>
-                                            <div style={{ padding: '4px 12px', background: '#F8F9FF', outline: '1px #E2E8F0 solid', outlineOffset: '-1px', borderRadius: 4, color: '#757682', fontSize: 12, fontFamily: 'Inter', fontWeight: '400' }}>{group.is_public ? 'Công khai' : 'Riêng tư'}</div>
+                                <GroupCard
+                                    key={group.id}
+                                    group={group}
+                                    activeMembersCount={activeMembersCount}
+                                    badge={
+                                        <span className={`${CARD_BADGE_CLASSES} border-slate-200 bg-[#F8F9FF] text-[#757682]`}>
+                                            {group.is_public ? 'Công khai' : 'Riêng tư'}
+                                        </span>
+                                    }
+                                    action={
+                                        <div
+                                            onClick={() => { if (joinGroupBan) return; setJoinActionError(null); setGroupToJoin(group); }}
+                                            title={joinGroupBan ? 'Bạn đang bị hạn chế tham gia nhóm học tập' : undefined}
+                                            className={`${CTA_LINK_CLASSES} ${joinGroupBan
+                                                ? 'cursor-not-allowed text-slate-400 [&>span]:border-slate-400'
+                                                : 'cursor-pointer text-[#00236F] [&>span]:border-[#00236F] hover:opacity-80'}`}
+                                        >
+                                            <span className="flex items-center gap-1 sm:gap-1.5"><Users className="h-3.5 w-3.5 sm:h-4 sm:w-4" /> Tham gia</span>
                                         </div>
-                                        <div style={{ color: '#0B1C30', fontSize: 20, fontFamily: 'Inter', fontWeight: '600', lineHeight: '28px', marginBottom: 8 }}>{group.name}</div>
-                                        <div style={{ color: '#444651', fontSize: 14, fontFamily: 'Inter', fontWeight: '400', lineHeight: '20px', marginBottom: 24, flex: 1 }}>{group.description || 'Chưa có mô tả.'}</div>
-                                        <div style={{ paddingTop: 16, borderTop: '1px solid #CBD5E1', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                                            <div style={{ display: 'flex', alignItems: 'center' }}>
-                                                <div style={{ width: 28, height: 28, background: '#E5EEFF', borderRadius: '50%', border: '2px solid white', display: 'flex', justifyContent: 'center', alignItems: 'center', zIndex: 0 }}>
-                                                    <div style={{ color: '#00236F', fontSize: 10, fontFamily: 'Inter', fontWeight: '600' }}>+{activeMembersCount}</div>
-                                                </div>
-                                            </div>
-                                            <div
-                                                onClick={() => { if (joinGroupBan) return; setJoinActionError(null); setGroupToJoin(group); }}
-                                                title={joinGroupBan ? 'Bạn đang bị hạn chế tham gia nhóm học tập' : undefined}
-                                                style={{ color: joinGroupBan ? '#94A3B8' : '#00236F', fontSize: 14, fontFamily: 'Inter', fontWeight: '600', cursor: joinGroupBan ? 'not-allowed' : 'pointer', display: 'flex', alignItems: 'center', gap: 6, borderBottom: joinGroupBan ? '1.5px solid #94A3B8' : '1.5px solid #00236F', paddingBottom: 2 }}
-                                            >
-                                                <Users size={16} /> Tham gia
-                                            </div>
-                                        </div>
-                                    </div>
-                                </div>
+                                    }
+                                />
                             ))}
-                        </div>
+                        </CardSlider>
                     )}
                     {isDiscoverOpen && (
                         <Pagination
@@ -505,12 +594,12 @@ export function StudyRooms() {
                             onPageChange={discoverGroupsPagination.setPage}
                         />
                     )}
-                </div>
+                </section>
                 </>
                 )}
 
                 {/* Khoảng trống chân trang vừa đủ (~1cm = 36px) */}
-                <div style={{ height: 36, width: '100%', minHeight: 36, flexShrink: 0 }} />
+                <div className="h-9 w-full shrink-0" />
 
             </div>
 
@@ -522,47 +611,41 @@ export function StudyRooms() {
 
             {/* Modal: Xác nhận tham gia nhóm */}
             {groupToJoin && (
-                <div style={{ position: 'fixed', top: 0, left: 0, right: 0, bottom: 0, backgroundColor: 'rgba(0, 0, 0, 0.4)', display: 'flex', justifyContent: 'center', alignItems: 'center', zIndex: 100 }}>
-                    <div style={{ background: 'white', borderRadius: 12, width: 400, padding: 32, display: 'flex', flexDirection: 'column', position: 'relative', boxShadow: '0px 10px 25px rgba(0, 0, 0, 0.1)' }}>
+                <div className={MODAL_OVERLAY}>
+                    <div className={`${MODAL_PANEL} max-w-100`}>
                         <button
                             onClick={() => { setGroupToJoin(null); setJoinActionError(null); }}
                             disabled={isJoining}
-                            style={{ position: 'absolute', top: 16, right: 16, background: 'none', border: 'none', cursor: isJoining ? 'not-allowed' : 'pointer', color: '#64748B', fontSize: 18 }}
+                            className={MODAL_CLOSE}
                         >
                             ✕
                         </button>
 
-                        <h2 style={{ fontSize: 18, fontWeight: 600, color: '#0F172A', marginBottom: 12, fontFamily: 'Inter' }}>Tham gia nhóm</h2>
-                        <p style={{ color: '#475569', fontSize: 14, marginBottom: 16, fontFamily: 'Inter', lineHeight: '20px' }}>
+                        <h2 className="mb-3 text-lg font-semibold text-slate-900">Tham gia nhóm</h2>
+                        <p className="mb-4 text-sm leading-5 text-slate-600">
                             Bạn muốn tham gia nhóm học <strong>{groupToJoin.name}</strong>.
                         </p>
 
                         {joinGroupBan && (
-                            <div style={{ marginBottom: 16 }}>
+                            <div className="mb-4">
                                 <RestrictionBanner ban={joinGroupBan} actionLabel="tham gia nhóm học tập" />
                             </div>
                         )}
 
-                        {joinActionError && (
-                            <div style={{ background: '#FEF2F2', border: '1px solid #FECACA', borderRadius: 8, padding: 12, color: '#B91C1C', fontSize: 13, marginBottom: 16 }}>
-                                {joinActionError}
-                            </div>
-                        )}
+                        {joinActionError && <div className={ERROR_BOX}>{joinActionError}</div>}
 
-                        <div style={{ display: 'flex', gap: 12, justifyContent: 'flex-end' }}>
+                        <div className="flex justify-end gap-3">
                             <button
                                 onClick={() => { setGroupToJoin(null); setJoinActionError(null); }}
                                 disabled={isJoining}
-                                style={{ padding: '10px 16px', borderRadius: 6, backgroundColor: '#F1F5F9', color: '#475569', border: 'none', fontSize: 14, fontWeight: 600, cursor: isJoining ? 'not-allowed' : 'pointer', fontFamily: 'Inter', transition: 'background-color 0.2s' }}
-                                onMouseOver={e => !isJoining && (e.currentTarget.style.backgroundColor = '#E2E8F0')}
-                                onMouseOut={e => !isJoining && (e.currentTarget.style.backgroundColor = '#F1F5F9')}
+                                className={BTN_SECONDARY}
                             >
                                 Hủy
                             </button>
                             <button
                                 onClick={handleConfirmJoin}
                                 disabled={isJoining || !!joinGroupBan}
-                                style={{ padding: '10px 16px', borderRadius: 6, backgroundColor: isJoining || joinGroupBan ? '#93A4C7' : '#00236F', color: 'white', border: 'none', fontSize: 14, fontWeight: 600, cursor: isJoining || joinGroupBan ? 'not-allowed' : 'pointer', fontFamily: 'Inter' }}
+                                className={BTN_PRIMARY}
                             >
                                 {isJoining ? 'Đang tham gia...' : 'Tham gia'}
                             </button>
@@ -573,80 +656,79 @@ export function StudyRooms() {
 
             {/* Modal: Tạo nhóm học mới */}
             {isCreateModalOpen && (
-                <div style={{ position: 'fixed', top: 0, left: 0, right: 0, bottom: 0, backgroundColor: 'rgba(0, 0, 0, 0.4)', display: 'flex', justifyContent: 'center', alignItems: 'center', zIndex: 100 }}>
-                    <div style={{ background: 'white', borderRadius: 12, width: 440, padding: 32, display: 'flex', flexDirection: 'column', position: 'relative', boxShadow: '0px 10px 25px rgba(0, 0, 0, 0.1)' }}>
+                <div className={MODAL_OVERLAY}>
+                    <div className={`${MODAL_PANEL} max-w-110`}>
                         <button
                             onClick={() => { if (!isCreating) { setIsCreateModalOpen(false); setCreateError(null); } }}
                             disabled={isCreating}
-                            style={{ position: 'absolute', top: 16, right: 16, background: 'none', border: 'none', cursor: isCreating ? 'not-allowed' : 'pointer', color: '#64748B', fontSize: 18 }}
+                            className={MODAL_CLOSE}
                         >
                             ✕
                         </button>
 
-                        <h2 style={{ fontSize: 18, fontWeight: 600, color: '#0F172A', marginBottom: 20, fontFamily: 'Inter' }}>Tạo nhóm học mới</h2>
+                        <h2 className="mb-5 text-lg font-semibold text-slate-900">Tạo nhóm học mới</h2>
 
-                        <div style={{ display: 'flex', flexDirection: 'column', gap: 6, marginBottom: 16 }}>
-                            <label style={{ fontSize: 13, fontWeight: 600, color: '#334155', fontFamily: 'Inter' }}>Tên nhóm học *</label>
+                        <div className="mb-4 flex flex-col gap-1.5">
+                            <label className="text-[13px] font-semibold text-slate-700">Tên nhóm học *</label>
                             <input
                                 type="text"
                                 value={createName}
                                 onChange={(e) => setCreateName(e.target.value)}
                                 placeholder="VD: Nhóm ôn thi Toán rời rạc"
                                 disabled={isCreating}
-                                style={{ width: '100%', padding: '10px 14px', borderRadius: 6, border: '1px solid #CBD5E1', fontSize: 14, outline: 'none', boxSizing: 'border-box', fontFamily: 'Inter' }}
+                                className={FIELD_INPUT}
                                 autoFocus
                             />
                         </div>
 
-                        <div style={{ display: 'flex', flexDirection: 'column', gap: 6, marginBottom: 16 }}>
-                            <label style={{ fontSize: 13, fontWeight: 600, color: '#334155', fontFamily: 'Inter' }}>Mô tả</label>
+                        <div className="mb-4 flex flex-col gap-1.5">
+                            <label className="text-[13px] font-semibold text-slate-700">Mô tả</label>
                             <textarea
                                 value={createDescription}
                                 onChange={(e) => setCreateDescription(e.target.value)}
                                 placeholder="Mô tả ngắn về mục tiêu của nhóm học (không bắt buộc)"
                                 disabled={isCreating}
-                                style={{ width: '100%', padding: '10px 14px', borderRadius: 6, border: '1px solid #CBD5E1', fontSize: 14, outline: 'none', boxSizing: 'border-box', fontFamily: 'Inter', resize: 'vertical', minHeight: 72 }}
+                                className={`${FIELD_INPUT} min-h-18 resize-y`}
                             />
                         </div>
 
-                        <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 24 }}>
+                        <div className="mb-6 flex items-center gap-2.5">
                             <input
                                 type="checkbox"
                                 id="create-group-public"
                                 checked={createIsPublic}
                                 onChange={(e) => setCreateIsPublic(e.target.checked)}
                                 disabled={isCreating}
-                                style={{ width: 16, height: 16, cursor: isCreating ? 'not-allowed' : 'pointer' }}
+                                className="h-4 w-4 cursor-pointer disabled:cursor-not-allowed"
                             />
-                            <label htmlFor="create-group-public" style={{ fontSize: 13, color: '#334155', fontFamily: 'Inter', cursor: isCreating ? 'not-allowed' : 'pointer' }}>
+                            <label
+                                htmlFor="create-group-public"
+                                className={`text-[13px] text-slate-700 ${isCreating ? 'cursor-not-allowed' : 'cursor-pointer'}`}
+                            >
                                 Nhóm công khai (mọi người có thể tìm và tham gia)
                             </label>
                         </div>
 
                         {createGroupBan && (
-                            <div style={{ marginBottom: 16 }}>
+                            <div className="mb-4">
                                 <RestrictionBanner ban={createGroupBan} actionLabel="tạo nhóm học tập" />
                             </div>
                         )}
 
-                        {createError && (
-                            <div style={{ background: '#FEF2F2', border: '1px solid #FECACA', borderRadius: 8, padding: 12, color: '#B91C1C', fontSize: 13, marginBottom: 16 }}>
-                                {createError}
-                            </div>
-                        )}
+                        {createError && <div className={ERROR_BOX}>{createError}</div>}
 
-                        <div style={{ display: 'flex', gap: 12, justifyContent: 'flex-end' }}>
+                        <div className="flex justify-end gap-3">
                             <button
                                 onClick={() => { if (!isCreating) { setIsCreateModalOpen(false); setCreateError(null); } }}
                                 disabled={isCreating}
-                                style={{ padding: '10px 16px', borderRadius: 6, backgroundColor: '#F1F5F9', color: '#475569', border: 'none', fontSize: 14, fontWeight: 600, cursor: isCreating ? 'not-allowed' : 'pointer', fontFamily: 'Inter' }}
+                                className={BTN_SECONDARY}
                             >
                                 Hủy
                             </button>
                             <button
                                 onClick={handleCreateGroup}
                                 disabled={isCreating || !createName.trim() || !!createGroupBan}
-                                style={{ padding: '10px 16px', borderRadius: 6, backgroundColor: (isCreating || !createName.trim() || createGroupBan) ? '#93A4C7' : '#00236F', color: 'white', border: 'none', fontSize: 14, fontWeight: 600, cursor: (isCreating || !createName.trim() || createGroupBan) ? 'not-allowed' : 'pointer', fontFamily: 'Inter' }}
+                                className={BTN_PRIMARY}
                             >
                                 {isCreating ? 'Đang tạo...' : 'Tạo nhóm'}
                             </button>

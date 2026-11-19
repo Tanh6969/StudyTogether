@@ -134,46 +134,38 @@ export const TrendingTopicSkeleton: React.FC = () => {
   );
 };
 
-/** StudyGroupCardSkeleton — Mô phỏng layout của thẻ nhóm học trong StudyGroups */
+/** StudyGroupCardSkeleton — Mô phỏng layout của thẻ nhóm học (`GroupCard` trong StudyGroups.tsx).
+ * Giữ cùng khung, chiều cao và khoảng cách với thẻ thật để lưới không bị "nhảy" khi dữ liệu tải xong. */
 export const StudyGroupCardSkeleton: React.FC = () => {
   return (
-    <div
-      style={{
-        background: 'white',
-        borderRadius: 8,
-        outline: '1px #E2E8F0 solid',
-        outlineOffset: '-1px',
-        display: 'flex',
-        flexDirection: 'column',
-        overflow: 'hidden',
-      }}
-    >
-      {/* Cover image area */}
-      <Skeleton width="100%" height={128} borderRadius={0} />
-      {/* Card body */}
-      <div style={{ padding: 24, display: 'flex', flexDirection: 'column', gap: 10 }}>
-        {/* Badge */}
-        <Skeleton width={80} height={24} borderRadius={4} />
-        {/* Title */}
-        <Skeleton width="70%" height={22} />
-        {/* Description lines */}
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
-          <Skeleton width="100%" height={14} />
-          <Skeleton width="80%" height={14} />
+    // Độ rộng do hàng chứa quyết định (ROW_CLASSES trong StudyGroups.tsx): slider 2 thẻ khi màn hình < 928px, lưới 280px khi ≥ 928px.
+    // Kích thước bên trong khớp GroupCard: bản gọn trên điện thoại (< 640px), bản thường từ 640px.
+    // Chiều cao từng khối CỐ ĐỊNH, giống hệt GroupCard → mọi thẻ (thật lẫn skeleton) luôn cao bằng nhau.
+    <div aria-hidden="true" className="flex min-w-0 flex-col overflow-hidden rounded-lg border border-slate-200 bg-white">
+      {/* Cover (h-24 → h-32) + streak badge góc phải */}
+      <div className="relative h-24 shrink-0 sm:h-32">
+        <div className="skeleton-pulse h-full w-full" />
+        <div className="absolute right-2 top-2 h-6 w-11 rounded-full bg-white/80 sm:right-3 sm:top-3 sm:h-7 sm:w-14" />
+      </div>
+
+      {/* Card body (p-3 → p-5) */}
+      <div className="flex flex-col p-3 sm:p-5">
+        {/* Badge vai trò / công khai: h-5 → h-6 */}
+        <div className="mb-2 skeleton-pulse h-5 w-16 rounded sm:mb-3 sm:h-6 sm:w-20" />
+        {/* Tên nhóm: giữ chỗ 2 dòng, h-10 → h-12 */}
+        <div className="mb-1 flex h-10 flex-col justify-center gap-1.5 sm:mb-2 sm:h-12">
+          <div className="skeleton-pulse h-3.5 w-11/12 rounded-md sm:h-4" />
+          <div className="skeleton-pulse h-3.5 w-1/2 rounded-md sm:h-4" />
         </div>
-        {/* Footer */}
-        <div
-          style={{
-            paddingTop: 16,
-            marginTop: 8,
-            borderTop: '1px solid #E2E8F0',
-            display: 'flex',
-            justifyContent: 'space-between',
-            alignItems: 'center',
-          }}
-        >
-          <Skeleton width={36} height={28} borderRadius="50%" />
-          <Skeleton width={80} height={16} />
+        {/* Mô tả: giữ chỗ 2 dòng, h-8 → h-10 */}
+        <div className="mb-3 flex h-8 flex-col justify-center gap-1.5 sm:mb-5 sm:h-10 sm:gap-2">
+          <div className="skeleton-pulse h-3 w-full rounded sm:h-3.5" />
+          <div className="skeleton-pulse h-3 w-4/5 rounded sm:h-3.5" />
+        </div>
+        {/* Footer: số thành viên + nút hành động */}
+        <div className="flex items-center justify-between border-t border-slate-300 pt-2.5 sm:pt-4">
+          <div className="skeleton-pulse h-6 w-6 rounded-full sm:h-7 sm:w-7" />
+          <div className="skeleton-pulse h-4 w-16 rounded sm:h-5 sm:w-24" />
         </div>
       </div>
     </div>
