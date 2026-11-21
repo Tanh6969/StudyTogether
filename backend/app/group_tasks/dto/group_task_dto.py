@@ -1,9 +1,13 @@
 import uuid
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
+from app.core.ai_quota import local_today
+
 MAX_NOTES = 50
+# Furthest goal deadline an AI roadmap may target; also caps due dates on applied AI nodes.
+AI_MAX_HORIZON_DAYS = 730
 
 
 def _strip_required(value: str) -> str:
@@ -90,6 +94,7 @@ class GroupTaskResponse(BaseModel):
     id: uuid.UUID
     group_id: uuid.UUID
     parent_id: uuid.UUID | None
+    roadmap_id: uuid.UUID | None = None
     title: str
     assignee: str
     due_date: date | None
@@ -108,7 +113,7 @@ class GroupTaskResponse(BaseModel):
             x, y = data.position_x, data.position_y
             return {
                 **{key: getattr(data, key) for key in (
-                    "id", "group_id", "parent_id", "title", "assignee", "due_date", "done",
+                    "id", "group_id", "parent_id", "roadmap_id", "title", "assignee", "due_date", "done",
                     "notes", "created_by", "created_at", "updated_at",
                 )},
                 "position": {"x": x, "y": y} if x is not None and y is not None else None,
@@ -157,6 +162,18 @@ class AIGroupTaskGenerateRequest(BaseModel):
     def strip_goal(cls, value: str) -> str:
         return _strip_required(value)
 
+    @field_validator("due_date")
+    @classmethod
+    def deadline_in_range(cls, value: date | None) -> date | None:
+        if value is None:
+            return None
+        today = local_today()
+        if value <= today:
+            raise ValueError("Hạn mục tiêu phải sau hôm nay")
+        if value > today + timedelta(days=AI_MAX_HORIZON_DAYS):
+            raise ValueError(f"Hạn mục tiêu tối đa {AI_MAX_HORIZON_DAYS // 365} năm kể từ hôm nay")
+        return value
+
     @field_validator("current_level")
     @classmethod
     def strip_level(cls, value: str) -> str:
@@ -166,6 +183,17 @@ class AIGroupTaskGenerateRequest(BaseModel):
 class AIGroupTaskSuggestion(BaseModel):
     title: str = Field(max_length=200)
     nodes: list[AIGroupTaskNode] = Field(max_length=80)
+
+
+class AIGroupTaskGenerateResponse(AIGroupTaskSuggestion):
+    """What the API returns: the AI suggestion (schema the model fills) plus the caller's quota left."""
+
+    remaining_today: int
+
+
+class AIQuotaResponse(BaseModel):
+    limit: int
+    remaining: int
 
 
 class AIGroupTaskApplyRequest(BaseModel):

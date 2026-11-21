@@ -10,6 +10,8 @@ export interface GroupTask {
   id: string;
   group_id: string;
   parent_id: string | null;
+  /** Chung cho mọi nhiệm vụ của một lần áp dụng lộ trình AI (mỗi lộ trình là một làn riêng); null = tự thêm. */
+  roadmap_id?: string | null;
   title: string;
   assignee: string;
   /** YYYY-MM-DD hoặc null nếu chưa đặt hạn. */
@@ -46,7 +48,22 @@ export interface AIGroupTaskSuggestion {
   nodes: AIGroupTaskNode[];
 }
 
+export interface AIGroupTaskGenerateResponse extends AIGroupTaskSuggestion {
+  /** Số lượt tạo lộ trình AI còn lại hôm nay của người gọi. */
+  remaining_today: number;
+}
+
+/** Hạn mức tạo lộ trình AI theo ngày (giờ Việt Nam), tính chung cho mọi nhóm của người dùng. */
+export interface AIQuota { limit: number; remaining: number; }
+
+/** Hạn mục tiêu phải trong khoảng (hôm nay, hôm nay + 730 ngày] — khớp AI_MAX_HORIZON_DAYS ở backend. */
+export const AI_MAX_HORIZON_DAYS = 730;
+
 const base = (groupId: string) => `/groups/${encodeURIComponent(groupId)}/tasks`;
+
+export function getGroupTaskAiQuota(groupId: string) {
+  return apiClient.get<AIQuota>(`${base(groupId)}/ai/quota`);
+}
 
 export function listGroupTasks(groupId: string) {
   return apiClient.get<GroupTask[]>(base(groupId));
@@ -69,7 +86,7 @@ export function generateGroupTaskTree(
   groupId: string,
   data: { goal: string; due_date: string | null; hours_per_week: number; current_level: string }
 ) {
-  return apiClient.post<AIGroupTaskSuggestion>(`${base(groupId)}/ai/generate`, data);
+  return apiClient.post<AIGroupTaskGenerateResponse>(`${base(groupId)}/ai/generate`, data);
 }
 
 export function applyGroupTaskTree(

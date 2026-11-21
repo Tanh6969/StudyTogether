@@ -1,5 +1,5 @@
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
@@ -7,6 +7,7 @@ import pytest
 
 from app.auth.dependencies import get_current_user
 from app.auth.dto.auth_dto import CurrentUser
+from app.core.ai_quota import local_today
 from app.db.session import get_db_session
 from app.group_tasks.entities.group_task_entity import GroupTask
 from app.group_tasks.routers import group_task_router
@@ -51,6 +52,20 @@ def overrides(user, session, monkeypatch):
     yield
     app.dependency_overrides.pop(get_current_user, None)
     app.dependency_overrides.pop(get_db_session, None)
+
+
+@pytest.fixture(autouse=True)
+def quota(monkeypatch):
+    """The quota helpers run raw SQL; stub them (default: plenty left, 4 after this use)."""
+    mocks = {
+        "consume": AsyncMock(return_value=4),
+        "refund": AsyncMock(),
+        "remaining": AsyncMock(return_value=5),
+    }
+    monkeypatch.setattr(group_task_router, "consume_quota", mocks["consume"])
+    monkeypatch.setattr(group_task_router, "refund_quota", mocks["refund"])
+    monkeypatch.setattr(group_task_router, "remaining_quota", mocks["remaining"])
+    return mocks
 
 
 def _task(**kw) -> GroupTask:
@@ -152,7 +167,7 @@ async def test_generate_group_task_tree_calls_ai_and_returns_preview(async_clien
         f"/groups/{GROUP_ID}/tasks/ai/generate",
         json={
             "goal": "Đỗ JLPT N2 vào cuối năm nay",
-            "due_date": "2026-12-31",
+            "due_date": (local_today() + timedelta(days=40)).isoformat(),
             "hours_per_week": 12,
             "current_level": "Hiện ở N3, biết khoảng 1200 từ vựng và còn yếu ngữ pháp.",
         },
@@ -161,7 +176,77 @@ async def test_generate_group_task_tree_calls_ai_and_returns_preview(async_clien
 
     assert response.status_code == 200
     assert response.json()["nodes"][0]["children"][0]["title"] == "Ôn 500 từ vựng"
+    assert response.json()["remaining_today"] == 4
     generate.assert_awaited_once()
+
+
+TODAY = local_today()
+DEADLINE = TODAY + timedelta(days=40)
+GENERATE_BODY = {
+    "goal": "Đỗ JLPT N2 vào cuối năm nay",
+    "due_date": DEADLINE.isoformat(),
+    "hours_per_week": 12,
+    "current_level": "Hiện ở N3, biết khoảng 1200 từ vựng.",
+}
+
+
+async def test_generate_refuses_when_daily_quota_is_spent(async_client, monkeypatch, quota):
+    quota["consume"].return_value = None
+    generate = AsyncMock()
+    monkeypatch.setattr(group_task_router.roadmap_ai_service, "suggest_group_tasks", generate)
+
+    response = await async_client.post(f"/groups/{GROUP_ID}/tasks/ai/generate", json=GENERATE_BODY, headers=AUTH_HEADERS)
+
+    assert response.status_code == 429
+    generate.assert_not_awaited()
+
+
+async def test_generate_refunds_quota_when_ai_fails(async_client, monkeypatch, quota):
+    from app.roadmaps.services.roadmap_ai_service import RoadmapAiError
+
+    monkeypatch.setattr(
+        group_task_router.roadmap_ai_service, "suggest_group_tasks", AsyncMock(side_effect=RoadmapAiError("boom"))
+    )
+
+    response = await async_client.post(f"/groups/{GROUP_ID}/tasks/ai/generate", json=GENERATE_BODY, headers=AUTH_HEADERS)
+
+    assert response.status_code == 502
+    quota["refund"].assert_awaited_once()
+
+
+async def test_generate_clamps_ai_due_dates_to_today_and_deadline(async_client, monkeypatch):
+    from app.group_tasks.dto.group_task_dto import AIGroupTaskNode, AIGroupTaskSuggestion
+
+    suggestion = AIGroupTaskSuggestion(title="Lộ trình", nodes=[
+        AIGroupTaskNode(title="Quá khứ", due_date="2020-01-01"),
+        AIGroupTaskNode(title="Sau deadline", due_date="2030-01-01", children=[
+            AIGroupTaskNode(title="Con trễ hơn cha", due_date="2031-01-01"),
+        ]),
+    ])
+    monkeypatch.setattr(group_task_router.roadmap_ai_service, "suggest_group_tasks", AsyncMock(return_value=suggestion))
+
+    response = await async_client.post(f"/groups/{GROUP_ID}/tasks/ai/generate", json=GENERATE_BODY, headers=AUTH_HEADERS)
+
+    assert response.status_code == 200, response.text
+    nodes = response.json()["nodes"]
+    assert nodes[0]["due_date"] == TODAY.isoformat()
+    assert nodes[1]["due_date"] == DEADLINE.isoformat()
+    assert nodes[1]["children"][0]["due_date"] == DEADLINE.isoformat()
+
+
+@pytest.mark.parametrize("due_date", ["2000-01-01", "2099-01-01"])
+async def test_generate_rejects_deadline_outside_allowed_window(async_client, due_date):
+    response = await async_client.post(
+        f"/groups/{GROUP_ID}/tasks/ai/generate", json={**GENERATE_BODY, "due_date": due_date}, headers=AUTH_HEADERS
+    )
+    assert response.status_code == 422
+
+
+async def test_quota_endpoint_reports_remaining(async_client, quota):
+    quota["remaining"].return_value = 2
+    response = await async_client.get(f"/groups/{GROUP_ID}/tasks/ai/quota", headers=AUTH_HEADERS)
+    assert response.status_code == 200
+    assert response.json() == {"limit": 5, "remaining": 2}
 
 
 async def test_generate_rejects_missing_hours_or_level(async_client):
@@ -202,3 +287,7 @@ async def test_apply_group_task_tree_adds_parent_and_child(async_client, session
     added = [call.args[0] for call in session.add.call_args_list]
     assert len(added) == 2
     assert added[1].parent_id == added[0].id
+    # Explicit, increasing created_at keeps the AI's order (now() is the same for the whole transaction).
+    assert added[0].created_at < added[1].created_at
+    # One roadmap = one lane on the board.
+    assert added[0].roadmap_id is not None and added[0].roadmap_id == added[1].roadmap_id

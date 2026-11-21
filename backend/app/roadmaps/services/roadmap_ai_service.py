@@ -3,7 +3,7 @@ from typing import TypeVar
 import anthropic
 from google import genai
 from google.genai import types
-from pydantic import BaseModel
+from pydantic import BaseModel, ValidationError
 
 from app.core.config import settings
 from app.roadmaps.dto.roadmap_dto import RoadmapAnswer, RoadmapSuggestion, RoadmapSuggestQuestionsResponse, TaskSuggestionResponse
@@ -241,6 +241,7 @@ class RoadmapAiService:
             f"Trình độ hiện tại: {current_level}\n"
             f"Thời gian có thể học: {hours_per_week} giờ/tuần\n"
             f"Hôm nay: {today}\n"
+            f"Mọi due_date phải nằm trong khoảng {today} đến {deadline}; nhiệm vụ con không được trễ hơn nhánh cha.\n"
             "Tối thiểu 12 nhiệm vụ cụ thể, tối đa 80 nhiệm vụ. "
             "Mỗi node title ngắn gọn; assignee mặc định Cả nhóm."
         )
@@ -266,14 +267,19 @@ class RoadmapAiService:
         try:
             response = await client.messages.parse(
                 model="claude-opus-5",
-                max_tokens=4096,
+                # A group task tree (up to 80 nodes with notes, in Vietnamese) does not fit in 4096.
+                max_tokens=16000,
                 system=system,
                 messages=[{"role": "user", "content": content}],
                 output_format=output_model,
             )
         except anthropic.APIError as exc:
             raise RoadmapAiError(f"Anthropic request failed: {exc}") from exc
+        except ValidationError as exc:
+            raise RoadmapAiError(f"Anthropic returned output that does not match the schema: {exc}") from exc
 
+        if response.parsed_output is None:
+            raise RoadmapAiError(f"Anthropic returned no parsable output (stop_reason={response.stop_reason})")
         return response.parsed_output
 
     async def _generate_with_gemini(self, content: str, system: str, output_model: type[T], gemini_schema: dict) -> T:
@@ -294,4 +300,7 @@ class RoadmapAiService:
         except genai.errors.APIError as exc:
             raise RoadmapAiError(f"Gemini request failed: {exc}") from exc
 
-        return output_model.model_validate_json(response.text)
+        try:
+            return output_model.model_validate_json(response.text or "")
+        except ValidationError as exc:
+            raise RoadmapAiError(f"Gemini returned output that does not match the schema: {exc}") from exc

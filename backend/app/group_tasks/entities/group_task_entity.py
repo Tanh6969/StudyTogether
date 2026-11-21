@@ -31,6 +31,9 @@ class GroupTask(Base):
     due_date: Mapped[date | None] = mapped_column(Date)
     done: Mapped[bool] = mapped_column(Boolean, server_default=text("false"))
     notes: Mapped[list[str]] = mapped_column(ARRAY(Text), server_default=text("'{}'::text[]"))
+    # Shared by every task inserted by one AI roadmap apply (migration 013); NULL for hand-made tasks.
+    # The board lays each roadmap out as its own lane.
+    roadmap_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True))
     # Manual canvas position; NULL means "let the board auto-layout this node".
     position_x: Mapped[float | None] = mapped_column(Float)
     position_y: Mapped[float | None] = mapped_column(Float)

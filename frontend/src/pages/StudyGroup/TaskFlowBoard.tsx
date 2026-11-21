@@ -1,59 +1,60 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { ReactNode } from 'react';
-import { Check, ListChecks, LoaderCircle, Maximize2, Minus, Plus, Sparkles, X } from 'lucide-react';
+import { CalendarDays, Check, LayoutGrid, ListChecks, LoaderCircle, Maximize2, Minus, Plus, RotateCcw, Sparkles, StickyNote, X } from 'lucide-react';
 import { WorkspaceTabs } from '../../components/groups/WorkspaceTabs';
 import { Modal } from '../../components/ui/Modal';
 import { ApiError } from '../../lib/apiClient';
 import {
+  AI_MAX_HORIZON_DAYS,
   applyGroupTaskTree,
   createGroupTask,
   deleteGroupTask,
   generateGroupTaskTree,
+  getGroupTaskAiQuota,
   listGroupTasks,
   updateGroupTask,
+  type AIQuota,
   type GroupTask,
   type GroupTaskUpdate,
   type AIGroupTaskNode,
   type AIGroupTaskSuggestion,
 } from '../../lib/groupTask.api';
+import { arrangeTasks, CARD_WIDTH, connectorPath, laneKey, type NodePosition } from './taskFlowLayout';
 
-interface NodePosition { task: GroupTask; x: number; y: number; parentId?: string; }
+/** YYYY-MM-DD in the browser's local time, `days` from today. */
+function localIsoDate(days = 0): string {
+  const date = new Date();
+  date.setDate(date.getDate() + days);
+  return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`;
+}
 
-function arrangeTasks(tasks: GroupTask[]): NodePosition[] {
-  const active = tasks;
-  const activeIds = new Set(active.map(task => task.id));
-  const children = new Map<string | undefined, GroupTask[]>();
-  for (const task of active) {
-    const parentId = task.parent_id && activeIds.has(task.parent_id) ? task.parent_id : undefined;
-    children.set(parentId, [...(children.get(parentId) ?? []), task]);
-  }
-  const heights = new Map<string, number>();
-  const measure = (task: GroupTask): number => {
-    const kids = children.get(task.id) ?? [];
-    const height = Math.max(142, kids.reduce((total, child) => total + measure(child), 0) + Math.max(0, kids.length - 1) * 40);
-    heights.set(task.id, height);
-    return height;
-  };
-  const roots = children.get(undefined) ?? [];
-  const total = roots.reduce((sum, root) => sum + measure(root), 0) + Math.max(0, roots.length - 1) * 54;
-  const positions: NodePosition[] = [];
-  const place = (task: GroupTask, x: number, y: number, parentId?: string) => {
-    const height = heights.get(task.id) ?? 142;
-    positions.push({ task, x: task.position?.x ?? x, y: task.position?.y ?? y + (height - 142) / 2, parentId });
-    const kids = children.get(task.id) ?? [];
-    const childHeight = kids.reduce((sum, child) => sum + (heights.get(child.id) ?? 142), 0) + Math.max(0, kids.length - 1) * 40;
-    let childY = y + (height - childHeight) / 2;
-    for (const child of kids) {
-      place(child, x + 330, childY, task.id);
-      childY += (heights.get(child.id) ?? 142) + 40;
-    }
-  };
-  let y = Math.max(28, 470 - total / 2);
-  for (const root of roots) {
-    place(root, 36, y);
-    y += (heights.get(root.id) ?? 142) + 54;
-  }
-  return positions;
+const CONNECTOR_COLOR = '#94A3B8';
+
+function taskStatus(task: GroupTask) {
+  const overdue = !task.done && !!task.due_date && task.due_date < localIsoDate();
+  if (task.done) return { label: 'Hoàn thành', background: '#DCFCE7', color: '#15803D', overdue };
+  if (overdue) return { label: 'Quá hạn', background: '#FEE2E2', color: '#B91C1C', overdue };
+  if (task.due_date) return { label: 'Có hạn', background: '#FEF3C7', color: '#B45309', overdue };
+  return { label: 'Chưa hoàn thành', background: '#DBEAFE', color: '#1D4ED8', overdue };
+}
+
+/** Small text+icon button in a card's footer; inline-flex + nowrap so icon and label never split lines. */
+const cardAction: React.CSSProperties = {
+  height: 26, padding: '0 6px', display: 'inline-flex', alignItems: 'center', gap: 4, whiteSpace: 'nowrap',
+  border: 0, borderRadius: 6, background: 'transparent', fontSize: 11, fontWeight: 600, cursor: 'pointer',
+};
+
+/** One-line input + submit inside a card. Enter saves, Esc cancels. */
+function InlineDraft({ value, onChange, onSubmit, onCancel, placeholder, submitLabel }: {
+  value: string; onChange: (value: string) => void; onSubmit: () => void; onCancel: () => void; placeholder: string; submitLabel: string;
+}) {
+  const empty = !value.trim();
+  return <form onSubmit={event => { event.preventDefault(); if (!empty) onSubmit(); }} style={{ display: 'flex', gap: 4 }}>
+    <input autoFocus value={value} onChange={event => onChange(event.target.value)} onKeyDown={event => { if (event.key === 'Escape') onCancel(); }} placeholder={placeholder} maxLength={500}
+      style={{ flex: 1, minWidth: 0, height: 28, padding: '0 8px', border: '1px solid #CBD5E1', borderRadius: 6, background: 'white', fontSize: 11, boxSizing: 'border-box' }} />
+    <button type="submit" disabled={empty} style={{ height: 28, padding: '0 10px', flexShrink: 0, whiteSpace: 'nowrap', border: 0, borderRadius: 6, background: empty ? '#94A3B8' : '#2563EB', color: 'white', fontSize: 11, fontWeight: 600, cursor: empty ? 'default' : 'pointer' }}>{submitLabel}</button>
+    <button type="button" aria-label="Hủy" title="Hủy (Esc)" onClick={onCancel} style={{ width: 24, height: 28, padding: 0, flexShrink: 0, display: 'grid', placeItems: 'center', border: 0, background: 'transparent', color: '#94A3B8', cursor: 'pointer' }}><X size={13} /></button>
+  </form>;
 }
 
 /** Ids of `rootId` and every task below it -- the server deletes the same subtree (ON DELETE CASCADE). */
@@ -99,19 +100,68 @@ export function TaskFlowBoard({ groupId, notesHeader }: { groupId: string; notes
   const [aiSuggestion, setAiSuggestion] = useState<AIGroupTaskSuggestion | null>(null);
   const [replaceExisting, setReplaceExisting] = useState(false);
   const [aiBackgroundDone, setAiBackgroundDone] = useState(false);
+  const [aiQuota, setAiQuota] = useState<AIQuota | null>(null);
+  const aiMinDate = localIsoDate(1);
+  const aiMaxDate = localIsoDate(AI_MAX_HORIZON_DAYS);
+  const aiQuotaSpent = aiQuota?.remaining === 0;
   const [zoom, setZoom] = useState(1);
   const [offset, setOffset] = useState({ x: 30, y: 28 });
   const [pan, setPan] = useState<{ x: number; y: number } | null>(null);
   const [drag, setDrag] = useState<{ id: string; x: number; y: number; startX: number; startY: number; originX: number; originY: number } | null>(null);
   const [title, setTitle] = useState('');
   const [dueDate, setDueDate] = useState('');
-  const [parentId, setParentId] = useState<string>();
   const [childDraftId, setChildDraftId] = useState<string>();
+  const [childTitle, setChildTitle] = useState('');
   const [noteDraftId, setNoteDraftId] = useState<string>();
   const [noteDraft, setNoteDraft] = useState('');
   const canvasRef = useRef<HTMLDivElement>(null);
   const viewAdjusted = useRef(false);
-  const positions = useMemo(() => arrangeTasks(tasks), [tasks]);
+  const [cardHeights, setCardHeights] = useState<Record<string, number>>({});
+  const sizeObserver = useRef<ResizeObserver | null>(null);
+  // While a card is dragged, lay it out at the drag point so its subtree and links follow live.
+  const layoutTasks = useMemo(
+    () => drag ? tasks.map(task => task.id === drag.id ? { ...task, position: { x: drag.x, y: drag.y } } : task) : tasks,
+    [tasks, drag],
+  );
+  const positions = useMemo(() => arrangeTasks(layoutTasks, cardHeights), [layoutTasks, cardHeights]);
+  const links = useMemo(() => {
+    const byId = new Map(positions.map(position => [position.task.id, position]));
+    const result: { key: string; from: NodePosition; to: NodePosition }[] = [];
+    // Phase -> next phase, only within the same roadmap lane.
+    const lastRootInLane = new Map<string, NodePosition>();
+    for (const position of positions) {
+      if (position.parentId) continue;
+      const previous = lastRootInLane.get(laneKey(position.task));
+      if (previous) result.push({ key: `phase-${position.task.id}`, from: previous, to: position });
+      lastRootInLane.set(laneKey(position.task), position);
+    }
+    for (const position of positions) {
+      const parent = position.parentId ? byId.get(position.parentId) : undefined;
+      if (parent) result.push({ key: position.task.id, from: parent, to: position });
+    }
+    return result;
+  }, [positions]);
+
+  /** Cards grow with their notes; feed real heights back into the layout so stacked cards never overlap.
+   *  offsetHeight ignores the canvas zoom transform, so these are layout-space pixels. */
+  const measureCard = useCallback((element: HTMLElement | null) => {
+    if (!element || typeof ResizeObserver === 'undefined') return;
+    sizeObserver.current ??= new ResizeObserver(entries => setCardHeights(current => {
+      let next = current;
+      for (const entry of entries) {
+        const card = entry.target as HTMLElement;
+        const id = card.dataset.taskId;
+        if (!id || current[id] === card.offsetHeight) continue;
+        if (next === current) next = { ...current };
+        next[id] = card.offsetHeight;
+      }
+      return next;
+    }));
+    const observer = sizeObserver.current;
+    observer.observe(element);
+    return () => observer.unobserve(element);
+  }, []);
+  useEffect(() => () => sizeObserver.current?.disconnect(), []);
   const completed = tasks.filter(task => task.done);
   const button: React.CSSProperties = { height: 30, minWidth: 30, display: 'grid', placeItems: 'center', border: '1px solid #CBD5E1', borderRadius: 7, background: 'white', color: '#334155', cursor: 'pointer' };
 
@@ -139,8 +189,8 @@ export function TaskFlowBoard({ groupId, notesHeader }: { groupId: string; notes
     if (!canvas || loading || positions.length === 0) return;
     const minX = Math.min(...positions.map(position => position.x));
     const minY = Math.min(...positions.map(position => position.y));
-    const maxX = Math.max(...positions.map(position => position.x + 250));
-    const maxY = Math.max(...positions.map(position => position.y + 142));
+    const maxX = Math.max(...positions.map(position => position.x + CARD_WIDTH));
+    const maxY = Math.max(...positions.map(position => position.y + position.height));
     const fit = () => {
       if (viewAdjusted.current) return;
       const scale = Math.min(1, (canvas.clientWidth - 56) / (maxX - minX), (canvas.clientHeight - 56) / (maxY - minY));
@@ -166,11 +216,26 @@ export function TaskFlowBoard({ groupId, notesHeader }: { groupId: string; notes
       });
   };
 
+  const addChildTask = async (parentTaskId: string) => {
+    const trimmed = childTitle.trim();
+    if (!trimmed) return;
+    setChildTitle(''); setChildDraftId(undefined);
+    try {
+      const created = await createGroupTask(groupId, { title: trimmed, parent_id: parentTaskId });
+      setTasks(current => [...current, created]);
+      setError(null);
+    } catch (err) {
+      console.error('Failed to create child task', err);
+      setError('Không thêm được nhiệm vụ con.');
+      setChildTitle(trimmed); setChildDraftId(parentTaskId);
+    }
+  };
+
   const addTask = async () => {
     const trimmed = title.trim();
     if (!trimmed) return;
-    const draft = { title: trimmed, due_date: dueDate || null, parent_id: parentId ?? null };
-    setTitle(''); setDueDate(''); setParentId(undefined);
+    const draft = { title: trimmed, due_date: dueDate || null, parent_id: null };
+    setTitle(''); setDueDate('');
     try {
       const created = await createGroupTask(groupId, draft);
       setTasks(current => [...current, created]);
@@ -200,6 +265,15 @@ export function TaskFlowBoard({ groupId, notesHeader }: { groupId: string; notes
     if (task) patchTask(taskId, { notes: [...task.notes, note] });
     setNoteDraft(''); setNoteDraftId(undefined);
   };
+  /** Clear every saved drag position so the whole board returns to the automatic roadmap layout. */
+  const resetLayout = () => {
+    viewAdjusted.current = false;
+    for (const task of tasks) if (task.position) patchTask(task.id, { position: null });
+  };
+  const removeNote = (taskId: string, index: number) => {
+    const task = tasks.find(item => item.id === taskId);
+    if (task) patchTask(taskId, { notes: task.notes.filter((_, noteIndex) => noteIndex !== index) });
+  };
 
   const generateAiTree = async () => {
     const goal = aiGoal.trim();
@@ -207,6 +281,10 @@ export function TaskFlowBoard({ groupId, notesHeader }: { groupId: string; notes
     const hours = Number(aiHours);
     if (goal.length < 10 || level.length < 5 || !Number.isInteger(hours) || hours < 1 || hours > 168) {
       setAiError('Hãy mô tả rõ mục tiêu, trình độ hiện tại và số giờ học hợp lệ.');
+      return;
+    }
+    if (aiDueDate && (aiDueDate < aiMinDate || aiDueDate > aiMaxDate)) {
+      setAiError(`Hạn mục tiêu phải sau hôm nay và không quá ${AI_MAX_HORIZON_DAYS / 365} năm.`);
       return;
     }
     setAiGenerating(true);
@@ -221,8 +299,10 @@ export function TaskFlowBoard({ groupId, notesHeader }: { groupId: string; notes
         current_level: level,
       });
       setAiSuggestion(suggestion);
+      setAiQuota(current => ({ limit: current?.limit ?? 5, remaining: suggestion.remaining_today }));
       setAiBackgroundDone(true);
     } catch (cause) {
+      if (cause instanceof ApiError && cause.status === 429) setAiQuota(current => ({ limit: current?.limit ?? 5, remaining: 0 }));
       if (cause instanceof ApiError) setAiError(cause.message);
       else setAiError('Không thể tạo lộ trình bằng AI. Vui lòng thử lại.');
     } finally {
@@ -259,28 +339,62 @@ export function TaskFlowBoard({ groupId, notesHeader }: { groupId: string; notes
     {error && <div role="alert" style={{ padding: '8px 24px', background: '#FEF2F2', borderBottom: '1px solid #FECACA', color: '#B91C1C', fontSize: 12 }}>{error}</div>}
     <div style={{ padding: '12px 20px', background: 'white', borderBottom: '1px solid #E2E8F0', display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
       <form onSubmit={event => { event.preventDefault(); void addTask(); }} style={{ display: 'flex', gap: 7, flex: '1 1 420px' }}>
-        <input aria-label="Tên nhiệm vụ" value={title} onChange={event => setTitle(event.target.value)} placeholder={parentId ? 'Tên node con...' : 'Thêm nhiệm vụ gốc...'} style={{ height: 36, flex: 1, minWidth: 120, padding: '0 10px', border: '1px solid #CBD5E1', borderRadius: 7, fontSize: 13, boxSizing: 'border-box' }} />
+        <input aria-label="Tên nhiệm vụ" value={title} onChange={event => setTitle(event.target.value)} placeholder="Thêm giai đoạn / nhiệm vụ gốc..." style={{ height: 36, flex: 1, minWidth: 120, padding: '0 10px', border: '1px solid #CBD5E1', borderRadius: 7, fontSize: 13, boxSizing: 'border-box' }} />
         <input aria-label="Hạn hoàn thành" type="date" value={dueDate} onChange={event => setDueDate(event.target.value)} style={{ height: 36, width: 132, padding: '0 7px', border: '1px solid #CBD5E1', borderRadius: 7, fontSize: 12, boxSizing: 'border-box' }} />
         <button aria-label="Thêm nhiệm vụ" type="submit" disabled={!title.trim()} style={{ ...button, height: 36, background: title.trim() ? '#2563EB' : '#94A3B8', borderColor: '#2563EB', color: 'white' }}><Plus size={16} /></button>
       </form>
       <div style={{ marginLeft: 'auto', display: 'flex', gap: 5, alignItems: 'center' }}>
-        <button aria-label="Tạo lộ trình bằng AI" title="Tạo lộ trình bằng AI" onClick={() => { setAiOpen(true); setAiError(null); }} style={{ ...button, width: 36, height: 36, padding: 0, background: '#7C3AED', borderColor: '#7C3AED', color: 'white' }}>
+        <button aria-label="Tạo lộ trình bằng AI" title="Tạo lộ trình bằng AI" onClick={() => {
+          setAiOpen(true);
+          setAiError(null);
+          getGroupTaskAiQuota(groupId).then(setAiQuota).catch(err => console.error('Failed to load AI quota', err));
+        }} style={{ ...button, width: 36, height: 36, padding: 0, background: '#7C3AED', borderColor: '#7C3AED', color: 'white' }}>
           <Sparkles size={18}/>
         </button>
-        <button aria-label="Thu nhỏ" onClick={() => setZoom(value => Math.max(.35, Number((value - .1).toFixed(2))))} style={button}><Minus size={14}/></button><span style={{ minWidth: 42, textAlign: 'center', color: '#64748B', fontSize: 12 }}>{Math.round(zoom * 100)}%</span><button aria-label="Phóng to" onClick={() => setZoom(value => Math.min(2, Number((value + .1).toFixed(2))))} style={button}><Plus size={14}/></button><button aria-label="Trở về zoom mặc định" title="Trở về zoom mặc định" onClick={() => { setZoom(1); setOffset({ x: 30, y: 28 }); }} style={{ ...button, width: 'auto', padding: '0 8px', display: 'flex', gap: 5 }}><Maximize2 size={14}/><span style={{fontSize:11}}>Mặc định</span></button>
+        <button aria-label="Thu nhỏ" onClick={() => setZoom(value => Math.max(.35, Number((value - .1).toFixed(2))))} style={button}><Minus size={14}/></button><span style={{ minWidth: 42, textAlign: 'center', color: '#64748B', fontSize: 12 }}>{Math.round(zoom * 100)}%</span><button aria-label="Phóng to" onClick={() => setZoom(value => Math.min(2, Number((value + .1).toFixed(2))))} style={button}><Plus size={14}/></button><button aria-label="Trở về zoom mặc định" title="Trở về zoom mặc định" onClick={() => { setZoom(1); setOffset({ x: 30, y: 28 }); }} style={{ ...button, width: 'auto', padding: '0 8px', display: 'flex', gap: 5 }}><Maximize2 size={14}/><span style={{fontSize:11}}>Mặc định</span></button>{tasks.some(task => task.position) && <button aria-label="Sắp xếp lại các thẻ đã kéo" title="Đưa mọi thẻ đã kéo tay về bố cục lộ trình tự động" onClick={resetLayout} style={{ ...button, width: 'auto', padding: '0 8px', display: 'flex', gap: 5 }}><LayoutGrid size={14}/><span style={{fontSize:11}}>Sắp xếp lại</span></button>}
       </div>
     </div>
     <div ref={canvasRef} onWheel={event => { event.preventDefault(); viewAdjusted.current = true; setZoom(value => Math.max(.2, Math.min(2, value + (event.deltaY < 0 ? .08 : -.08)))); }} onPointerDown={event => { if (event.target === event.currentTarget) { viewAdjusted.current = true; event.currentTarget.setPointerCapture(event.pointerId); setPan({ x: event.clientX - offset.x, y: event.clientY - offset.y }); } }} onPointerMove={event => { if (pan) setOffset({ x: event.clientX - pan.x, y: event.clientY - pan.y }); }} onPointerUp={() => setPan(null)} style={{ flex: 1, minHeight: 0, marginRight: 0, overflow: 'hidden', position: 'relative', backgroundColor: '#F8FAFC', backgroundImage: 'radial-gradient(#CBD5E1 1px, transparent 1px)', backgroundSize: `${24 * zoom}px ${24 * zoom}px`, cursor: pan ? 'grabbing' : 'grab', touchAction: 'none' }}>
       {!loading && tasks.length === 0 && <div style={{ position: 'absolute', inset: 0, display: 'grid', placeItems: 'center', color: '#64748B' }}>Thêm nhiệm vụ đầu tiên để bắt đầu sơ đồ nhóm.</div>}
       {loading && <div style={{ position: 'absolute', inset: 0, display: 'grid', placeItems: 'center', color: '#64748B' }}>Đang tải bảng nhiệm vụ...</div>}
-      <svg style={{ position: 'absolute', inset: 0, width: '100%', height: '100%', pointerEvents: 'none', overflow: 'visible' }}><defs><marker id="task-flow-arrow" markerWidth="9" markerHeight="9" refX="8" refY="4.5" orient="auto"><path d="M0,0 L9,4.5 L0,9 z" fill="#64748B" /></marker></defs><g transform={`translate(${offset.x} ${offset.y}) scale(${zoom})`}>{positions.filter(position => position.parentId).map(position => { const parent = positions.find(item => item.task.id === position.parentId); return parent ? <path key={position.task.id} d={`M ${parent.x + 250} ${parent.y + 71} C ${parent.x + 292} ${parent.y + 71}, ${position.x - 42} ${position.y + 71}, ${position.x} ${position.y + 71}`} fill="none" stroke="#64748B" strokeWidth="1.6" markerEnd="url(#task-flow-arrow)" /> : null; })}</g></svg>
+      <svg style={{ position: 'absolute', inset: 0, width: '100%', height: '100%', pointerEvents: 'none', overflow: 'visible' }}><defs>
+        {/* userSpaceOnUse: the arrowhead keeps one size regardless of stroke width. */}
+        <marker id="task-flow-arrow" markerUnits="userSpaceOnUse" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto"><path d="M0,1 L9,5 L0,9 z" fill={CONNECTOR_COLOR} /></marker>
+      </defs><g transform={`translate(${offset.x} ${offset.y}) scale(${zoom})`}>
+        {links.map(({ key, from, to }) => <path key={key} d={connectorPath(from, to)} fill="none" stroke={CONNECTOR_COLOR} strokeWidth="1.6" markerEnd="url(#task-flow-arrow)" />)}
+      </g></svg>
       <div style={{ position: 'absolute', left: offset.x, top: offset.y, transform: `scale(${zoom})`, transformOrigin: 'top left' }}>
-        {positions.map(({ task, x, y }) => <article key={task.id} onPointerDown={event => { if ((event.target as HTMLElement).closest('button,input,form')) return; event.stopPropagation(); event.currentTarget.setPointerCapture(event.pointerId); setDrag({id:task.id,x,y,startX:event.clientX,startY:event.clientY,originX:x,originY:y}); }} onPointerMove={event => { if(drag?.id===task.id) setDrag({...drag,x:drag.originX+(event.clientX-drag.startX)/zoom,y:drag.originY+(event.clientY-drag.startY)/zoom}); }} onPointerUp={() => { if(drag?.id===task.id){ if(drag.x!==drag.originX||drag.y!==drag.originY) moveTask(task.id,{x:drag.x,y:drag.y}); setDrag(null);} }} style={{ position: 'absolute', left: drag?.id===task.id?drag.x:x, top: drag?.id===task.id?drag.y:y, width: 250, minHeight: 142, boxSizing: 'border-box', background: task.done ? '#F0FDF4' : 'white', border: task.done ? '1px solid #86EFAC' : '1px solid #93C5FD', boxShadow: '0 3px 10px rgba(15,23,42,.12)', cursor: drag?.id===task.id?'grabbing':'grab', touchAction:'none' }}>
+        {positions.map(({ task, x, y, parentId: nodeParentId }) => <article key={task.id} ref={measureCard} data-task-id={task.id} onPointerDown={event => { if ((event.target as HTMLElement).closest('button,input,form')) return; event.stopPropagation(); viewAdjusted.current = true; event.currentTarget.setPointerCapture(event.pointerId); setDrag({id:task.id,x,y,startX:event.clientX,startY:event.clientY,originX:x,originY:y}); }} onPointerMove={event => { if(drag?.id===task.id) setDrag({...drag,x:drag.originX+(event.clientX-drag.startX)/zoom,y:drag.originY+(event.clientY-drag.startY)/zoom}); }} onPointerUp={() => { if(drag?.id===task.id){ if(drag.x!==drag.originX||drag.y!==drag.originY) moveTask(task.id,{x:drag.x,y:drag.y}); setDrag(null);} }} style={{ position: 'absolute', left: x, top: y, width: CARD_WIDTH, boxSizing: 'border-box', background: task.done ? '#F0FDF4' : 'white', border: task.done ? '1px solid #86EFAC' : '1px solid #93C5FD', borderTop: nodeParentId ? undefined : `3px solid ${task.done ? '#16A34A' : '#7C3AED'}`, boxShadow: '0 3px 10px rgba(15,23,42,.12)', cursor: drag?.id===task.id?'grabbing':'grab', touchAction:'none' }}>
           <header onDoubleClick={() => { const edited = window.prompt('Chỉnh sửa nhiệm vụ', task.title)?.trim(); if (edited && edited !== task.title) renameTask(task.id, edited); }} style={{ height: 36, padding: '0 10px', borderBottom: '1px solid #64748B', display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 6, fontSize: 13, fontWeight: 700, cursor: 'grab' }}><span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{task.title}</span><button aria-label="Xóa nhiệm vụ" onClick={() => removeTask(task.id)} style={{ border: 0, background: 'transparent', color: '#94A3B8', cursor: 'pointer' }}><X size={14}/></button></header>
-          <div style={{ padding: '8px 10px', display: 'grid', gap: 5, color: '#334155', fontSize: 12 }}><span style={{justifySelf: 'start', padding: '2px 7px', borderRadius: 999, background: task.done ? '#DCFCE7' : task.due_date ? '#FEF3C7' : '#DBEAFE', color: task.done ? '#15803D' : task.due_date ? '#B45309' : '#1D4ED8', fontSize: 10, fontWeight: 700}}>{task.done ? 'Hoàn thành · xanh' : task.due_date ? 'Có hạn · vàng' : 'Chưa hoàn thành · xanh dương'}</span><div>Hạn: {task.due_date ? new Date(`${task.due_date}T00:00:00`).toLocaleDateString('vi-VN') : 'Chưa đặt'}</div><div style={{ display: 'flex', alignItems: 'center', gap: 6 }}><button onClick={() => toggleDone(task.id, !task.done)} style={{ border: 0, padding: 0, background: 'transparent', color: '#15803D', fontSize: 11, cursor: 'pointer' }}>{task.done ? 'Khôi phục' : <><Check size={12}/> Hoàn thành</>}</button><button aria-label={`Thêm node con cho ${task.title}`} title="Thêm node con" onClick={() => { setParentId(task.id); setTitle(''); setChildDraftId(task.id); }} style={{ marginLeft: 'auto', width: 25, height: 25, borderRadius: '50%', border: '1px solid #93C5FD', background: '#EFF6FF', color: '#1D4ED8', fontSize: 17, cursor: 'pointer' }}><Plus size={14}/></button></div>
-            {task.notes.map((note, index) => <div key={`${task.id}-${index}`} style={{ borderTop: '1px solid #E2E8F0', paddingTop: 4, color: '#64748B', fontSize: 11 }}>{note}</div>)}
-            {childDraftId === task.id && <form onSubmit={event => { event.preventDefault(); void addTask(); setChildDraftId(undefined); }} style={{ display: 'flex', gap: 4 }}><input autoFocus value={title} onChange={event => setTitle(event.target.value)} placeholder="Tên node con" style={{ width: 165, height: 27, border: '1px solid #CBD5E1', borderRadius: 4, padding: '0 6px', fontSize: 11 }} /><button type="submit" disabled={!title.trim()} style={{ border: 0, borderRadius: 4, background: '#2563EB', color: 'white', fontSize: 11 }}>Thêm</button></form>}
-            {noteDraftId === task.id ? <form onSubmit={event => { event.preventDefault(); addNote(task.id); }} style={{ display: 'flex', gap: 4 }}><input autoFocus value={noteDraft} onChange={event => setNoteDraft(event.target.value)} placeholder="Thuộc tính / note" style={{ width: 165, height: 27, border: '1px solid #CBD5E1', borderRadius: 4, padding: '0 6px', fontSize: 11 }} /><button type="submit" style={{ border: 0, borderRadius: 4, background: '#2563EB', color: 'white', fontSize: 11 }}>Lưu</button></form> : <button onClick={() => setNoteDraftId(task.id)} style={{ justifySelf: 'start', display: 'flex', alignItems: 'center', gap: 4, border: 0, background: 'transparent', padding: 0, color: '#2563EB', fontSize: 11, cursor: 'pointer' }}><Plus size={12}/> Thêm thuộc tính / note</button>}
+          <div style={{ padding: '10px 12px', display: 'grid', gap: 8, color: '#334155', fontSize: 12 }}>
+            {(() => {
+              const status = taskStatus(task);
+              return <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                <span style={{ padding: '2px 8px', borderRadius: 999, background: status.background, color: status.color, fontSize: 10, fontWeight: 700, whiteSpace: 'nowrap' }}>{status.label}</span>
+                <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4, color: status.overdue ? '#B91C1C' : '#64748B', fontSize: 11, whiteSpace: 'nowrap' }}>
+                  <CalendarDays size={12} />{task.due_date ? new Date(`${task.due_date}T00:00:00`).toLocaleDateString('vi-VN') : 'Chưa đặt hạn'}
+                </span>
+              </div>;
+            })()}
+            {task.notes.length > 0 && <ul style={{ margin: 0, padding: 0, listStyle: 'none', display: 'grid', gap: 4 }}>
+              {task.notes.map((note, index) => <li key={`${task.id}-${index}`} style={{ display: 'flex', alignItems: 'flex-start', gap: 6, padding: '4px 6px', borderRadius: 6, background: task.done ? '#DCFCE7' : '#F1F5F9', color: '#475569', fontSize: 11, lineHeight: 1.4 }}>
+                <span style={{ flex: 1, minWidth: 0, overflowWrap: 'anywhere' }}>{note}</span>
+                <button aria-label="Xóa ghi chú" title="Xóa ghi chú" onClick={() => removeNote(task.id, index)} style={{ flexShrink: 0, width: 16, height: 16, padding: 0, display: 'grid', placeItems: 'center', border: 0, background: 'transparent', color: '#94A3B8', cursor: 'pointer' }}><X size={12} /></button>
+              </li>)}
+            </ul>}
+            {noteDraftId === task.id && <InlineDraft value={noteDraft} onChange={setNoteDraft} onSubmit={() => addNote(task.id)} onCancel={() => { setNoteDraftId(undefined); setNoteDraft(''); }} placeholder="Ghi chú, tài liệu, link..." submitLabel="Lưu" />}
+            {childDraftId === task.id && <InlineDraft value={childTitle} onChange={setChildTitle} onSubmit={() => void addChildTask(task.id)} onCancel={() => { setChildDraftId(undefined); setChildTitle(''); }} placeholder="Tên nhiệm vụ con" submitLabel="Thêm" />}
+            <div style={{ display: 'flex', alignItems: 'center', gap: 6, paddingTop: 8, borderTop: `1px solid ${task.done ? '#BBF7D0' : '#E2E8F0'}` }}>
+              <button onClick={() => toggleDone(task.id, !task.done)} style={{ ...cardAction, color: task.done ? '#475569' : '#15803D' }}>
+                {task.done ? <RotateCcw size={13} /> : <Check size={13} />}{task.done ? 'Khôi phục' : 'Hoàn thành'}
+              </button>
+              <button title="Thêm ghi chú" onClick={() => { setNoteDraftId(task.id); setNoteDraft(''); }} style={{ ...cardAction, marginLeft: 'auto', color: '#2563EB' }}>
+                <StickyNote size={13} />Ghi chú
+              </button>
+              <button aria-label={`Thêm nhiệm vụ con cho ${task.title}`} title="Thêm nhiệm vụ con" onClick={() => { setChildDraftId(task.id); setChildTitle(''); }} style={{ width: 26, height: 26, padding: 0, flexShrink: 0, display: 'grid', placeItems: 'center', borderRadius: '50%', border: '1px solid #93C5FD', background: '#EFF6FF', color: '#1D4ED8', cursor: 'pointer' }}>
+                <Plus size={14} />
+              </button>
+            </div>
           </div>
         </article>)}
       </div>
@@ -317,7 +431,7 @@ export function TaskFlowBoard({ groupId, notesHeader }: { groupId: string; notes
           <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
             <label style={{ display: 'grid', gap: 6, color: '#334155', fontSize: 13, fontWeight: 600 }}>
               Hạn mục tiêu
-              <input type="date" value={aiDueDate} onChange={event => setAiDueDate(event.target.value)} style={{ height: 38, border: '1px solid #CBD5E1', borderRadius: 8, padding: '0 10px' }} />
+              <input type="date" min={aiMinDate} max={aiMaxDate} value={aiDueDate} onChange={event => setAiDueDate(event.target.value)} style={{ height: 38, border: '1px solid #CBD5E1', borderRadius: 8, padding: '0 10px' }} />
             </label>
             <label style={{ display: 'grid', gap: 6, color: '#334155', fontSize: 13, fontWeight: 600 }}>
               Giờ học / tuần
@@ -329,9 +443,19 @@ export function TaskFlowBoard({ groupId, notesHeader }: { groupId: string; notes
             <textarea value={aiLevel} onChange={event => setAiLevel(event.target.value)} maxLength={500} placeholder="VD: Đang ở N4, đã học khoảng 500 chữ Hán và biết các cấu trúc cơ bản. Có thể nghe hiểu chậm các hội thoại đời thường, nhưng vẫn yếu khi đọc dài." style={{ minHeight: 112, resize: 'vertical', border: '1px solid #CBD5E1', borderRadius: 8, padding: 10, fontSize: 13, lineHeight: '1.5', boxSizing: 'border-box' }} />
           </label>
           {aiError && <div role="alert" style={{ background: '#FEF2F2', color: '#B91C1C', borderRadius: 8, padding: 10, fontSize: 12 }}>{aiError}</div>}
-          <button onClick={() => void generateAiTree()} disabled={aiGenerating || aiGoal.trim().length < 10 || aiLevel.trim().length < 5 || aiHours.trim() === ''} style={{ height: 42, border: 0, borderRadius: 8, background: aiGenerating || aiGoal.trim().length < 10 || aiLevel.trim().length < 5 || aiHours.trim() === '' ? '#94A3B8' : '#7C3AED', color: 'white', fontWeight: 700, cursor: aiGenerating ? 'default' : 'pointer' }}>
-            {aiGenerating ? 'Đang tạo lộ trình...' : 'Tạo lộ trình'}
-          </button>
+          {aiQuota && (
+            <div style={{ color: aiQuotaSpent ? '#B91C1C' : '#64748B', fontSize: 12 }}>
+              {aiQuotaSpent
+                ? `Bạn đã dùng hết ${aiQuota.limit} lượt tạo lộ trình hôm nay. Hãy thử lại vào ngày mai.`
+                : `Còn ${aiQuota.remaining}/${aiQuota.limit} lượt tạo lộ trình hôm nay.`}
+            </div>
+          )}
+          {(() => {
+            const blocked = aiGenerating || aiQuotaSpent || aiGoal.trim().length < 10 || aiLevel.trim().length < 5 || aiHours.trim() === '';
+            return <button onClick={() => void generateAiTree()} disabled={blocked} style={{ height: 42, border: 0, borderRadius: 8, background: blocked ? '#94A3B8' : '#7C3AED', color: 'white', fontWeight: 700, cursor: blocked ? 'default' : 'pointer' }}>
+              {aiGenerating ? 'Đang tạo lộ trình...' : 'Tạo lộ trình'}
+            </button>;
+          })()}
         </div>
         )
       ) : (
