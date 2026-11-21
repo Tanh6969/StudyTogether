@@ -67,7 +67,8 @@ export interface InvitationPreview {
   target: InvitationTarget;
   inviter_name: string;
   method: InvitationMethod;
-  expires_at: string;
+  /** null for a persistent group join code (never expires). */
+  expires_at: string | null;
 }
 
 export type InvitationRedeemOutcome = 'joined' | 'reactivated' | 'already_member' | 'group_membership_required';

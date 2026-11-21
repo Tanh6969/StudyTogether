@@ -32,6 +32,14 @@ def override_db_session():
     app.dependency_overrides.pop(get_db_session, None)
 
 
+@pytest.fixture(autouse=True)
+def no_group_join_code(monkeypatch):
+    """By default no secret matches a group join code (the real lookup runs raw SQL)."""
+    find = AsyncMock(return_value=None)
+    monkeypatch.setattr(invitation_router.group_codes, "find", find)
+    return find
+
+
 @pytest.fixture
 def fake_user():
     return CurrentUser(id=uuid.uuid4(), email="user@example.com", role="authenticated")
@@ -770,3 +778,93 @@ async def test_list_incoming_uses_callers_own_verified_email(async_client, monke
     response = await async_client.get("/invitations/incoming", headers=AUTH_HEADERS)
     assert response.status_code == 200
     list_mock.assert_awaited_once_with(list_mock.await_args.args[0], as_fake_user.email.lower())
+
+
+# --- Persistent group join code (Teams-style) ---
+
+from app.invitations.services.group_join_code_service import (  # noqa: E402
+    CODE_LENGTH,
+    GroupJoinCode,
+    GroupJoinCodeService,
+    normalize_code,
+)
+
+
+def test_group_join_code_format_never_looks_like_an_invitation_code():
+    code = GroupJoinCodeService().generate()
+    assert len(code) == CODE_LENGTH and "-" not in code
+    assert all(c not in "0O1IL" for c in code)
+
+
+def test_normalize_code_drops_spaces_dashes_and_case():
+    assert normalize_code(" ab c-12x ") == "ABC12X"
+
+
+async def test_group_code_is_manager_only(async_client, monkeypatch, as_fake_user):
+    group = _group()
+    monkeypatch.setattr(invitation_router.groups_service, "get_by_id", AsyncMock(return_value=group))
+    _mock_manager(monkeypatch, group.id, _group_member(group.id, as_fake_user.id))  # plain member
+    response = await async_client.get(f"/invitations/group-code?group_id={group.id}", headers=AUTH_HEADERS)
+    assert response.status_code == 403
+
+
+async def test_manager_can_view_and_rotate_group_code(async_client, monkeypatch, as_fake_user):
+    group = _group()
+    monkeypatch.setattr(invitation_router.groups_service, "get_by_id", AsyncMock(return_value=group))
+    _mock_manager(monkeypatch, group.id, _group_member(group.id, as_fake_user.id, role=GroupMemberRole.MODERATOR))
+    monkeypatch.setattr(invitation_router.group_codes, "get_code", AsyncMock(return_value="ABCDEFG"))
+    rotate = AsyncMock(return_value="HJKMNPQ")
+    monkeypatch.setattr(invitation_router.group_codes, "rotate", rotate)
+
+    viewed = await async_client.get(f"/invitations/group-code?group_id={group.id}", headers=AUTH_HEADERS)
+    rotated = await async_client.post("/invitations/group-code", json={"group_id": str(group.id)}, headers=AUTH_HEADERS)
+
+    assert viewed.json() == {"code": "ABCDEFG"}
+    assert rotated.json() == {"code": "HJKMNPQ"}
+    rotate.assert_awaited_once()
+
+
+async def test_resolve_accepts_group_join_code(async_client, monkeypatch, no_group_join_code):
+    group = _group()
+    monkeypatch.setattr(invitation_router.service, "get_by_secret", AsyncMock(return_value=None))
+    no_group_join_code.return_value = GroupJoinCode(group.id, "ABCDEFG", uuid.uuid4())
+    monkeypatch.setattr(invitation_router.groups_service, "get_by_id", AsyncMock(return_value=group))
+    monkeypatch.setattr(invitation_router.profiles_service, "get_by_id", AsyncMock(return_value=_profile(uuid.uuid4(), "Bình")))
+
+    response = await async_client.get("/invitations/resolve/abcdefg")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["target"]["type"] == "group" and body["target"]["id"] == str(group.id)
+    assert body["inviter_name"] == "Bình" and body["expires_at"] is None
+
+
+async def test_redeem_group_join_code_joins_without_consuming(async_client, monkeypatch, as_fake_user, no_group_join_code):
+    group = _group()
+    monkeypatch.setattr(invitation_router.service, "get_by_secret", AsyncMock(return_value=None))
+    no_group_join_code.return_value = GroupJoinCode(group.id, "ABCDEFG", None)
+    monkeypatch.setattr(invitation_router.groups_service, "get_by_id", AsyncMock(return_value=group))
+    monkeypatch.setattr(invitation_router.groups_service, "get_member", AsyncMock(return_value=None))
+    add_member = AsyncMock()
+    monkeypatch.setattr(invitation_router.groups_service, "add_member", add_member)
+    try_accept = AsyncMock()
+    monkeypatch.setattr(invitation_router.service, "try_accept", try_accept)
+
+    response = await async_client.post("/invitations/redeem/ABCDEFG", headers=AUTH_HEADERS)
+
+    assert response.status_code == 200
+    assert response.json()["outcome"] == "joined"
+    add_member.assert_awaited_once()
+    try_accept.assert_not_awaited()
+
+
+async def test_redeem_group_join_code_refuses_banned_member(async_client, monkeypatch, as_fake_user, no_group_join_code):
+    group = _group()
+    monkeypatch.setattr(invitation_router.service, "get_by_secret", AsyncMock(return_value=None))
+    no_group_join_code.return_value = GroupJoinCode(group.id, "ABCDEFG", None)
+    monkeypatch.setattr(invitation_router.groups_service, "get_by_id", AsyncMock(return_value=group))
+    banned = _group_member(group.id, as_fake_user.id, status=MemberStatus.BANNED)
+    monkeypatch.setattr(invitation_router.groups_service, "get_member", AsyncMock(return_value=banned))
+
+    response = await async_client.post("/invitations/redeem/ABCDEFG", headers=AUTH_HEADERS)
+    assert response.status_code == 403

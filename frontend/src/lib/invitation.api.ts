@@ -70,6 +70,22 @@ function targetQuery(target: InvitationTargetRef): string {
   return params.toString();
 }
 
+/** Mã nhóm cố định kiểu Teams: dùng lại được, quản trị viên xem lại bất cứ lúc nào. Manager-only.
+ * `code` = null khi đang tắt tham gia bằng mã. Người nhận nhập mã ở JoinByCodeModal như mã mời thường. */
+export function getGroupJoinCode(groupId: string): Promise<{ code: string | null }> {
+  return apiClient.get<{ code: string | null }>(`/invitations/group-code?group_id=${encodeURIComponent(groupId)}`);
+}
+
+/** Bật mã nhóm hoặc đổi sang mã mới (mã cũ hết hiệu lực ngay). Manager-only. */
+export function rotateGroupJoinCode(groupId: string): Promise<{ code: string }> {
+  return apiClient.post<{ code: string }>('/invitations/group-code', { group_id: groupId });
+}
+
+/** Tắt tham gia bằng mã nhóm. Manager-only. */
+export function disableGroupJoinCode(groupId: string): Promise<void> {
+  return apiClient.delete<void>(`/invitations/group-code?group_id=${encodeURIComponent(groupId)}`);
+}
+
 /** Manager-only. Metadata only (id + expires_at) -- the plaintext code is never stored, so
  * it can't be re-shown here; returns null when no CODE invitation is currently pending for
  * this target. */

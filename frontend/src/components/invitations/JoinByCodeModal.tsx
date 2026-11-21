@@ -94,13 +94,13 @@ export function JoinByCodeModal({ isOpen, onClose, expectedTarget }: JoinByCodeM
         {!preview && !mismatch && (
           <>
             <label style={{ fontSize: 13, fontWeight: 600, color: '#0F172A', display: 'flex', alignItems: 'center', gap: 6 }}>
-              <Ticket size={16} /> Mã mời
+              <Ticket size={16} /> {expectedTarget === 'group' ? 'Mã nhóm hoặc mã mời' : 'Mã mời'}
             </label>
             <input
               type="text"
               value={code}
               onChange={(e) => { setCode(e.target.value); setResolveError(null); }}
-              placeholder="K9XR-7P2M"
+              placeholder={expectedTarget === 'group' ? 'VD: N4ND8RJ' : 'VD: K9XR-7P2M'}
               autoFocus
               style={{ padding: '10px 12px', border: '1px solid #E2E8F0', borderRadius: 8, fontSize: 14, outline: 'none' }}
             />

@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { render, screen, fireEvent, waitFor } from '@testing-library/react';
 import { ApiError } from '../../lib/apiClient';
-import { createInvitation, getActiveCode, revokeInvitation } from '../../lib/invitation.api';
+import { createInvitation, disableGroupJoinCode, getActiveCode, getGroupJoinCode, revokeInvitation, rotateGroupJoinCode } from '../../lib/invitation.api';
 import { InviteModal } from './InviteModal';
 import type { ActiveCodeInfo, InvitationCreated } from '../../lib/invitation.types';
 
@@ -9,11 +9,17 @@ vi.mock('../../lib/invitation.api', () => ({
   createInvitation: vi.fn(),
   getActiveCode: vi.fn(),
   revokeInvitation: vi.fn(),
+  getGroupJoinCode: vi.fn(),
+  rotateGroupJoinCode: vi.fn(),
+  disableGroupJoinCode: vi.fn(),
 }));
 
 const mockedCreateInvitation = vi.mocked(createInvitation);
 const mockedGetActiveCode = vi.mocked(getActiveCode);
 const mockedRevokeInvitation = vi.mocked(revokeInvitation);
+const mockedGetGroupJoinCode = vi.mocked(getGroupJoinCode);
+const mockedRotateGroupJoinCode = vi.mocked(rotateGroupJoinCode);
+const mockedDisableGroupJoinCode = vi.mocked(disableGroupJoinCode);
 
 const baseInvitation = {
   id: 'inv-1',
@@ -33,18 +39,21 @@ describe('InviteModal', () => {
     mockedCreateInvitation.mockReset();
     mockedGetActiveCode.mockReset();
     mockedRevokeInvitation.mockReset();
+    mockedGetGroupJoinCode.mockReset();
+    mockedRotateGroupJoinCode.mockReset();
+    mockedDisableGroupJoinCode.mockReset();
   });
 
   afterEach(() => {
     vi.useRealTimers();
   });
 
-  function renderModal() {
+  function renderModal(target: { groupId?: string; roomId?: string } = { roomId: 'room-1' }) {
     return render(
       <InviteModal
         isOpen
         onClose={() => {}}
-        target={{ groupId: 'group-1' }}
+        target={target}
         targetLabel="Nhóm học Python"
       />
     );
@@ -71,7 +80,7 @@ describe('InviteModal', () => {
     fireEvent.click(screen.getByText('Gửi lời mời'));
 
     await waitFor(() => expect(screen.getByText(/Đã gửi lời mời tới bob@example.com/)).toBeInTheDocument());
-    expect(mockedCreateInvitation).toHaveBeenCalledWith({ groupId: 'group-1' }, 'email', 'bob@example.com');
+    expect(mockedCreateInvitation).toHaveBeenCalledWith({ roomId: 'room-1' }, 'email', 'bob@example.com');
   });
 
   it('shows a validation/backend error when sending fails', async () => {
@@ -92,7 +101,7 @@ describe('InviteModal', () => {
     renderModal();
 
     fireEvent.click(screen.getByText('Mã mời'));
-    await waitFor(() => expect(mockedGetActiveCode).toHaveBeenCalledWith({ groupId: 'group-1' }));
+    await waitFor(() => expect(mockedGetActiveCode).toHaveBeenCalledWith({ roomId: 'room-1' }));
     expect(await screen.findByText('Tạo mã mời')).toBeInTheDocument();
   });
 
@@ -137,5 +146,42 @@ describe('InviteModal', () => {
     fireEvent.click(screen.getByText('Hủy mã'));
     await waitFor(() => expect(mockedRevokeInvitation).toHaveBeenCalledWith('inv-2'));
     await waitFor(() => expect(screen.getByText('Tạo mã mời')).toBeInTheDocument());
+  });
+
+  describe('group target (persistent Teams-style code)', () => {
+    it('opens on the group code tab and shows the current code', async () => {
+      mockedGetGroupJoinCode.mockResolvedValue({ code: 'N4ND8RJ' });
+      renderModal({ groupId: 'group-1' });
+      expect(await screen.findByText('N4ND8RJ')).toBeInTheDocument();
+      expect(mockedGetGroupJoinCode).toHaveBeenCalledWith('group-1');
+      expect(mockedGetActiveCode).not.toHaveBeenCalled();
+    });
+
+    it('creates a code when the group has none', async () => {
+      mockedGetGroupJoinCode.mockResolvedValue({ code: null });
+      mockedRotateGroupJoinCode.mockResolvedValue({ code: 'DVEPU7M' });
+      renderModal({ groupId: 'group-1' });
+      fireEvent.click(await screen.findByText('Tạo mã nhóm'));
+      expect(await screen.findByText('DVEPU7M')).toBeInTheDocument();
+    });
+
+    it('replaces the code after confirmation', async () => {
+      mockedGetGroupJoinCode.mockResolvedValue({ code: 'N4ND8RJ' });
+      mockedRotateGroupJoinCode.mockResolvedValue({ code: 'DVEPU7M' });
+      vi.spyOn(window, 'confirm').mockReturnValue(true);
+      renderModal({ groupId: 'group-1' });
+      fireEvent.click(await screen.findByText('Đổi mã'));
+      expect(await screen.findByText('DVEPU7M')).toBeInTheDocument();
+    });
+
+    it('turns the code off after confirmation', async () => {
+      mockedGetGroupJoinCode.mockResolvedValue({ code: 'N4ND8RJ' });
+      mockedDisableGroupJoinCode.mockResolvedValue(undefined);
+      vi.spyOn(window, 'confirm').mockReturnValue(true);
+      renderModal({ groupId: 'group-1' });
+      fireEvent.click(await screen.findByText('Tắt mã'));
+      expect(await screen.findByText('Tạo mã nhóm')).toBeInTheDocument();
+      expect(mockedDisableGroupJoinCode).toHaveBeenCalledWith('group-1');
+    });
   });
 });

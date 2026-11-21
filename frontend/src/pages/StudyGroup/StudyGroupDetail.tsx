@@ -1211,14 +1211,18 @@ export function StudyGroupDetail() {
                                 </div>
                             )}
 
-                            <div
-                                onClick={() => { alert('Đã sao chép liên kết mời tham gia nhóm học!'); setShowGroupMenu(false); }}
-                                style={{padding: '8px 12px', borderRadius: 6, display: 'flex', alignItems: 'center', gap: 10, fontSize: 13, fontWeight: '500', color: '#1E293B', cursor: 'pointer'}}
-                                onMouseOver={e => e.currentTarget.style.background = '#F1F5F9'}
-                                onMouseOut={e => e.currentTarget.style.background = 'transparent'}
-                            >
-                                <UserPlus size={16} color="#475569" /> Mời thêm người
-                            </div>
+                            {/* Opens the real invite flow (group code + email). Owner/moderator only --
+                                the backend refuses everyone else (is_group_manager). */}
+                            {isGroupManager && (
+                                <div
+                                    onClick={() => { setIsInviteModalOpen(true); setShowGroupMenu(false); }}
+                                    style={{padding: '8px 12px', borderRadius: 6, display: 'flex', alignItems: 'center', gap: 10, fontSize: 13, fontWeight: '500', color: '#1E293B', cursor: 'pointer'}}
+                                    onMouseOver={e => e.currentTarget.style.background = '#F1F5F9'}
+                                    onMouseOut={e => e.currentTarget.style.background = 'transparent'}
+                                >
+                                    <UserPlus size={16} color="#475569" /> Mời thêm người
+                                </div>
+                            )}
 
                             <div style={{height: 1, background: '#E2E8F0', margin: '4px 0'}} />
 

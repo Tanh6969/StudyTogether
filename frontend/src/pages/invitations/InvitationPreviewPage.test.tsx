@@ -112,7 +112,7 @@ describe('InvitationPreviewPage', () => {
       status: 'declined',
       created_by: 'user-1',
       recipient_email: 'me@example.com',
-      expires_at: groupPreview.expires_at,
+      expires_at: groupPreview.expires_at as string,
       accepted_at: null,
       declined_at: new Date().toISOString(),
       revoked_at: null,

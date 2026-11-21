@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { ReactNode } from 'react';
-import { CalendarDays, Check, LayoutGrid, ListChecks, LoaderCircle, Maximize2, Minus, Plus, RotateCcw, Sparkles, StickyNote, X } from 'lucide-react';
+import { CalendarDays, Check, ListChecks, LoaderCircle, Maximize2, Minus, Plus, RotateCcw, Sparkles, StickyNote, X } from 'lucide-react';
 import { WorkspaceTabs } from '../../components/groups/WorkspaceTabs';
 import { Modal } from '../../components/ui/Modal';
 import { ApiError } from '../../lib/apiClient';
@@ -265,11 +265,6 @@ export function TaskFlowBoard({ groupId, notesHeader }: { groupId: string; notes
     if (task) patchTask(taskId, { notes: [...task.notes, note] });
     setNoteDraft(''); setNoteDraftId(undefined);
   };
-  /** Clear every saved drag position so the whole board returns to the automatic roadmap layout. */
-  const resetLayout = () => {
-    viewAdjusted.current = false;
-    for (const task of tasks) if (task.position) patchTask(task.id, { position: null });
-  };
   const removeNote = (taskId: string, index: number) => {
     const task = tasks.find(item => item.id === taskId);
     if (task) patchTask(taskId, { notes: task.notes.filter((_, noteIndex) => noteIndex !== index) });
@@ -351,8 +346,7 @@ export function TaskFlowBoard({ groupId, notesHeader }: { groupId: string; notes
         }} style={{ ...button, width: 36, height: 36, padding: 0, background: '#7C3AED', borderColor: '#7C3AED', color: 'white' }}>
           <Sparkles size={18}/>
         </button>
-        <button aria-label="Thu nhỏ" onClick={() => setZoom(value => Math.max(.35, Number((value - .1).toFixed(2))))} style={button}><Minus size={14}/></button><span style={{ minWidth: 42, textAlign: 'center', color: '#64748B', fontSize: 12 }}>{Math.round(zoom * 100)}%</span><button aria-label="Phóng to" onClick={() => setZoom(value => Math.min(2, Number((value + .1).toFixed(2))))} style={button}><Plus size={14}/></button><button aria-label="Trở về zoom mặc định" title="Trở về zoom mặc định" onClick={() => { setZoom(1); setOffset({ x: 30, y: 28 }); }} style={{ ...button, width: 'auto', padding: '0 8px', display: 'flex', gap: 5 }}><Maximize2 size={14}/><span style={{fontSize:11}}>Mặc định</span></button>{tasks.some(task => task.position) && <button aria-label="Sắp xếp lại các thẻ đã kéo" title="Đưa mọi thẻ đã kéo tay về bố cục lộ trình tự động" onClick={resetLayout} style={{ ...button, width: 'auto', padding: '0 8px', display: 'flex', gap: 5 }}><LayoutGrid size={14}/><span style={{fontSize:11}}>Sắp xếp lại</span></button>}
-      </div>
+        <button aria-label="Thu nhỏ" onClick={() => setZoom(value => Math.max(.35, Number((value - .1).toFixed(2))))} style={button}><Minus size={14}/></button><span style={{ minWidth: 42, textAlign: 'center', color: '#64748B', fontSize: 12 }}>{Math.round(zoom * 100)}%</span><button aria-label="Phóng to" onClick={() => setZoom(value => Math.min(2, Number((value + .1).toFixed(2))))} style={button}><Plus size={14}/></button><button aria-label="Trở về zoom mặc định" title="Trở về zoom mặc định" onClick={() => { setZoom(1); setOffset({ x: 30, y: 28 }); }} style={{ ...button, width: 'auto', padding: '0 8px', display: 'flex', gap: 5 }}><Maximize2 size={14}/><span style={{fontSize:11}}>Mặc định</span></button>      </div>
     </div>
     <div ref={canvasRef} onWheel={event => { event.preventDefault(); viewAdjusted.current = true; setZoom(value => Math.max(.2, Math.min(2, value + (event.deltaY < 0 ? .08 : -.08)))); }} onPointerDown={event => { if (event.target === event.currentTarget) { viewAdjusted.current = true; event.currentTarget.setPointerCapture(event.pointerId); setPan({ x: event.clientX - offset.x, y: event.clientY - offset.y }); } }} onPointerMove={event => { if (pan) setOffset({ x: event.clientX - pan.x, y: event.clientY - pan.y }); }} onPointerUp={() => setPan(null)} style={{ flex: 1, minHeight: 0, marginRight: 0, overflow: 'hidden', position: 'relative', backgroundColor: '#F8FAFC', backgroundImage: 'radial-gradient(#CBD5E1 1px, transparent 1px)', backgroundSize: `${24 * zoom}px ${24 * zoom}px`, cursor: pan ? 'grabbing' : 'grab', touchAction: 'none' }}>
       {!loading && tasks.length === 0 && <div style={{ position: 'absolute', inset: 0, display: 'grid', placeItems: 'center', color: '#64748B' }}>Thêm nhiệm vụ đầu tiên để bắt đầu sơ đồ nhóm.</div>}

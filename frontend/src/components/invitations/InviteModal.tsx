@@ -4,6 +4,7 @@ import { Modal } from '../ui/Modal';
 import { ApiError } from '../../lib/apiClient';
 import { createInvitation, getActiveCode, revokeInvitation } from '../../lib/invitation.api';
 import type { ActiveCodeInfo, InvitationTargetRef } from '../../lib/invitation.types';
+import { GroupJoinCodePanel } from './GroupJoinCodePanel';
 
 export interface InviteModalProps {
   isOpen: boolean;
@@ -29,7 +30,10 @@ function errorMessage(err: unknown): string {
 }
 
 export function InviteModal({ isOpen, onClose, target, targetLabel }: InviteModalProps) {
-  const [tab, setTab] = useState<Tab>('email');
+  // A group gets a persistent Teams-style code (GroupJoinCodePanel), opened first; study rooms
+  // and private channels keep the single-use 5-minute code below.
+  const isGroup = !!target.groupId;
+  const [tab, setTab] = useState<Tab>(isGroup ? 'code' : 'email');
 
   // Email tab
   const [email, setEmail] = useState('');
@@ -49,17 +53,17 @@ export function InviteModal({ isOpen, onClose, target, targetLabel }: InviteModa
 
   useEffect(() => {
     if (!isOpen) return;
-    setTab('email');
+    setTab(isGroup ? 'code' : 'email');
     setEmail('');
     setSendError(null);
     setSentTo(null);
     setFreshCode(null);
     setCodeError(null);
     setCopied(false);
-  }, [isOpen, target.groupId, target.roomId, target.channelId]);
+  }, [isOpen, isGroup, target.groupId, target.roomId, target.channelId]);
 
   useEffect(() => {
-    if (!isOpen || tab !== 'code') return;
+    if (!isOpen || tab !== 'code' || isGroup) return;
     let cancelled = false;
     setLoadingCode(true);
     setCodeError(null);
@@ -80,7 +84,7 @@ export function InviteModal({ isOpen, onClose, target, targetLabel }: InviteModa
   }, [isOpen, tab, target.groupId, target.roomId, target.channelId]);
 
   useEffect(() => {
-    if (!isOpen || tab !== 'code') return;
+    if (!isOpen || tab !== 'code' || isGroup) return;
     const interval = setInterval(() => setNow(Date.now()), 1000);
     return () => clearInterval(interval);
   }, [isOpen, tab]);
@@ -162,13 +166,22 @@ export function InviteModal({ isOpen, onClose, target, targetLabel }: InviteModa
   return (
     <Modal isOpen={isOpen} onClose={onClose} title={`Mời vào "${targetLabel}"`}>
       <div style={{ display: 'flex', borderBottom: '1px solid #E2E8F0' }}>
+        {isGroup && (
+          <button style={tabButtonStyle(tab === 'code')} onClick={() => setTab('code')}>
+            <Ticket size={16} /> Mã nhóm
+          </button>
+        )}
         <button style={tabButtonStyle(tab === 'email')} onClick={() => setTab('email')}>
           <Mail size={16} /> Email
         </button>
-        <button style={tabButtonStyle(tab === 'code')} onClick={() => setTab('code')}>
-          <Ticket size={16} /> Mã mời
-        </button>
+        {!isGroup && (
+          <button style={tabButtonStyle(tab === 'code')} onClick={() => setTab('code')}>
+            <Ticket size={16} /> Mã mời
+          </button>
+        )}
       </div>
+
+      {tab === 'code' && isGroup && target.groupId && <GroupJoinCodePanel groupId={target.groupId} />}
 
       {tab === 'email' && (
         <div style={{ display: 'flex', flexDirection: 'column', gap: 12, paddingTop: 16 }}>
@@ -211,7 +224,7 @@ export function InviteModal({ isOpen, onClose, target, targetLabel }: InviteModa
         </div>
       )}
 
-      {tab === 'code' && (
+      {tab === 'code' && !isGroup && (
         <div style={{ display: 'flex', flexDirection: 'column', gap: 12, paddingTop: 16 }}>
           {codeError && <div style={{ color: '#EF4444', fontSize: 13 }}>{codeError}</div>}
           {loadingCode && <div style={{ color: '#64748B', fontSize: 13 }}>Đang tải...</div>}

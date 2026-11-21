@@ -15,6 +15,8 @@ from app.groups.entities.group_entity import Group
 from app.groups.services.group_service import GroupsService
 from app.invitations.dto.invitation_dto import (
     ActiveCodeInfo,
+    GroupJoinCodeInfo,
+    GroupJoinCodeRotate,
     InvitationCreate,
     InvitationCreated,
     InvitationPreview,
@@ -22,6 +24,7 @@ from app.invitations.dto.invitation_dto import (
     InvitationResponse,
     InvitationTarget,
 )
+from app.invitations.services.group_join_code_service import GroupJoinCodeService
 from app.invitations.services.invitation_service import InvitationsService
 from app.notifications.dto.notification_dto import NotificationCreate
 from app.notifications.services.notification_service import NotificationsService
@@ -36,6 +39,7 @@ study_rooms_service = StudyRoomsService()
 channels_service = ChannelsService()
 notifications_service = NotificationsService()
 profiles_service = ProfilesService()
+group_codes = GroupJoinCodeService()
 
 _NOTIFICATION_TYPE_BY_TARGET = {
     "group": NotificationType.GROUP_INVITE,
@@ -243,14 +247,87 @@ async def get_active_code(
     return ActiveCodeInfo(id=invitation.id, expires_at=invitation.expires_at)
 
 
+# --- Persistent group join code (Teams-style), see GroupJoinCodeService ---
+
+
+async def _require_group_manager(session: AsyncSession, group_id: uuid.UUID, user_id: uuid.UUID) -> Group:
+    group = await groups_service.get_by_id(session, group_id)
+    if group is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Group not found")
+    if not await is_group_manager(session, group_id, user_id):
+        raise HTTPException(status.HTTP_403_FORBIDDEN, "Only an active group owner or moderator can manage the group code")
+    return group
+
+
+@router.get("/group-code", response_model=GroupJoinCodeInfo)
+async def get_group_join_code(
+    group_id: uuid.UUID,
+    current_user: CurrentUser = Depends(get_current_user),
+    session: AsyncSession = Depends(get_db_session),
+):
+    """The group's persistent join code (null when off). Group owner/moderator only."""
+    await _require_group_manager(session, group_id, current_user.id)
+    return GroupJoinCodeInfo(code=await group_codes.get_code(session, group_id))
+
+
+@router.post("/group-code", response_model=GroupJoinCodeInfo)
+async def rotate_group_join_code(
+    data: GroupJoinCodeRotate,
+    current_user: CurrentUser = Depends(get_current_user),
+    session: AsyncSession = Depends(get_db_session),
+):
+    """Turn the group code on, or replace it with a new one (the old code stops working). Owner/moderator only."""
+    await _require_group_manager(session, data.group_id, current_user.id)
+    return GroupJoinCodeInfo(code=await group_codes.rotate(session, data.group_id, current_user.id))
+
+
+@router.delete("/group-code", status_code=status.HTTP_204_NO_CONTENT)
+async def disable_group_join_code(
+    group_id: uuid.UUID,
+    current_user: CurrentUser = Depends(get_current_user),
+    session: AsyncSession = Depends(get_db_session),
+):
+    """Turn joining by group code off. Owner/moderator only."""
+    await _require_group_manager(session, group_id, current_user.id)
+    await group_codes.disable(session, group_id)
+
+
+async def _find_group_by_code(session: AsyncSession, secret: str) -> tuple[Group, uuid.UUID | None] | None:
+    """(group, code creator) for a valid group join code, else None."""
+    found = await group_codes.find(session, secret)
+    if found is None:
+        return None
+    group = await groups_service.get_by_id(session, found.group_id)
+    return (group, found.created_by) if group is not None else None
+
+
+async def _inviter_name(session: AsyncSession, user_id: uuid.UUID | None) -> str:
+    # Canonical display-name fallback hierarchy: display_name -> username -> generic label
+    # (never an id/email) -- matches UserSummary-based rendering everywhere else.
+    inviter = await profiles_service.get_by_id(session, user_id) if user_id else None
+    name = (inviter.display_name or inviter.username) if inviter else None
+    return name or "Người dùng"
+
+
 @router.get("/resolve/{secret}", response_model=InvitationPreview)
 async def resolve_invitation(secret: str, session: AsyncSession = Depends(get_db_session)):
     """Public (no auth required) -- an unauthenticated recipient must be able to see who
     invited them and to what before logging in. Never distinguishes expired vs revoked vs
-    already-used vs unknown secret -- all look identical from the outside."""
+    already-used vs unknown secret -- all look identical from the outside.
+    Also accepts a group's persistent join code (same entry form for both kinds of code)."""
     invitation = await service.get_by_secret(session, secret)
     if invitation is None or not service.is_pending_and_unexpired(invitation):
-        raise HTTPException(status.HTTP_404_NOT_FOUND, "Invitation not found or no longer valid")
+        by_code = await _find_group_by_code(session, secret)
+        if by_code is None:
+            raise HTTPException(status.HTTP_404_NOT_FOUND, "Invitation not found or no longer valid")
+        group, code_creator = by_code
+        return InvitationPreview(
+            id=group.id,
+            target=await _build_target_dto(session, "group", group, group.id),
+            inviter_name=await _inviter_name(session, code_creator),
+            method=InvitationMethod.CODE,
+            expires_at=None,
+        )
 
     resolved = await _load_target(session, invitation.group_id, invitation.room_id, invitation.channel_id)
     if resolved is None:
@@ -305,6 +382,22 @@ async def _redeem(session: AsyncSession, invitation, current_user: CurrentUser) 
         raise HTTPException(status.HTTP_400_BAD_REQUEST, f"Could not redeem invitation: {str(e)}")
 
 
+async def _join_by_group_code(session: AsyncSession, group: Group, current_user: CurrentUser) -> InvitationRedeemResult:
+    """A group join code is reusable, so nothing is consumed -- just join (banned users are
+    still refused by _join_target)."""
+    try:
+        outcome = await _join_target(session, "group", group, current_user.id)
+        target_dto = await _build_target_dto(session, "group", group, group.id)
+        await session.commit()
+        return InvitationRedeemResult(outcome=outcome, target=target_dto)
+    except HTTPException:
+        await session.rollback()
+        raise
+    except Exception as e:
+        await session.rollback()
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, f"Could not join group: {str(e)}")
+
+
 @router.post("/redeem/{secret}", response_model=InvitationRedeemResult)
 async def redeem_invitation(
     secret: str,
@@ -317,7 +410,10 @@ async def redeem_invitation(
     caller's verified email to match (see below)."""
     invitation = await service.get_by_secret(session, secret)
     if invitation is None or not service.is_pending_and_unexpired(invitation):
-        raise HTTPException(status.HTTP_404_NOT_FOUND, "Invitation not found or no longer valid")
+        by_code = await _find_group_by_code(session, secret)
+        if by_code is None:
+            raise HTTPException(status.HTTP_404_NOT_FOUND, "Invitation not found or no longer valid")
+        return await _join_by_group_code(session, by_code[0], current_user)
 
     if invitation.method == InvitationMethod.EMAIL:
         if current_user.email is None or current_user.email.strip().lower() != invitation.recipient_email:

@@ -81,6 +81,16 @@ class ActiveCodeInfo(BaseModel):
     expires_at: datetime
 
 
+class GroupJoinCodeInfo(BaseModel):
+    """A group's persistent join code for its managers; `code` is None when joining by code is off."""
+
+    code: str | None
+
+
+class GroupJoinCodeRotate(BaseModel):
+    group_id: uuid.UUID
+
+
 class InvitationTarget(BaseModel):
     type: str  # "group" | "study_room" | "private_channel"
     id: uuid.UUID
@@ -101,7 +111,8 @@ class InvitationPreview(BaseModel):
     target: InvitationTarget
     inviter_name: str
     method: InvitationMethod
-    expires_at: datetime
+    # None for a persistent group join code, which never expires (see GroupJoinCodeService).
+    expires_at: datetime | None
 
 
 class InvitationRedeemResult(BaseModel):

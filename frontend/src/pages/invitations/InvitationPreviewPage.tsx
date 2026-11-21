@@ -106,9 +106,11 @@ export function InvitationPreviewPage() {
         {preview.target.type !== 'group' && (
           <div style={{ color: '#94A3B8', fontSize: 12 }}>Thuộc nhóm: {preview.target.group_name}</div>
         )}
-        <div style={{ color: '#94A3B8', fontSize: 12 }}>
-          Hết hạn lúc {new Date(preview.expires_at).toLocaleString()}
-        </div>
+        {preview.expires_at && (
+          <div style={{ color: '#94A3B8', fontSize: 12 }}>
+            Hết hạn lúc {new Date(preview.expires_at).toLocaleString()}
+          </div>
+        )}
 
         {actionError && (
           <div style={{ width: '100%', background: '#FEF2F2', border: '1px solid #FECACA', borderRadius: 8, padding: 12, color: '#B91C1C', fontSize: 13, boxSizing: 'border-box' }}>

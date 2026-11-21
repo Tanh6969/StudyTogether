@@ -38,7 +38,7 @@ function renderModal(expectedTarget: 'group' | 'study_room' | 'private_channel' 
 }
 
 async function enterAndContinue(code = 'K9XR-7P2M') {
-  fireEvent.change(screen.getByPlaceholderText('K9XR-7P2M'), { target: { value: code } });
+  fireEvent.change(screen.getByRole('textbox'), { target: { value: code } });
   fireEvent.click(screen.getByText('Tiếp tục'));
 }
 
