@@ -30,7 +30,9 @@ export const Modal: React.FC<ModalProps> = ({ isOpen, onClose, title, children }
         alignItems: 'center',
         zIndex: 1000,
       }}
-      onClick={onClose}
+      onMouseDown={(event) => {
+        if (event.target === event.currentTarget) onClose();
+      }}
     >
       <div
         style={{

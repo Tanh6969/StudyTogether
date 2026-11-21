@@ -134,3 +134,71 @@ async def test_delete_missing_task_returns_404(async_client, session):
     session.scalar.return_value = None
     response = await async_client.delete(f"/groups/{GROUP_ID}/tasks/{uuid.uuid4()}", headers=AUTH_HEADERS)
     assert response.status_code == 404
+
+
+async def test_generate_group_task_tree_calls_ai_and_returns_preview(async_client, session, monkeypatch):
+    from app.group_tasks.dto.group_task_dto import AIGroupTaskNode, AIGroupTaskSuggestion
+
+    suggestion = AIGroupTaskSuggestion(
+        title="Lộ trình ôn JLPT",
+        nodes=[AIGroupTaskNode(title="Xây nền", assignee="Cả nhóm", due_date="2026-12-01", children=[
+            AIGroupTaskNode(title="Ôn 500 từ vựng", assignee="Cả nhóm", due_date="2026-12-01"),
+        ])],
+    )
+    generate = AsyncMock(return_value=suggestion)
+    monkeypatch.setattr(group_task_router.roadmap_ai_service, "suggest_group_tasks", generate)
+
+    response = await async_client.post(
+        f"/groups/{GROUP_ID}/tasks/ai/generate",
+        json={
+            "goal": "Đỗ JLPT N2 vào cuối năm nay",
+            "due_date": "2026-12-31",
+            "hours_per_week": 12,
+            "current_level": "Hiện ở N3, biết khoảng 1200 từ vựng và còn yếu ngữ pháp.",
+        },
+        headers=AUTH_HEADERS,
+    )
+
+    assert response.status_code == 200
+    assert response.json()["nodes"][0]["children"][0]["title"] == "Ôn 500 từ vựng"
+    generate.assert_awaited_once()
+
+
+async def test_generate_rejects_missing_hours_or_level(async_client):
+    response = await async_client.post(
+        f"/groups/{GROUP_ID}/tasks/ai/generate",
+        json={"goal": "Đỗ JLPT N2", "hours_per_week": 10, "current_level": "N3"},
+        headers=AUTH_HEADERS,
+    )
+    assert response.status_code == 422
+
+
+async def test_apply_group_task_tree_adds_parent_and_child(async_client, session):
+    session.scalar.return_value = 0
+    session.flush = AsyncMock()
+
+    response = await async_client.post(
+        f"/groups/{GROUP_ID}/tasks/ai/apply",
+        json={
+            "replace_existing": False,
+            "nodes": [{
+                "title": "Nền tảng",
+                "assignee": "Cả nhóm",
+                "due_date": "2026-12-01",
+                "notes": ["Ôn từng ngày"],
+                "children": [{
+                    "title": "Từ vựng",
+                    "assignee": "Cả nhóm",
+                    "due_date": "2026-12-05",
+                    "notes": [],
+                    "children": [],
+                }],
+            }],
+        },
+        headers=AUTH_HEADERS,
+    )
+
+    assert response.status_code == 201
+    added = [call.args[0] for call in session.add.call_args_list]
+    assert len(added) == 2
+    assert added[1].parent_id == added[0].id

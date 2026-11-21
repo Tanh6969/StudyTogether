@@ -33,6 +33,19 @@ export interface GroupTaskCreate {
 
 export type GroupTaskUpdate = Partial<Pick<GroupTask, 'title' | 'assignee' | 'due_date' | 'done' | 'parent_id' | 'notes' | 'position'>>;
 
+export interface AIGroupTaskNode {
+  title: string;
+  assignee: string;
+  due_date: string | null;
+  notes: string[];
+  children: AIGroupTaskNode[];
+}
+
+export interface AIGroupTaskSuggestion {
+  title: string;
+  nodes: AIGroupTaskNode[];
+}
+
 const base = (groupId: string) => `/groups/${encodeURIComponent(groupId)}/tasks`;
 
 export function listGroupTasks(groupId: string) {
@@ -50,4 +63,18 @@ export function updateGroupTask(groupId: string, taskId: string, data: GroupTask
 /** Xóa nhiệm vụ cùng toàn bộ nhánh con của nó. */
 export function deleteGroupTask(groupId: string, taskId: string) {
   return apiClient.delete<void>(`${base(groupId)}/${encodeURIComponent(taskId)}`);
+}
+
+export function generateGroupTaskTree(
+  groupId: string,
+  data: { goal: string; due_date: string | null; hours_per_week: number; current_level: string }
+) {
+  return apiClient.post<AIGroupTaskSuggestion>(`${base(groupId)}/ai/generate`, data);
+}
+
+export function applyGroupTaskTree(
+  groupId: string,
+  data: { nodes: AIGroupTaskNode[]; replace_existing: boolean }
+) {
+  return apiClient.post<GroupTask[]>(`${base(groupId)}/ai/apply`, data);
 }

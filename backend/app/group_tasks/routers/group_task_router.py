@@ -1,6 +1,8 @@
 """Shared task flow board of a study group. Any active group member can read and edit it."""
 
 import uuid
+from datetime import date
+import logging
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy import func, select
@@ -10,12 +12,23 @@ from app.auth.dependencies import get_current_user
 from app.auth.dto.auth_dto import CurrentUser
 from app.core.permissions import is_active_group_member
 from app.db.session import get_db_session
-from app.group_tasks.dto.group_task_dto import GroupTaskCreate, GroupTaskResponse, GroupTaskUpdate
+from app.group_tasks.dto.group_task_dto import (
+    AIGroupTaskApplyRequest,
+    AIGroupTaskGenerateRequest,
+    AIGroupTaskSuggestion,
+    AIGroupTaskNode,
+    GroupTaskCreate,
+    GroupTaskResponse,
+    GroupTaskUpdate,
+)
 from app.group_tasks.entities.group_task_entity import GroupTask
+from app.roadmaps.services.roadmap_ai_service import RoadmapAiError, RoadmapAiService, RoadmapAiServiceNotConfigured
 
 router = APIRouter(prefix="/groups/{group_id}/tasks", tags=["Group tasks"])
 
 MAX_TASKS_PER_GROUP = 500
+roadmap_ai_service = RoadmapAiService()
+logger = logging.getLogger(__name__)
 
 
 async def _require_member(session: AsyncSession, group_id: uuid.UUID, user_id: uuid.UUID) -> None:
@@ -65,6 +78,95 @@ async def list_group_tasks(
         select(GroupTask).where(GroupTask.group_id == group_id).order_by(GroupTask.created_at, GroupTask.id)
     )
     return list(result.scalars())
+
+
+@router.post("/ai/generate", response_model=AIGroupTaskSuggestion)
+async def generate_group_task_tree(
+    group_id: uuid.UUID,
+    data: AIGroupTaskGenerateRequest,
+    current_user: CurrentUser = Depends(get_current_user),
+    session: AsyncSession = Depends(get_db_session),
+):
+    """Generate a reviewable task tree for the group from a natural-language goal."""
+    await _require_member(session, group_id, current_user.id)
+    try:
+        suggestion = await roadmap_ai_service.suggest_group_tasks(
+            goal=data.goal,
+            due_date=data.due_date.isoformat() if data.due_date else None,
+            hours_per_week=data.hours_per_week,
+            current_level=data.current_level,
+            today=date.today().isoformat(),
+        )
+        if not suggestion.nodes:
+            raise HTTPException(status.HTTP_400_BAD_REQUEST, "Mục tiêu không rõ ràng để tạo lộ trình.")
+        return suggestion
+    except RoadmapAiServiceNotConfigured as exc:
+        logger.error("Group task AI requested but not configured: %s", exc)
+        raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, "Tính năng gợi ý bằng AI hiện chưa khả dụng.") from exc
+    except RoadmapAiError as exc:
+        logger.warning("Group task AI generation failed: %s", exc)
+        raise HTTPException(status.HTTP_502_BAD_GATEWAY, "Không thể tạo lộ trình lúc này, vui lòng thử lại sau.") from exc
+
+
+def _count_ai_nodes(nodes: list[AIGroupTaskNode]) -> int:
+    return sum(1 + _count_ai_nodes(node.children) for node in nodes)
+
+
+async def _insert_ai_nodes(
+    session: AsyncSession,
+    group_id: uuid.UUID,
+    created_by: uuid.UUID,
+    nodes: list[AIGroupTaskNode],
+    parent_id: uuid.UUID | None = None,
+) -> list[GroupTask]:
+    inserted: list[GroupTask] = []
+    for node in nodes:
+        task = GroupTask(
+            group_id=group_id,
+            parent_id=parent_id,
+            title=node.title,
+            assignee=node.assignee,
+            due_date=node.due_date,
+            done=False,
+            notes=node.notes,
+            position_x=None,
+            position_y=None,
+            created_by=created_by,
+        )
+        session.add(task)
+        await session.flush()
+        await session.refresh(task)
+        inserted.append(task)
+        inserted.extend(await _insert_ai_nodes(session, group_id, created_by, node.children, task.id))
+    return inserted
+
+
+@router.post("/ai/apply", response_model=list[GroupTaskResponse], status_code=status.HTTP_201_CREATED)
+async def apply_group_task_tree(
+    group_id: uuid.UUID,
+    data: AIGroupTaskApplyRequest,
+    current_user: CurrentUser = Depends(get_current_user),
+    session: AsyncSession = Depends(get_db_session),
+):
+    """Insert a reviewed AI task tree, optionally replacing the existing board."""
+    await _require_member(session, group_id, current_user.id)
+
+    generated_count = _count_ai_nodes(data.nodes)
+    if generated_count > MAX_TASKS_PER_GROUP:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, f"Một lộ trình có tối đa {MAX_TASKS_PER_GROUP} nhiệm vụ")
+
+    if data.replace_existing:
+        result = await session.execute(select(GroupTask).where(GroupTask.group_id == group_id))
+        for task in result.scalars():
+            await session.delete(task)
+    else:
+        count = await session.scalar(select(func.count()).select_from(GroupTask).where(GroupTask.group_id == group_id))
+        if (count or 0) + generated_count > MAX_TASKS_PER_GROUP:
+            raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, f"Bảng nhóm chỉ còn chứa tối đa {MAX_TASKS_PER_GROUP} nhiệm vụ")
+
+    created = await _insert_ai_nodes(session, group_id, current_user.id, data.nodes)
+    await session.commit()
+    return created
 
 
 @router.post("", response_model=GroupTaskResponse, status_code=status.HTTP_201_CREATED)

@@ -7,6 +7,7 @@ from pydantic import BaseModel
 
 from app.core.config import settings
 from app.roadmaps.dto.roadmap_dto import RoadmapAnswer, RoadmapSuggestion, RoadmapSuggestQuestionsResponse, TaskSuggestionResponse
+from app.group_tasks.dto.group_task_dto import AIGroupTaskSuggestion
 
 T = TypeVar("T", bound=BaseModel)
 
@@ -120,6 +121,52 @@ _GEMINI_TASK_SCHEMA = {
     "required": ["tasks"],
 }
 
+_GEMINI_GROUP_TASK_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "title": {"type": "string"},
+        "nodes": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "title": {"type": "string"},
+                    "assignee": {"type": "string"},
+                    "due_date": {"type": "string"},
+                    "notes": {"type": "array", "items": {"type": "string"}},
+                    "children": {
+                        "type": "array",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "title": {"type": "string"},
+                                "assignee": {"type": "string"},
+                                "due_date": {"type": "string"},
+                                "notes": {"type": "array", "items": {"type": "string"}},
+                                "children": {"type": "array", "items": {"type": "object"}},
+                            },
+                            "required": ["title", "assignee", "due_date", "notes", "children"],
+                        },
+                    },
+                },
+                "required": ["title", "assignee", "due_date", "notes", "children"],
+            },
+        },
+    },
+    "required": ["title", "nodes"],
+}
+
+_GROUP_TASK_SYSTEM_PROMPT = (
+    "Bạn là huấn luyện viên học tập giàu kinh nghiệm. Từ mục tiêu của người dùng, "
+    "tạo một lộ trình nhiệm vụ dạng cây để cả nhóm có thể theo sát. Hãy suy luận dựa "
+    "trên kiến thức thực tế, giáo trình/cộng đồng uy tín và thời gian khả dụng. "
+    "Viết toàn bộ nội dung bằng tiếng Việt. Tạo 2-5 nhánh gốc, mỗi nhánh có 3-8 nhiệm vụ con "
+    "hoặc nhiệm vụ con sâu hơn một cấp khi cần. Phải đưa ra thứ tự hợp lý, hạn ngày YYYY-MM-DD "
+    "phân bổ đều từ hôm nay tới deadline, và ghi rõ nguồn tài liệu/công việc cụ thể trong notes. "
+    "Ưu tiên mục tiêu đạt mục tiêu; không nhồi nhét hơn thời gian người dùng. "
+    "Nếu mục tiêu mơ hồ hoặc vô nghĩa, trả title rỗng và nodes rỗng."
+)
+
 
 def _build_roadmap_prompt(description: str, answers: list[RoadmapAnswer]) -> str:
     if not answers:
@@ -177,6 +224,31 @@ class RoadmapAiService:
             system=_TASK_SUGGESTION_SYSTEM_PROMPT,
             output_model=TaskSuggestionResponse,
             gemini_schema=_GEMINI_TASK_SCHEMA,
+        )
+
+    async def suggest_group_tasks(
+        self,
+        goal: str,
+        due_date: str | None,
+        hours_per_week: int,
+        current_level: str,
+        today: str,
+    ) -> AIGroupTaskSuggestion:
+        deadline = due_date or "8 tuần từ hôm nay"
+        content = (
+            f"Mục tiêu: {goal}\n"
+            f"Deadline: {deadline}\n"
+            f"Trình độ hiện tại: {current_level}\n"
+            f"Thời gian có thể học: {hours_per_week} giờ/tuần\n"
+            f"Hôm nay: {today}\n"
+            "Tối thiểu 12 nhiệm vụ cụ thể, tối đa 80 nhiệm vụ. "
+            "Mỗi node title ngắn gọn; assignee mặc định Cả nhóm."
+        )
+        return await self._generate(
+            content=content,
+            system=_GROUP_TASK_SYSTEM_PROMPT,
+            output_model=AIGroupTaskSuggestion,
+            gemini_schema=_GEMINI_GROUP_TASK_SCHEMA,
         )
 
     async def _generate(self, *, content: str, system: str, output_model: type[T], gemini_schema: dict) -> T:

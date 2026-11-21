@@ -114,3 +114,60 @@ class GroupTaskResponse(BaseModel):
                 "position": {"x": x, "y": y} if x is not None and y is not None else None,
             }
         return data
+
+
+class AIGroupTaskNode(BaseModel):
+    title: str = Field(min_length=1, max_length=200)
+    assignee: str = Field(default="Cả nhóm", max_length=100)
+    due_date: date | None = None
+    notes: list[str] = Field(default_factory=list, max_length=MAX_NOTES)
+    children: list["AIGroupTaskNode"] = Field(default_factory=list, max_length=20)
+
+    @field_validator("title")
+    @classmethod
+    def strip_title(cls, value: str) -> str:
+        return _strip_required(value)
+
+    @field_validator("assignee")
+    @classmethod
+    def strip_assignee(cls, value: str) -> str:
+        return value.strip() or "Cả nhóm"
+
+    @field_validator("due_date", mode="before")
+    @classmethod
+    def normalize_due_date(cls, value):
+        if value is None or (isinstance(value, str) and not value.strip()):
+            return None
+        return value
+
+    @field_validator("notes")
+    @classmethod
+    def clean_notes(cls, value: list[str]) -> list[str]:
+        return _clean_notes(value)
+
+
+class AIGroupTaskGenerateRequest(BaseModel):
+    goal: str = Field(min_length=10, max_length=500)
+    due_date: date | None = None
+    hours_per_week: int = Field(ge=1, le=168)
+    current_level: str = Field(min_length=5, max_length=500)
+
+    @field_validator("goal")
+    @classmethod
+    def strip_goal(cls, value: str) -> str:
+        return _strip_required(value)
+
+    @field_validator("current_level")
+    @classmethod
+    def strip_level(cls, value: str) -> str:
+        return value.strip() or "Người mới bắt đầu"
+
+
+class AIGroupTaskSuggestion(BaseModel):
+    title: str = Field(max_length=200)
+    nodes: list[AIGroupTaskNode] = Field(max_length=80)
+
+
+class AIGroupTaskApplyRequest(BaseModel):
+    nodes: list[AIGroupTaskNode] = Field(min_length=1, max_length=80)
+    replace_existing: bool = False
