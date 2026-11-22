@@ -289,7 +289,7 @@ class RoadmapAiService:
         client = genai.Client(api_key=settings.gemini_api_key)
         try:
             response = await client.aio.models.generate_content(
-                model="gemini-3.6-flash",
+                model=settings.gemini_model,
                 contents=content,
                 config=types.GenerateContentConfig(
                     system_instruction=system,
