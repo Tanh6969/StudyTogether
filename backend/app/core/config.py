@@ -53,6 +53,7 @@ class Settings(BaseSettings):
     ai_provider: str = "anthropic"  # "anthropic" or "gemini"
     anthropic_api_key: str | None = None
     gemini_api_key: str | None = None
+    gemini_model: str = "gemini-3.5-flash-lite"
 
     @property
     def cors_origins(self) -> list[str]:
