@@ -138,7 +138,7 @@ export const TrendingTopicSkeleton: React.FC = () => {
  * Giữ cùng khung, chiều cao và khoảng cách với thẻ thật để lưới không bị "nhảy" khi dữ liệu tải xong. */
 export const StudyGroupCardSkeleton: React.FC = () => {
   return (
-    // Độ rộng do hàng chứa quyết định (ROW_CLASSES trong StudyGroups.tsx): slider 2 thẻ khi màn hình < 928px, lưới 280px khi ≥ 928px.
+    // Độ rộng do hàng chứa quyết định (ROW_CLASSES trong StudyGroups.tsx): slider hiện 2 thẻ (màn nhỏ) → 3 → 4 → 5 thẻ (màn lớn).
     // Kích thước bên trong khớp GroupCard: bản gọn trên điện thoại (< 640px), bản thường từ 640px.
     // Chiều cao từng khối CỐ ĐỊNH, giống hệt GroupCard → mọi thẻ (thật lẫn skeleton) luôn cao bằng nhau.
     <div aria-hidden="true" className="flex min-w-0 flex-col overflow-hidden rounded-lg border border-slate-200 bg-white">

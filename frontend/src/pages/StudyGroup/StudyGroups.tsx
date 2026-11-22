@@ -10,10 +10,6 @@ import type { Group, GroupMember, GroupMemberRole, GroupStreak } from '../../lib
 import { getAvatarInitials, getAvatarColor } from '../../utils/avatarUtils';
 import { StudyGroupCardSkeleton } from '../../components/ui/Skeleton';
 import { RestrictionBanner } from '../../components/ui/RestrictionBanner';
-import { Pagination } from '../../components/ui/Pagination';
-import { usePagination } from '../../hooks/usePagination';
-
-const GROUPS_PAGE_SIZE = 8;
 
 interface GroupWithMembership {
     group: Group;
@@ -68,37 +64,36 @@ function GroupCover({ group }: { group: Group }) {
     );
 }
 
-/** Fixed card width (px) in the wide-screen grid. Keep in sync with the `280px` in
- *  ROW_CLASSES; cards and StudyGroupCardSkeleton get their width from the row (`[&>*]:`). */
-export const GROUP_CARD_WIDTH = 280;
-
-/** Two layouts, switched at the narrowest screen that fits 3 cards in a row:
- *    3 × 280px + 2 × 20px gap + 2 × 24px page padding = 928px.
- *  - < 928px: a SLIDER that shows exactly 2 cards at a time. Each card is
- *    (100% − gap) / 2 wide, the row scrolls sideways with snap, and a visible thin scroll
- *    bar + the ← → buttons in CardSlider move it. pt-1/pb-3 leave room for the hover
- *    lift/shadow and the scroll bar.
- *  - ≥ 928px: wrapping grid of fixed 280px columns (auto-fill) -- 3, 4, up to 5 inside
- *    the 1680px page cap -- left-aligned under the section titles; no slider controls. */
+/** One horizontal SLIDER at every screen size (replaces the old "Trước / Trang X / Y / Sau"
+ *  pagination). How many cards are visible depends on the width of the section itself
+ *  (Tailwind container queries on the `@container` wrapper in CardSlider, so a sidebar
+ *  doesn't make cards too narrow):
+ *    < 672px  → 2 cards  (phones / small screens)
+ *    ≥ 672px  → 3 cards
+ *    ≥ 896px  → 4 cards
+ *    ≥ 1024px → 5 cards  (large screens)
+ *  Card width = (100% − (n − 1) × gap) / n. The row scrolls sideways with snap; a thin
+ *  scroll bar + the ← → buttons move it. pt-1/pb-3 leave room for the hover lift/shadow and
+ *  the scroll bar. Cards and StudyGroupCardSkeleton get their width from the row (`[&>*]:`). */
 const ROW_CLASSES = [
-    // < 928px: 2-up slider (16px gap on phones, 20px from 640px)
     'flex snap-x snap-mandatory gap-4 overflow-x-auto scroll-smooth pb-3 pt-1 sm:gap-5',
-    '[&>*]:w-[calc((100%-1rem)/2)] sm:[&>*]:w-[calc((100%-1.25rem)/2)] [&>*]:shrink-0 [&>*]:snap-start',
+    '[&>*]:shrink-0 [&>*]:snap-start',
+    '[&>*]:w-[calc((100%-1rem)/2)] sm:[&>*]:w-[calc((100%-1.25rem)/2)]',
+    '@2xl:[&>*]:w-[calc((100%-2*1.25rem)/3)]',
+    '@4xl:[&>*]:w-[calc((100%-3*1.25rem)/4)]',
+    '@5xl:[&>*]:w-[calc((100%-4*1.25rem)/5)]',
     // visible thin scroll bar ("thanh trượt"), Firefox + Chromium/Safari
     '[scrollbar-color:#94A3B8_#E2E8F0] [scrollbar-width:thin]',
     '[&::-webkit-scrollbar]:h-1.5 [&::-webkit-scrollbar-track]:rounded-full [&::-webkit-scrollbar-track]:bg-slate-200',
     '[&::-webkit-scrollbar-thumb]:rounded-full [&::-webkit-scrollbar-thumb]:bg-slate-400',
-    // ≥ 928px: wrapping grid
-    'min-[928px]:grid min-[928px]:grid-cols-[repeat(auto-fill,280px)] min-[928px]:justify-start',
-    'min-[928px]:overflow-visible min-[928px]:pb-0 min-[928px]:pt-0 min-[928px]:sm:[&>*]:w-auto min-[928px]:[&>*]:w-auto lg:gap-6',
 ].join(' ');
 
 const SLIDER_BUTTON_CLASSES =
     'flex h-9 w-9 items-center justify-center rounded-full border border-slate-200 bg-white text-slate-700 shadow-sm transition hover:bg-slate-50 disabled:cursor-default disabled:opacity-40 disabled:hover:bg-white';
 
-/** The card row of one section. On small screens (< 928px) it is a 2-card slider with a
- *  scroll bar and ← → buttons (each press moves by one card); on wide screens it is the
- *  plain wrapping grid and the buttons are hidden. */
+/** The card row of one section: a slider showing 2–5 cards (see ROW_CLASSES) with a scroll
+ *  bar and ← → buttons. Each press moves by one "page" = the number of fully visible cards.
+ *  The buttons only appear when there are more cards than fit. */
 export function CardSlider({ label, children }: { label: string; children: ReactNode }) {
     const rowRef = useRef<HTMLDivElement>(null);
     const [canPrev, setCanPrev] = useState(false);
@@ -127,17 +122,22 @@ export function CardSlider({ label, children }: { label: string; children: React
         if (!row) return;
         const card = row.firstElementChild as HTMLElement | null;
         const gap = parseFloat(getComputedStyle(row).columnGap) || 0;
-        const step = card ? card.offsetWidth + gap : row.clientWidth / 2;
-        row.scrollBy?.({ left: direction * step, behavior: 'smooth' });
+        if (!card) {
+            row.scrollBy?.({ left: direction * row.clientWidth, behavior: 'smooth' });
+            return;
+        }
+        const cardStep = card.offsetWidth + gap;
+        const perPage = Math.max(1, Math.floor((row.clientWidth + gap) / cardStep));
+        row.scrollBy?.({ left: direction * perPage * cardStep, behavior: 'smooth' });
     };
 
     return (
-        <div className="mt-2">
+        <div className="@container mt-2">
             <div ref={rowRef} role="region" aria-label={label} className={ROW_CLASSES}>
                 {children}
             </div>
             {(canPrev || canNext) && (
-                <div className="mt-2 flex items-center justify-end gap-2 min-[928px]:hidden">
+                <div className="mt-2 flex items-center justify-end gap-2">
                     <button type="button" onClick={() => slide(-1)} disabled={!canPrev} aria-label="Xem nhóm trước" className={SLIDER_BUTTON_CLASSES}>
                         <ChevronLeft size={18} />
                     </button>
@@ -160,7 +160,7 @@ const CTA_LINK_CLASSES =
 const CARD_BADGE_CLASSES = 'flex h-full items-center whitespace-nowrap rounded border px-2 text-[11px] sm:px-3 sm:text-xs';
 
 /** One card, used by both sections; only the badge and the bottom-right action differ.
- *  The width comes from the row (half the row in the phone slider, 280px in the grid).
+ *  The width comes from the row (1/2 … 1/5 of the slider, see ROW_CLASSES).
  *  Phones (< 640px, two ~160px cards side by side) use a compact version: cover 96px,
  *  padding 12px, name text-sm. From 640px: cover 128px, padding 20px, name text-lg.
  *
@@ -403,9 +403,6 @@ export function StudyRooms() {
     });
     const discoverGroups = groups?.filter((g) => !g.isMember) ?? [];
 
-    const myGroupsPagination = usePagination(myGroups, GROUPS_PAGE_SIZE);
-    const discoverGroupsPagination = usePagination(discoverGroups, GROUPS_PAGE_SIZE);
-
     const menuItemClasses = (banned: boolean) =>
         `flex flex-col gap-0.5 px-4 py-3 ${banned ? 'cursor-not-allowed opacity-50' : 'cursor-pointer hover:bg-slate-50'}`;
 
@@ -488,7 +485,7 @@ export function StudyRooms() {
                                     <div className={`skeleton-pulse h-7 rounded-md ${titleWidth}`} />
                                 </div>
                                 <CardSlider label="Đang tải nhóm học">
-                                    {[...Array(4)].map((_, i) => <StudyGroupCardSkeleton key={i} />)}
+                                    {[...Array(5)].map((_, i) => <StudyGroupCardSkeleton key={i} />)}
                                 </CardSlider>
                             </div>
                         ))}
@@ -524,7 +521,7 @@ export function StudyRooms() {
                     />
                     {isMyGroupsOpen && (
                         <CardSlider label="Nhóm học của tôi">
-                            {myGroupsPagination.pageItems.map(({ group, activeMembersCount, role }) => (
+                            {myGroups.map(({ group, activeMembersCount, role }) => (
                                 <GroupCard
                                     key={group.id}
                                     group={group}
@@ -543,13 +540,6 @@ export function StudyRooms() {
                             ))}
                         </CardSlider>
                     )}
-                    {isMyGroupsOpen && (
-                        <Pagination
-                            page={myGroupsPagination.page}
-                            totalPages={myGroupsPagination.totalPages}
-                            onPageChange={myGroupsPagination.setPage}
-                        />
-                    )}
                 </section>
 
                 {/* SECTION 2: KHÁM PHÁ NHÓM HỌC */}
@@ -562,7 +552,7 @@ export function StudyRooms() {
                     />
                     {isDiscoverOpen && (
                         <CardSlider label={searchQuery ? 'Kết quả tìm kiếm nhóm học' : 'Khám phá nhóm học'}>
-                            {discoverGroupsPagination.pageItems.map(({ group, activeMembersCount }) => (
+                            {discoverGroups.map(({ group, activeMembersCount }) => (
                                 <GroupCard
                                     key={group.id}
                                     group={group}
@@ -586,13 +576,6 @@ export function StudyRooms() {
                                 />
                             ))}
                         </CardSlider>
-                    )}
-                    {isDiscoverOpen && (
-                        <Pagination
-                            page={discoverGroupsPagination.page}
-                            totalPages={discoverGroupsPagination.totalPages}
-                            onPageChange={discoverGroupsPagination.setPage}
-                        />
                     )}
                 </section>
                 </>
