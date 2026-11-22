@@ -49,7 +49,7 @@ frontend/
 ├── tsconfig.json / tsconfig.app.json / tsconfig.node.json
 ├── public/                 favicon.svg, icons.svg
 └── src/
-    ├── main.tsx            Điểm vào: BrowserRouter → AuthProvider → NotificationProvider → AppShell
+    ├── main.tsx            Điểm vào: BrowserRouter → AuthProvider → NotificationProvider → AppRoutes
     ├── index.css           CSS toàn cục + import Tailwind
     ├── routes/             Định nghĩa route + ProtectedRoute + error boundary của phòng học
     ├── pages/              Các trang (màn hình)
@@ -64,7 +64,6 @@ frontend/
     │   ├── invitations/    Mời / tham gia bằng mã
     │   ├── notifications/  Chuông + dropdown thông báo
     │   ├── settings/       Các mục trong trang cài đặt
-    │   └── common/         ColdStartOverlay (toast "server đang khởi động")
     ├── contexts/           AuthContext, NotificationContext
     ├── hooks/              Logic dữ liệu + realtime (useStudyRoom, useRoomMessages, ...)
     ├── lib/                Gọi API (*.api.ts), kiểu dữ liệu (*.types.ts), tiện ích nghiệp vụ
@@ -86,7 +85,7 @@ frontend/
   <BrowserRouter>
     <AuthProvider>              // phiên Supabase / phiên dev (mock), profile, lệnh cấm
       <NotificationProvider>    // thông báo + realtime
-        <AppShell>              // useKeepAlive() ping backend + <AppRoutes/> + <ColdStartOverlay/>
+        <AppRoutes />          // các trạng thái tải/AI hiển thị tại màn hình tương ứng
 ```
 
 Route (`src/routes/index.tsx`, trang đều lazy load):
