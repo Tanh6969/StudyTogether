@@ -16,27 +16,6 @@ export function setAccessTokenProvider(provider: AccessTokenProvider): void {
   getAccessToken = provider;
 }
 
-/**
- * Render free tier "spin down" khiến request đầu tiên sau một thời gian rảnh có thể mất
- * hàng chục giây để backend khởi động lại. Theo dõi các request đang treo lâu hơn ngưỡng
- * này để UI có thể hiện thông báo "đang khởi động server" thay vì trông như bị treo.
- */
-const COLD_START_THRESHOLD_MS = 2500;
-
-type ColdStartListener = (isSlow: boolean) => void;
-
-const coldStartListeners = new Set<ColdStartListener>();
-let slowRequestCount = 0;
-
-function notifyColdStart(isSlow: boolean): void {
-  coldStartListeners.forEach((listener) => listener(isSlow));
-}
-
-export function subscribeColdStart(listener: ColdStartListener): () => void {
-  coldStartListeners.add(listener);
-  return () => coldStartListeners.delete(listener);
-}
-
 export class ApiError extends Error {
   readonly status: number;
   readonly data: unknown;
@@ -89,13 +68,12 @@ function refreshOnce(): Promise<string | null> {
 }
 
 /**
- * Transient failures worth retrying for idempotent reads: the network request itself failed
- * (server unreachable, still booting, connection reset) or a gateway/availability status, which
- * is what a sleeping Render free-tier instance answers while it spins back up.
+ * Retry idempotent reads on temporary network or gateway errors.
+ * AWS backend is always-on; keep the recovery window short instead of
+ * delaying errors for a full minute.
  */
 const RETRYABLE_STATUS = new Set([502, 503, 504]);
-/** Backoff between attempts: ~1 minute in total, the time a cold Render instance needs. */
-const RETRY_DELAYS_MS = [1000, 2000, 4000, 8000, 15000, 30000];
+const RETRY_DELAYS_MS = [1000, 2000, 4000];
 
 function wait(ms: number, signal?: AbortSignal): Promise<void> {
   return new Promise((resolve, reject) => {
@@ -127,13 +105,6 @@ async function request<T>(path: string, options: RequestOptions = {}): Promise<T
   // doing anything -- so any method may be re-sent once with a refreshed token.
   const canRetry = method === 'GET' && !keepalive;
 
-  let firedColdStart = false;
-  const coldStartTimer = setTimeout(() => {
-    firedColdStart = true;
-    slowRequestCount += 1;
-    if (slowRequestCount === 1) notifyColdStart(true);
-  }, COLD_START_THRESHOLD_MS);
-
   const send = async (token: string | null) => {
     const requestHeaders: Record<string, string> = { Accept: 'application/json', ...headers };
     if (body !== undefined) requestHeaders['Content-Type'] = 'application/json';
@@ -151,49 +122,41 @@ async function request<T>(path: string, options: RequestOptions = {}): Promise<T
     return { response, data, isJson };
   };
 
-  try {
-    let token = getAccessToken() ?? null;
-    let refreshed = false;
-    for (let attempt = 0; ; attempt++) {
-      let result: Awaited<ReturnType<typeof send>>;
-      try {
-        result = await send(token);
-      } catch (err) {
-        // fetch() itself rejected: network down, server not listening yet, CORS-less gateway page.
-        if (isAbort(err) || !canRetry || attempt >= RETRY_DELAYS_MS.length) throw err;
-        await wait(RETRY_DELAYS_MS[attempt], signal);
-        continue;
-      }
-      const { response, data, isJson } = result;
+  let token = getAccessToken() ?? null;
+  let refreshed = false;
+  for (let attempt = 0; ; attempt++) {
+    let result: Awaited<ReturnType<typeof send>>;
+    try {
+      result = await send(token);
+    } catch (err) {
+      // fetch() itself rejected: network down, server not listening yet, CORS-less gateway page.
+      if (isAbort(err) || !canRetry || attempt >= RETRY_DELAYS_MS.length) throw err;
+      await wait(RETRY_DELAYS_MS[attempt], signal);
+      continue;
+    }
+    const { response, data, isJson } = result;
 
-      if (response.status === 401 && token && !refreshed) {
-        refreshed = true;
-        const fresh = await refreshOnce();
-        if (fresh && fresh !== token) {
-          token = fresh;
-          attempt -= 1; // a token refresh is not a failed attempt
-          continue;
-        }
-      }
-      if (RETRYABLE_STATUS.has(response.status) && canRetry && attempt < RETRY_DELAYS_MS.length) {
-        await wait(RETRY_DELAYS_MS[attempt], signal);
+    if (response.status === 401 && token && !refreshed) {
+      refreshed = true;
+      const fresh = await refreshOnce();
+      if (fresh && fresh !== token) {
+        token = fresh;
+        attempt -= 1; // a token refresh is not a failed attempt
         continue;
       }
-      if (!response.ok) {
-        const message =
-          isJson && data && typeof data === 'object' && 'detail' in data
-            ? String((data as { detail: unknown }).detail)
-            : response.statusText;
-        throw new ApiError(response.status, message, data);
-      }
-      return data as T;
     }
-  } finally {
-    clearTimeout(coldStartTimer);
-    if (firedColdStart) {
-      slowRequestCount -= 1;
-      if (slowRequestCount === 0) notifyColdStart(false);
+    if (RETRYABLE_STATUS.has(response.status) && canRetry && attempt < RETRY_DELAYS_MS.length) {
+      await wait(RETRY_DELAYS_MS[attempt], signal);
+      continue;
     }
+    if (!response.ok) {
+      const message =
+        isJson && data && typeof data === 'object' && 'detail' in data
+          ? String((data as { detail: unknown }).detail)
+          : response.statusText;
+      throw new ApiError(response.status, message, data);
+    }
+    return data as T;
   }
 }
 

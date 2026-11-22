@@ -28,7 +28,7 @@ afterEach(() => {
 const authOf = (call: number) => (fetchMock.mock.calls[call][1]?.headers as Record<string, string>)['Authorization'];
 
 describe('apiClient retries', () => {
-  it('retries a GET after a network failure (server still booting) and returns the data', async () => {
+  it('retries a GET after a temporary network failure and returns the data', async () => {
     fetchMock.mockRejectedValueOnce(new TypeError('Failed to fetch')).mockResolvedValueOnce(json(200, [{ id: 'r1' }]));
     const promise = apiClient.get<Array<{ id: string }>>('/study-rooms/?group_id=g');
     await vi.advanceTimersByTimeAsync(1000);
@@ -36,7 +36,7 @@ describe('apiClient retries', () => {
     expect(fetchMock).toHaveBeenCalledTimes(2);
   });
 
-  it('retries a GET on 503 (sleeping Render instance) until it answers', async () => {
+  it('retries a GET on 503 (temporary gateway failure) until it answers', async () => {
     fetchMock
       .mockResolvedValueOnce(json(503, { detail: 'waking up' }))
       .mockResolvedValueOnce(json(502, { detail: 'bad gateway' }))
@@ -51,15 +51,25 @@ describe('apiClient retries', () => {
     fetchMock.mockResolvedValue(json(503, { detail: 'down' }));
     const promise = apiClient.get('/groups/mine');
     const assertion = expect(promise).rejects.toMatchObject({ status: 503 });
-    await vi.advanceTimersByTimeAsync(60_000);
+    await vi.advanceTimersByTimeAsync(7_000);
     await assertion;
-    expect(fetchMock).toHaveBeenCalledTimes(7);
+    expect(fetchMock).toHaveBeenCalledTimes(4);
   });
 
   it('never re-sends a write after a failure (it may already have been applied)', async () => {
     fetchMock.mockResolvedValueOnce(json(503, { detail: 'down' }));
     await expect(apiClient.post('/groups/', { name: 'x' })).rejects.toBeInstanceOf(ApiError);
     expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('keeps a slow AI POST pending without duplicating the write', async () => {
+    let complete: (response: Response) => void = () => {};
+    fetchMock.mockImplementationOnce(() => new Promise<Response>((resolve) => { complete = resolve; }));
+    const pending = apiClient.post('/groups/g/tasks/ai/generate', { goal: 'JLPT N2' });
+    await vi.advanceTimersByTimeAsync(4_000);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    complete(json(200, { title: 'JLPT N2', nodes: [] }));
+    await expect(pending).resolves.toMatchObject({ title: 'JLPT N2' });
   });
 
   it('does not retry client errors like 404', async () => {
