@@ -1,51 +1,24 @@
 import { useEffect, useState } from 'react';
-import { Check, Lock, Volume2 } from 'lucide-react';
+import { Award, Check, Lock, Volume2 } from 'lucide-react';
 import { useAuth } from '../../hooks/useAuth';
 import { CHEERS, DEFAULT_CHEER, FRAMES, getMyRewards, progressText, rewardLabel, unlockText, updateMyRewards } from '../../lib/rewards';
 import type { MyRewards } from '../../lib/rewards';
 import { playCheer } from '../../utils/cheerSounds';
 import { FramedAvatar } from '../ui/FramedAvatar';
+import { SettingsSection } from './SettingsSection';
 
-/* Colour tokens for this component (the settings page's light palette + a dark stage for
- * frame previews, since most frames are designed to glow). */
-const T = {
-  surface: '#FFF',
-  line: '#DCE4F0',
-  ink: '#151E34',
-  text: '#172139',
-  muted: '#51596B',
-  faint: '#8A94A8',
-  accent: '#062A78',
-  accentSoft: '#EEF3FF',
-  link: '#0A347F',
-  chip: '#F1F5F9',
-  danger: '#B91C1C',
-  stage: '#0F172A',
-  stageLocked: '#1E293B',
-  success: '#047857',
-  successSoft: '#ECFDF5',
-} as const;
+const GROUP_LABEL = 'm-0 mb-2.5 text-[13px] font-semibold uppercase tracking-wide text-slate-500';
 
-const cardStyle: React.CSSProperties = { background: T.surface, border: `1px solid ${T.line}`, borderRadius: 9, padding: 24 };
-const sectionTitle: React.CSSProperties = { margin: 0, color: T.ink, fontSize: 20, lineHeight: 1.35, fontWeight: 700 };
-const mutedText: React.CSSProperties = { margin: '3px 0 0', color: T.muted, fontSize: 14, lineHeight: 1.45 };
-const groupLabel: React.CSSProperties = { margin: '0 0 10px', color: T.text, fontSize: 14, fontWeight: 650 };
-
-function tileStyle(selected: boolean, locked: boolean): React.CSSProperties {
-  return {
-    position: 'relative',
-    display: 'grid',
-    gap: 8,
-    padding: 0,
-    borderRadius: 10,
-    border: `1.5px solid ${selected ? T.accent : T.line}`,
-    background: selected ? T.accentSoft : T.surface,
-    color: locked ? T.faint : T.text,
-    cursor: locked ? 'not-allowed' : 'pointer',
-    textAlign: 'left',
-    overflow: 'hidden',
-  };
+/** Frame tile: dark "stage" on top (most frames are designed to glow), name + unlock rule under it. */
+function tileClasses(selected: boolean, locked: boolean) {
+  return [
+    'relative flex flex-col overflow-hidden rounded-xl border-[1.5px] p-0 text-left transition',
+    selected ? 'border-[#00236F] bg-[#EEF3FF]' : 'border-slate-200 bg-white',
+    locked ? 'cursor-not-allowed text-slate-400' : 'cursor-pointer text-[#0B1C30] hover:border-[#00236F]/50',
+  ].join(' ');
 }
+
+const CORNER_BADGE = 'absolute right-2 top-2 grid h-5.5 w-5.5 place-items-center rounded-md text-white';
 
 export function RewardsSection() {
   const { currentUser } = useAuth();
@@ -78,98 +51,107 @@ export function RewardsSection() {
     }
   };
 
-  return (
-    <section className="settings-card rewards-section" style={cardStyle} aria-labelledby="rewards-title">
-      <h2 id="rewards-title" style={sectionTitle}>Phần thưởng</h2>
-      <p style={mutedText}>Khung viền mở bằng thành tựu của riêng bạn và chuỗi tuần của nhóm. Kiểu cổ vũ mở theo chuỗi nhóm.</p>
+  const avatar = { initials: currentUser.initials, color: currentUser.color, avatarUrl: currentUser.avatarUrl };
 
-      {error && <p role="alert" style={{ ...mutedText, color: T.danger, marginTop: 12 }}>{error}</p>}
+  return (
+    <SettingsSection
+      id="rewards"
+      icon={Award}
+      title="Phần thưởng"
+      description="Khung viền mở bằng thành tựu của bạn và chuỗi tuần của nhóm. Kiểu cổ vũ mở theo chuỗi nhóm."
+      className="rewards-section"
+    >
+      {error && <p role="alert" className="m-0 mb-4 rounded-lg bg-red-50 px-3 py-2.5 text-sm text-red-700">{error}</p>}
       {mine && mine.just_unlocked.length > 0 && (
-        <p role="status" style={{ margin: '12px 0 0', padding: '10px 12px', borderRadius: 8, background: T.successSoft, color: T.success, fontSize: 14 }}>
+        <p role="status" className="m-0 mb-4 rounded-lg bg-emerald-50 px-3 py-2.5 text-sm text-emerald-700">
           Bạn vừa mở khóa: <b>{mine.just_unlocked.map(rewardLabel).join(', ')}</b>.
         </p>
       )}
 
-      <div style={{ marginTop: 20 }}>
-        <p style={groupLabel}>Khung viền avatar</p>
-        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(150px, 1fr))', gap: 10 }}>
-          <button type="button" onClick={() => void save({ avatar_frame: null })} aria-pressed={!mine?.avatar_frame} style={tileStyle(!mine?.avatar_frame, false)}>
-            <span style={{ display: 'grid', placeItems: 'center', height: 104, background: T.stage }}>
-              <FramedAvatar size={56} initials={currentUser.initials} color={currentUser.color} avatarUrl={currentUser.avatarUrl} frame={null} />
-            </span>
-            <span style={{ padding: '0 10px 10px', display: 'grid', gap: 2 }}>
-              <span style={{ fontSize: 13, fontWeight: 650 }}>Không viền</span>
-              <span style={{ fontSize: 12, color: T.muted }}>Mặc định</span>
-            </span>
-          </button>
-          {FRAMES.map((frame) => {
-            const locked = !owned.has(frame.id);
-            const selected = mine?.avatar_frame === frame.id;
-            const progress = locked ? progressText(frame.unlock, mine?.progress) : null;
-            return (
-              <button
-                key={frame.id}
-                type="button"
-                onClick={() => !locked && void save({ avatar_frame: frame.id })}
-                aria-pressed={selected}
-                aria-disabled={locked}
-                aria-label={`${frame.label}${locked ? ', chưa mở khóa' : ''}: ${unlockText(frame.unlock)}`}
-                title={frame.hint}
-                style={tileStyle(selected, locked)}
-              >
-                <span style={{ position: 'relative', display: 'grid', placeItems: 'center', height: 104, background: locked ? T.stageLocked : T.stage }}>
-                  <FramedAvatar size={56} initials={currentUser.initials} color={currentUser.color} avatarUrl={currentUser.avatarUrl} frame={frame.id} />
-                  {locked && (
-                    <span style={{ position: 'absolute', top: 8, right: 8, width: 22, height: 22, borderRadius: 6, background: T.stage, color: T.surface, display: 'grid', placeItems: 'center' }}><Lock size={12} /></span>
-                  )}
-                  {selected && (
-                    <span style={{ position: 'absolute', top: 8, right: 8, width: 22, height: 22, borderRadius: 6, background: T.accent, color: T.surface, display: 'grid', placeItems: 'center' }}><Check size={13} /></span>
-                  )}
+      <p className={GROUP_LABEL}>Khung viền avatar</p>
+      <div className="grid grid-cols-2 gap-2.5 sm:grid-cols-3 sm:gap-3 xl:grid-cols-4">
+        <button type="button" onClick={() => void save({ avatar_frame: null })} aria-pressed={!mine?.avatar_frame} className={tileClasses(!mine?.avatar_frame, false)}>
+          <span className="relative grid h-22 w-full place-items-center bg-slate-900 sm:h-24">
+            <FramedAvatar size={52} {...avatar} frame={null} />
+            {!mine?.avatar_frame && <span className={`${CORNER_BADGE} bg-[#00236F]`}><Check size={13} /></span>}
+          </span>
+          <span className="flex flex-col gap-0.5 px-2.5 py-2">
+            <span className="text-[13px] font-semibold">Không viền</span>
+            <span className="text-xs text-slate-500">Mặc định</span>
+          </span>
+        </button>
+        {FRAMES.map((frame) => {
+          const locked = !owned.has(frame.id);
+          const selected = mine?.avatar_frame === frame.id;
+          const progress = locked ? progressText(frame.unlock, mine?.progress) : null;
+          return (
+            <button
+              key={frame.id}
+              type="button"
+              onClick={() => !locked && void save({ avatar_frame: frame.id })}
+              aria-pressed={selected}
+              aria-disabled={locked}
+              aria-label={`${frame.label}${locked ? ', chưa mở khóa' : ''}: ${unlockText(frame.unlock)}`}
+              title={frame.hint}
+              className={tileClasses(selected, locked)}
+            >
+              <span className={`relative grid h-22 w-full place-items-center sm:h-24 ${locked ? 'bg-slate-800' : 'bg-slate-900'}`}>
+                <FramedAvatar size={52} {...avatar} frame={frame.id} />
+                {locked && <span className={`${CORNER_BADGE} bg-slate-900`}><Lock size={12} /></span>}
+                {selected && <span className={`${CORNER_BADGE} bg-[#00236F]`}><Check size={13} /></span>}
+              </span>
+              <span className="flex flex-col gap-0.5 px-2.5 py-2">
+                <span className="text-[13px] font-semibold text-[#0B1C30]">{frame.label}</span>
+                <span className={`text-xs leading-4 ${locked ? 'text-slate-400' : 'text-slate-500'}`}>
+                  {unlockText(frame.unlock)}
+                  {progress && <span className="tabular-nums"> · {progress}</span>}
                 </span>
-                <span style={{ padding: '0 10px 10px', display: 'grid', gap: 2 }}>
-                  <span style={{ fontSize: 13, fontWeight: 650, color: T.text }}>{frame.label}</span>
-                  <span style={{ fontSize: 12, color: locked ? T.faint : T.muted, lineHeight: 1.35 }}>
-                    {unlockText(frame.unlock)}
-                    {progress && <span style={{ fontVariantNumeric: 'tabular-nums' }}> · {progress}</span>}
-                  </span>
-                </span>
-              </button>
-            );
-          })}
-        </div>
+              </span>
+            </button>
+          );
+        })}
       </div>
 
-      <div style={{ marginTop: 22 }}>
-        <p style={groupLabel}>Kiểu cổ vũ</p>
-        <ul style={{ listStyle: 'none', margin: 0, padding: 0, display: 'grid', gap: 6 }}>
-          {CHEERS.map((cheer) => {
-            const locked = cheer.id !== DEFAULT_CHEER && !owned.has(cheer.id);
-            const selected = (mine?.cheer_style ?? DEFAULT_CHEER) === cheer.id;
-            const Icon = cheer.icon;
-            return (
-              <li key={cheer.id} style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '8px 10px', borderRadius: 8, border: `1.5px solid ${selected ? T.accent : T.line}`, background: selected ? T.accentSoft : T.surface, color: locked ? T.faint : T.text }}>
-                <button
-                  type="button"
-                  onClick={() => !locked && void save({ cheer_style: cheer.id })}
-                  aria-pressed={selected}
-                  aria-disabled={locked}
-                  style={{ flex: 1, display: 'flex', alignItems: 'center', gap: 10, border: 0, background: 'transparent', color: 'inherit', cursor: locked ? 'not-allowed' : 'pointer', textAlign: 'left', padding: 0, fontSize: 14 }}
-                >
-                  <span style={{ width: 32, height: 32, borderRadius: 8, display: 'grid', placeItems: 'center', background: selected ? T.accent : T.chip, color: selected ? T.surface : 'inherit', flexShrink: 0 }}><Icon size={16} /></span>
-                  <span style={{ display: 'grid' }}>
-                    <span style={{ fontWeight: 650 }}>{cheer.label}</span>
-                    <span style={{ fontSize: 12, color: locked ? T.faint : T.muted }}>{locked ? unlockText(cheer.unlock) : cheer.hint}</span>
-                  </span>
-                </button>
-                <button type="button" onClick={() => playCheer(cheer.id)} aria-label={`Nghe thử ${cheer.label}`} title="Nghe thử" style={{ width: 32, height: 32, borderRadius: 6, border: `1px solid ${T.line}`, background: T.surface, color: T.link, display: 'grid', placeItems: 'center', cursor: 'pointer', flexShrink: 0 }}>
-                  <Volume2 size={15} />
-                </button>
-                {locked && <Lock size={14} aria-hidden />}
-              </li>
-            );
-          })}
-        </ul>
-      </div>
-    </section>
+      <p className={`${GROUP_LABEL} mt-6`}>Kiểu cổ vũ</p>
+      <ul className="m-0 grid list-none grid-cols-1 gap-2 p-0 md:grid-cols-2">
+        {CHEERS.map((cheer) => {
+          const locked = cheer.id !== DEFAULT_CHEER && !owned.has(cheer.id);
+          const selected = (mine?.cheer_style ?? DEFAULT_CHEER) === cheer.id;
+          const Icon = cheer.icon;
+          return (
+            <li
+              key={cheer.id}
+              className={`flex items-center gap-2.5 rounded-xl border-[1.5px] px-2.5 py-2 ${selected ? 'border-[#00236F] bg-[#EEF3FF]' : 'border-slate-200 bg-white'} ${locked ? 'text-slate-400' : 'text-[#0B1C30]'}`}
+            >
+              <button
+                type="button"
+                onClick={() => !locked && void save({ cheer_style: cheer.id })}
+                aria-pressed={selected}
+                aria-disabled={locked}
+                className={`flex min-w-0 flex-1 items-center gap-2.5 border-none bg-transparent p-0 text-left text-sm text-inherit ${locked ? 'cursor-not-allowed' : 'cursor-pointer'}`}
+              >
+                <span className={`grid h-8 w-8 shrink-0 place-items-center rounded-lg ${selected ? 'bg-[#00236F] text-white' : 'bg-slate-100'}`}>
+                  <Icon size={16} />
+                </span>
+                <span className="flex min-w-0 flex-col">
+                  <span className="font-semibold">{cheer.label}</span>
+                  <span className={`truncate text-xs ${locked ? 'text-slate-400' : 'text-slate-500'}`}>{locked ? unlockText(cheer.unlock) : cheer.hint}</span>
+                </span>
+              </button>
+              {locked && <Lock size={14} aria-hidden className="shrink-0" />}
+              <button
+                type="button"
+                onClick={() => playCheer(cheer.id)}
+                aria-label={`Nghe thử ${cheer.label}`}
+                title="Nghe thử"
+                className="grid h-9 w-9 shrink-0 cursor-pointer place-items-center rounded-lg border border-slate-200 bg-white text-[#00236F] hover:bg-slate-50"
+              >
+                <Volume2 size={15} />
+              </button>
+            </li>
+          );
+        })}
+      </ul>
+    </SettingsSection>
   );
 }

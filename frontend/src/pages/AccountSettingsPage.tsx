@@ -1,39 +1,108 @@
-import { Camera, Lock, Eye, EyeOff, CheckCircle2, ChevronDown, ChevronUp } from 'lucide-react';
+import { Award, Bell, Camera, CheckCircle2, Eye, EyeOff, Lock, ShieldCheck, UserRound } from 'lucide-react';
+import type { LucideIcon } from 'lucide-react';
 import { useEffect, useRef, useState } from 'react';
 import { useAuth } from '../hooks/useAuth';
 import { useAuthContext } from '../contexts/auth-context';
 import { updateProfile, uploadProfileAvatar } from '../lib/profile.api';
 import { NotificationSettingsSection } from '../components/settings/NotificationSettingsSection';
 import { RewardsSection } from '../components/settings/RewardsSection';
+import {
+  SETTINGS_BTN_PRIMARY,
+  SETTINGS_BTN_SECONDARY,
+  SETTINGS_INPUT,
+  SETTINGS_LABEL,
+  SettingsSection,
+} from '../components/settings/SettingsSection';
 import { supabase } from '../lib/supabase';
 
-const fieldStyle: React.CSSProperties = { width: '100%', height: 43, padding: '0 12px', border: '1px solid #D9E1EF', borderRadius: 5, background: '#F8FAFF', color: '#344460', fontSize: 16, outline: 'none', boxSizing: 'border-box' };
-const cardStyle: React.CSSProperties = { background: '#FFF', border: '1px solid #DCE4F0', borderRadius: 9, padding: 24 };
-const sectionTitle: React.CSSProperties = { margin: 0, color: '#151E34', fontSize: 20, lineHeight: 1.35, fontWeight: 700 };
-const mutedText: React.CSSProperties = { margin: '3px 0 0', color: '#51596B', fontSize: 14, lineHeight: 1.45 };
-const divider: React.CSSProperties = { height: 1, background: '#DEE5F0', marginTop: 8 };
-const labelStyle: React.CSSProperties = { display: 'grid', gap: 5, color: '#172139', fontSize: 14, fontWeight: 650 };
-const primaryButton: React.CSSProperties = { minHeight: 34, border: 0, borderRadius: 5, padding: '0 16px', background: '#062A78', color: '#FFF', display: 'inline-flex', alignItems: 'center', justifyContent: 'center', gap: 7, fontSize: 14, fontWeight: 650, cursor: 'pointer' };
-const textButton: React.CSSProperties = { border: 0, background: 'transparent', color: '#0A347F', fontSize: 14, fontWeight: 600, cursor: 'pointer', padding: 0 };
+const BIO_MAX = 500;
+
+/** Section navigation. Desktop (≥ 1024px): a vertical list in the sticky left column.
+ *  Phones/tablets: a row of chips that sticks under the top header. */
+const NAV_ITEMS: { id: string; label: string; icon: LucideIcon }[] = [
+  { id: 'profile', label: 'Hồ sơ', icon: UserRound },
+  { id: 'notifications', label: 'Thông báo', icon: Bell },
+  { id: 'rewards', label: 'Phần thưởng', icon: Award },
+  { id: 'security', label: 'Bảo mật', icon: ShieldCheck },
+];
+
+function formatJoinDate(iso: string | undefined): string {
+  if (!iso) return 'Chưa rõ';
+  const date = new Date(iso);
+  if (Number.isNaN(date.getTime())) return 'Chưa rõ';
+  return `Tháng ${date.getMonth() + 1}, ${date.getFullYear()}`;
+}
+
+// Tính độ mạnh mật khẩu (0-3)
+function getPwStrength(pw: string): number {
+  if (pw.length < 6) return 0;
+  if (pw.length < 10) return 1;
+  if (pw.length < 14) return 2;
+  return 3;
+}
+const STRENGTH_BAR = ['bg-red-500', 'bg-amber-500', 'bg-blue-500', 'bg-green-700'];
+const STRENGTH_TEXT = ['text-red-500', 'text-amber-600', 'text-blue-600', 'text-green-700'];
+const STRENGTH_LABELS = ['Quá ngắn', 'Yếu', 'Trung bình', 'Mạnh'];
+
+/** Password input with a show/hide eye button inside it. */
+function PasswordField({ label, value, onChange, placeholder, autoComplete, invalid, valid, children }: {
+  label: string;
+  value: string;
+  onChange: (value: string) => void;
+  placeholder: string;
+  autoComplete: string;
+  invalid?: boolean;
+  valid?: boolean;
+  children?: React.ReactNode;
+}) {
+  const [visible, setVisible] = useState(false);
+  const stateBorder = invalid ? 'border-red-500!' : valid ? 'border-green-700!' : '';
+  return (
+    <label className={SETTINGS_LABEL}>
+      {label}
+      <div className="relative">
+        <input
+          type={visible ? 'text' : 'password'}
+          value={value}
+          onChange={(e) => onChange(e.target.value)}
+          placeholder={placeholder}
+          autoComplete={autoComplete}
+          required
+          className={`${SETTINGS_INPUT} pr-11 font-normal ${stateBorder}`}
+        />
+        <button
+          type="button"
+          onClick={() => setVisible((v) => !v)}
+          tabIndex={-1}
+          aria-label={visible ? 'Ẩn mật khẩu' : 'Hiện mật khẩu'}
+          className="absolute right-1 top-1/2 flex h-9 w-9 -translate-y-1/2 cursor-pointer items-center justify-center border-none bg-transparent p-0 text-slate-400 hover:text-[#00236F]"
+        >
+          {visible ? <EyeOff size={17} /> : <Eye size={17} />}
+        </button>
+      </div>
+      {children}
+    </label>
+  );
+}
 
 export function AccountSettingsPage() {
   const { currentUser, user } = useAuth();
   const { profile, refreshProfile } = useAuthContext();
-  const [saved, setSaved] = useState(false);
   const [name, setName] = useState(currentUser?.name || '');
   const [organization, setOrganization] = useState('');
   const [bio, setBio] = useState('');
+  const [saving, setSaving] = useState(false);
+  const [saveState, setSaveState] = useState<'idle' | 'saved' | 'error'>('idle');
   const [uploadingAvatar, setUploadingAvatar] = useState(false);
+  const [avatarError, setAvatarError] = useState<string | null>(null);
   const avatarInputRef = useRef<HTMLInputElement>(null);
+  const [activeSection, setActiveSection] = useState(NAV_ITEMS[0].id);
 
   // ── Đổi mật khẩu ──────────────────────────────────────────────────────────
   const [pwOpen, setPwOpen] = useState(false);
   const [currentPassword, setCurrentPassword] = useState('');
   const [newPassword, setNewPassword] = useState('');
   const [confirmPassword, setConfirmPassword] = useState('');
-  const [showCurrentPw, setShowCurrentPw] = useState(false);
-  const [showNewPw, setShowNewPw] = useState(false);
-  const [showConfirmPw, setShowConfirmPw] = useState(false);
   const [pwError, setPwError] = useState<string | null>(null);
   const [pwSuccess, setPwSuccess] = useState(false);
   const [pwSubmitting, setPwSubmitting] = useState(false);
@@ -47,11 +116,53 @@ export function AccountSettingsPage() {
     }
   }, [profile]);
 
+  // Highlight the nav item of the section currently in the middle of the screen.
+  useEffect(() => {
+    if (typeof IntersectionObserver === 'undefined') return;
+    const observer = new IntersectionObserver(
+      (entries) => {
+        const visible = entries.find((entry) => entry.isIntersecting);
+        if (visible) setActiveSection(visible.target.id);
+      },
+      { rootMargin: '-35% 0px -60% 0px' },
+    );
+    for (const item of NAV_ITEMS) {
+      const el = document.getElementById(item.id);
+      if (el) observer.observe(el);
+    }
+    return () => observer.disconnect();
+  }, []);
+
+  const goToSection = (id: string) => {
+    setActiveSection(id);
+    document.getElementById(id)?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  };
+
+  const savedName = profile?.displayName || currentUser?.name || '';
+  const isDirty =
+    name !== savedName || organization !== (profile?.organization || '') || bio !== (profile?.bio || '');
+
+  const markEdited = () => { if (saveState !== 'idle') setSaveState('idle'); };
+
   const save = async () => {
-    if (!user) return;
-    await updateProfile(user.id, { display_name: name.trim() || null, organization: organization.trim() || null, bio: bio.trim() || null });
-    await refreshProfile();
-    setSaved(true);
+    if (!user || saving) return;
+    setSaving(true);
+    try {
+      await updateProfile(user.id, { display_name: name.trim() || null, organization: organization.trim() || null, bio: bio.trim() || null });
+      await refreshProfile();
+      setSaveState('saved');
+    } catch {
+      setSaveState('error');
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const resetProfileForm = () => {
+    setName(savedName);
+    setOrganization(profile?.organization || '');
+    setBio(profile?.bio || '');
+    setSaveState('idle');
   };
 
   const changeAvatar = async (event: React.ChangeEvent<HTMLInputElement>) => {
@@ -59,7 +170,9 @@ export function AccountSettingsPage() {
     event.target.value = '';
     if (!file) return;
     setUploadingAvatar(true);
+    setAvatarError(null);
     try { await uploadProfileAvatar(file); await refreshProfile(); }
+    catch { setAvatarError('Không thể tải ảnh lên. Vui lòng thử lại.'); }
     finally { setUploadingAvatar(false); }
   };
 
@@ -108,299 +221,252 @@ export function AccountSettingsPage() {
     setConfirmPassword('');
   };
 
-  // Tính độ mạnh mật khẩu (0-3)
-  const getPwStrength = (pw: string): number => {
-    if (pw.length < 6) return 0;
-    if (pw.length < 10) return 1;
-    if (pw.length < 14) return 2;
-    return 3;
-  };
-  const strengthColors = ['#EF4444', '#F59E0B', '#3B82F6', '#16803C'];
-  const strengthLabels = ['Quá ngắn', 'Yếu', 'Trung bình', 'Mạnh'];
+  const pwStrength = getPwStrength(newPassword);
+  const confirmMismatch = confirmPassword.length > 0 && confirmPassword !== newPassword;
+  const confirmMatch = confirmPassword.length > 0 && confirmPassword === newPassword;
+  const displayName = name.trim() || savedName || 'Người dùng';
 
   return (
-    <main style={{ width: '100%', height: 'calc(100vh - 64px)', overflowY: 'auto', background: 'linear-gradient(180deg, #F8FAFC 0%, #F1F5F9 100%)', padding: 32, boxSizing: 'border-box' }}>
-      <style>{`
-        .settings-layout { display: grid; grid-template-columns: minmax(0, 1fr) 320px; gap: 24px; align-items: start; }
-        .settings-actions { border-top: 1px solid #DEE5F0; padding-top: 24px; display: flex; justify-content: flex-end; align-items: center; gap: 28px; }
-        @media (max-width: 800px) { .settings-layout { grid-template-columns: 1fr; } .settings-profile { grid-row: 1; } .settings-actions { gap: 16px; flex-wrap: wrap; } }
-        @media (max-width: 520px) { .settings-page { padding: 20px !important; } .settings-card { padding: 18px !important; } }
-        .pw-field-wrap { position: relative; }
-        .pw-field-wrap input { padding-right: 44px !important; }
-        .pw-toggle-btn { position: absolute; right: 12px; top: 50%; transform: translateY(-50%); background: none; border: none; cursor: pointer; color: #7B8CAA; display: flex; align-items: center; padding: 0; line-height: 1; }
-        .pw-toggle-btn:hover { color: #062A78; }
-        .pw-strength { display: flex; gap: 4px; margin-top: 6px; }
-        .pw-strength-bar { height: 4px; flex: 1; border-radius: 2px; transition: background 0.3s; }
-        .pw-header-btn { width: 100%; display: flex; align-items: center; justify-content: space-between; gap: 16px; background: none; border: none; cursor: pointer; padding: 0; }
-        .pw-header-btn:hover .pw-icon-wrap { background: #E8F0FF !important; }
-      `}</style>
-      <div className="settings-page" style={{ display: 'grid', gap: 24 }}>
-        <div className="settings-layout">
-          <div style={{ display: 'grid', gap: 24 }}>
+    <main className="min-h-[calc(100vh-56px)] bg-slate-50 sm:min-h-[calc(100vh-64px)]">
+      <div className="mx-auto w-full max-w-[1120px] px-4 pb-10 pt-5 sm:px-6 sm:pt-8 lg:px-8">
+        {/* Page title */}
+        <div className="mb-4 sm:mb-6">
+          <h1 className="m-0 text-xl font-semibold leading-8 text-[#0B1C30] sm:text-[26px] sm:leading-9">Cài đặt tài khoản</h1>
+          <p className="m-0 mt-0.5 text-[13px] text-[#444651] sm:text-sm">Quản lý hồ sơ, thông báo, phần thưởng và bảo mật.</p>
+        </div>
 
-            {/* ── Thông tin cá nhân ── */}
-            <section className="settings-card" style={cardStyle}>
-              <div style={{ display: 'flex', alignItems: 'baseline', justifyContent: 'space-between', gap: 16 }}>
-                <h2 style={sectionTitle}>Thông tin cá nhân</h2>
-                <span style={{ color: '#0A347F', fontSize: 12, fontWeight: 700, whiteSpace: 'nowrap' }}>HỒ SƠ</span>
+        <div className="grid grid-cols-1 items-start gap-4 sm:gap-5 lg:grid-cols-[264px_minmax(0,1fr)] lg:gap-8">
+          {/* Left column (desktop): profile summary + section nav, sticky while scrolling.
+              Below 1024px `contents` lets the summary and the chip nav sit directly in the
+              single-column grid, so the chip nav can stick to the top of the page. */}
+          <aside className="contents lg:sticky lg:top-24 lg:flex lg:flex-col lg:gap-4">
+            {/* Profile summary */}
+            <div className="flex items-center gap-4 rounded-xl border border-slate-200 bg-white p-4 shadow-[0_1px_2px_rgba(15,23,42,0.04)] lg:flex-col lg:gap-3 lg:p-6 lg:text-center">
+              <div className="relative shrink-0">
+                <div
+                  className="flex h-16 w-16 items-center justify-center overflow-hidden rounded-full border-[3px] border-[#E4ECFA] text-xl font-bold text-white lg:h-24 lg:w-24 lg:text-3xl"
+                  // The color is computed per user at runtime, so it can't be a Tailwind class.
+                  style={{ background: currentUser?.color }}
+                >
+                  {profile?.avatarUrl
+                    ? <img src={profile.avatarUrl} alt="Ảnh đại diện" className="h-full w-full object-cover" />
+                    : currentUser?.initials}
+                </div>
+                <input ref={avatarInputRef} type="file" accept="image/jpeg,image/png,image/webp,image/gif" onChange={(event) => void changeAvatar(event)} className="hidden" />
+                <button
+                  type="button"
+                  aria-label="Thay đổi ảnh đại diện"
+                  title="Thay đổi ảnh đại diện"
+                  onClick={() => avatarInputRef.current?.click()}
+                  disabled={uploadingAvatar}
+                  className="absolute -bottom-1 -right-1 flex h-8 w-8 cursor-pointer items-center justify-center rounded-full border-2 border-white bg-[#00236F] p-0 text-white hover:bg-[#001a52] disabled:cursor-wait disabled:opacity-70"
+                >
+                  <Camera size={15} />
+                </button>
               </div>
-              <div style={divider} />
-              <div style={{ display: 'grid', gap: 16, marginTop: 18 }}>
-                <label style={labelStyle}>
+
+              <div className="min-w-0 flex-1 lg:w-full">
+                <h2 className="m-0 truncate text-base font-semibold text-[#0B1C30] lg:text-lg">{displayName}</h2>
+                <p className="m-0 truncate text-[13px] text-[#444651]">{user?.email || 'Chưa cập nhật'}</p>
+                <span className="mt-1.5 inline-block rounded-full bg-[#EEF3FF] px-2.5 py-0.5 text-[11px] font-semibold text-[#00236F]">Sinh viên</span>
+                {avatarError && <p role="alert" className="m-0 mt-1.5 text-xs text-red-600">{avatarError}</p>}
+              </div>
+
+              {/* Extra details: desktop only (on phones the form right below shows them). */}
+              <dl className="m-0 hidden w-full gap-2.5 border-t border-slate-100 pt-3 text-left text-[13px] lg:grid">
+                <div>
+                  <dt className="font-semibold text-[#0B1C30]">Tổ chức</dt>
+                  <dd className="m-0 truncate text-[#444651]">{profile?.organization || 'Chưa cập nhật'}</dd>
+                </div>
+                <div>
+                  <dt className="font-semibold text-[#0B1C30]">Tham gia</dt>
+                  <dd className="m-0 text-[#444651]">{formatJoinDate(user?.created_at)}</dd>
+                </div>
+              </dl>
+            </div>
+
+            {/* Section nav */}
+            <nav
+              aria-label="Mục cài đặt"
+              className="sticky top-14 z-30 -mx-4 bg-slate-50/95 px-4 py-2 backdrop-blur sm:top-16 sm:-mx-6 sm:px-6 lg:static lg:mx-0 lg:rounded-xl lg:border lg:border-slate-200 lg:bg-white lg:p-2 lg:backdrop-blur-none"
+            >
+              <ul className="m-0 flex list-none gap-2 overflow-x-auto p-0 [scrollbar-width:none] lg:flex-col lg:gap-0.5 [&::-webkit-scrollbar]:hidden">
+                {NAV_ITEMS.map(({ id, label, icon: Icon }) => {
+                  const active = activeSection === id;
+                  return (
+                    <li key={id} className="shrink-0">
+                      <button
+                        type="button"
+                        onClick={() => goToSection(id)}
+                        aria-current={active ? 'true' : undefined}
+                        className={[
+                          'flex cursor-pointer items-center gap-2 whitespace-nowrap text-sm font-medium transition',
+                          // phones/tablets: pill chips
+                          'h-9 rounded-full border px-3.5',
+                          active ? 'border-[#00236F] bg-[#00236F] text-white' : 'border-slate-200 bg-white text-slate-600 hover:bg-slate-100',
+                          // desktop: plain list rows
+                          'lg:h-10 lg:w-full lg:rounded-lg lg:border-transparent lg:px-3',
+                          active ? 'lg:bg-[#EEF3FF] lg:text-[#00236F]' : 'lg:bg-transparent',
+                        ].join(' ')}
+                      >
+                        <Icon size={16} aria-hidden />
+                        {label}
+                      </button>
+                    </li>
+                  );
+                })}
+              </ul>
+            </nav>
+          </aside>
+
+          {/* Right column: the settings sections */}
+          <div className="flex min-w-0 flex-col gap-4 sm:gap-5">
+            {/* ── Hồ sơ ── */}
+            <SettingsSection id="profile" icon={UserRound} title="Thông tin cá nhân" description="Tên và thông tin hiển thị với các thành viên khác.">
+              <form
+                onSubmit={(e) => { e.preventDefault(); void save(); }}
+                className="grid grid-cols-1 gap-4 sm:grid-cols-2"
+              >
+                <label className={SETTINGS_LABEL}>
                   Họ và tên
-                  <input value={name} onChange={(e) => setName(e.target.value)} style={fieldStyle} />
+                  <input value={name} onChange={(e) => { setName(e.target.value); markEdited(); }} className={`${SETTINGS_INPUT} font-normal`} />
                 </label>
-                <label style={labelStyle}>
+                <label className={SETTINGS_LABEL}>
                   Địa chỉ email
-                  <input type="email" value={user?.email || ''} readOnly style={{ ...fieldStyle, background: '#E2E8F0', color: '#64748B', cursor: 'not-allowed' }} />
+                  <div className="relative">
+                    <input
+                      type="email"
+                      value={user?.email || ''}
+                      readOnly
+                      className={`${SETTINGS_INPUT} cursor-not-allowed bg-slate-100 pr-10 font-normal text-slate-500 focus:border-slate-300 focus:ring-0`}
+                    />
+                    <Lock size={15} aria-hidden className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400" />
+                  </div>
                 </label>
-                <label style={labelStyle}>
+                <label className={`${SETTINGS_LABEL} sm:col-span-2`}>
                   Trường đại học / Tổ chức
-                  <input value={organization} onChange={(e) => setOrganization(e.target.value)} style={fieldStyle} />
+                  <input value={organization} onChange={(e) => { setOrganization(e.target.value); markEdited(); }} placeholder="VD: Đại học Bách khoa Hà Nội" className={`${SETTINGS_INPUT} font-normal`} />
                 </label>
-                <label style={labelStyle}>
-                  Mô tả
-                  <textarea value={bio} onChange={(e) => setBio(e.target.value)} maxLength={500} style={{ ...fieldStyle, height: 88, padding: 12, resize: 'vertical' }} />
+                <label className={`${SETTINGS_LABEL} sm:col-span-2`}>
+                  <span className="flex items-baseline justify-between">
+                    Mô tả
+                    <span className="text-xs font-normal tabular-nums text-slate-400">{bio.length}/{BIO_MAX}</span>
+                  </span>
+                  <textarea
+                    value={bio}
+                    onChange={(e) => { setBio(e.target.value); markEdited(); }}
+                    maxLength={BIO_MAX}
+                    rows={3}
+                    placeholder="Giới thiệu ngắn về bạn"
+                    className={`${SETTINGS_INPUT} h-auto min-h-22 resize-y py-2.5 font-normal`}
+                  />
                 </label>
-              </div>
-            </section>
+
+                {/* Actions: full-width stacked on phones, right-aligned row from 640px. */}
+                <div className="flex flex-col-reverse gap-2 border-t border-slate-100 pt-4 sm:col-span-2 sm:flex-row sm:items-center sm:justify-end sm:gap-3">
+                  <span
+                    role="status"
+                    className={`text-center text-[13px] sm:mr-auto sm:text-left ${saveState === 'error' ? 'text-red-600' : 'text-green-700'}`}
+                  >
+                    {saveState === 'saved' && (
+                      <span className="inline-flex items-center gap-1.5"><CheckCircle2 size={15} /> Đã lưu thay đổi</span>
+                    )}
+                    {saveState === 'error' && 'Không thể lưu. Vui lòng thử lại.'}
+                  </span>
+                  <button type="button" onClick={resetProfileForm} disabled={!isDirty || saving} className={SETTINGS_BTN_SECONDARY}>
+                    Hủy
+                  </button>
+                  <button type="submit" disabled={!isDirty || saving} className={SETTINGS_BTN_PRIMARY}>
+                    {saving ? 'Đang lưu...' : 'Lưu thay đổi'}
+                  </button>
+                </div>
+              </form>
+            </SettingsSection>
 
             <NotificationSettingsSection />
 
             <RewardsSection />
 
-            {/* ── Đổi mật khẩu (đặt dưới Cài đặt Thông báo) ── */}
-            <section className="settings-card" style={cardStyle}>
-              {/* Header — click để mở/đóng */}
-              <button type="button" className="pw-header-btn" onClick={togglePwSection}>
-                <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
-                  <div
-                    className="pw-icon-wrap"
-                    style={{
-                      width: 38, height: 38, borderRadius: 8, flexShrink: 0,
-                      background: pwOpen ? '#E8F0FF' : '#F1F5F9',
-                      display: 'flex', alignItems: 'center', justifyContent: 'center',
-                      transition: 'background 0.2s',
-                    }}
+            {/* ── Bảo mật / Đổi mật khẩu ── */}
+            <SettingsSection
+              id="security"
+              icon={ShieldCheck}
+              title="Mật khẩu"
+              description="Cập nhật mật khẩu đăng nhập của bạn."
+              action={
+                !pwOpen && (
+                  <button type="button" onClick={togglePwSection} className={`${SETTINGS_BTN_SECONDARY} h-9! px-3.5`}>
+                    Đổi mật khẩu
+                  </button>
+                )
+              }
+            >
+              {pwOpen && (pwSuccess ? (
+                <div role="status" className="flex flex-col items-center gap-2 py-6 text-center">
+                  <CheckCircle2 size={44} className="text-green-700" />
+                  <p className="m-0 text-base font-semibold text-green-700">Đổi mật khẩu thành công!</p>
+                  <p className="m-0 text-sm text-[#444651]">Vui lòng dùng mật khẩu mới trong lần đăng nhập tiếp theo.</p>
+                </div>
+              ) : (
+                <form onSubmit={(e) => void handleChangePassword(e)} className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+                  <div className="sm:col-span-2 sm:max-w-[calc(50%-0.5rem)]">
+                    <PasswordField
+                      label="Mật khẩu hiện tại"
+                      value={currentPassword}
+                      onChange={setCurrentPassword}
+                      placeholder="Nhập mật khẩu đang dùng"
+                      autoComplete="current-password"
+                    />
+                  </div>
+
+                  <PasswordField
+                    label="Mật khẩu mới"
+                    value={newPassword}
+                    onChange={setNewPassword}
+                    placeholder="Tối thiểu 6 ký tự"
+                    autoComplete="new-password"
                   >
-                    <Lock size={18} color={pwOpen ? '#062A78' : '#64748B'} />
-                  </div>
-                  <div style={{ textAlign: 'left' }}>
-                    <h2 style={{ ...sectionTitle, fontSize: 18 }}>Đổi mật khẩu</h2>
-                    <p style={mutedText}>Cập nhật mật khẩu đăng nhập của bạn</p>
-                  </div>
-                </div>
-                <div style={{ color: '#7B8CAA', flexShrink: 0 }}>
-                  {pwOpen ? <ChevronUp size={20} /> : <ChevronDown size={20} />}
-                </div>
-              </button>
+                    {newPassword.length > 0 && (
+                      <span className="flex flex-col gap-1 font-normal">
+                        <span className="flex gap-1">
+                          {[0, 1, 2, 3].map((i) => (
+                            <span key={i} className={`h-1 flex-1 rounded-full transition-colors ${i <= pwStrength ? STRENGTH_BAR[pwStrength] : 'bg-slate-200'}`} />
+                          ))}
+                        </span>
+                        <span className={`text-xs ${STRENGTH_TEXT[pwStrength]}`}>{STRENGTH_LABELS[pwStrength]}</span>
+                      </span>
+                    )}
+                  </PasswordField>
 
-              {/* Collapsible form */}
-              {pwOpen && (
-                <div style={{ marginTop: 20 }}>
-                  <div style={divider} />
-                  {pwSuccess ? (
-                    <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 10, padding: '28px 0', textAlign: 'center' }}>
-                      <CheckCircle2 size={48} color="#16803C" />
-                      <p style={{ margin: 0, color: '#16803C', fontWeight: 700, fontSize: 16 }}>Đổi mật khẩu thành công!</p>
-                      <p style={{ margin: 0, color: '#51596B', fontSize: 14 }}>
-                        Mật khẩu mới đã được lưu. Vui lòng dùng mật khẩu mới trong lần đăng nhập tiếp theo.
-                      </p>
+                  <PasswordField
+                    label="Xác nhận mật khẩu mới"
+                    value={confirmPassword}
+                    onChange={setConfirmPassword}
+                    placeholder="Nhập lại mật khẩu mới"
+                    autoComplete="new-password"
+                    invalid={confirmMismatch}
+                    valid={confirmMatch}
+                  >
+                    {confirmMismatch && <span className="text-xs font-normal text-red-500">Mật khẩu không khớp</span>}
+                    {confirmMatch && <span className="text-xs font-normal text-green-700">✓ Khớp</span>}
+                  </PasswordField>
+
+                  {pwError && (
+                    <div role="alert" className="rounded-lg border border-red-200 bg-red-50 px-3.5 py-2.5 text-sm text-red-700 sm:col-span-2">
+                      {pwError}
                     </div>
-                  ) : (
-                    <form onSubmit={(e) => void handleChangePassword(e)} style={{ display: 'grid', gap: 18, marginTop: 18 }}>
-
-                      {/* Mật khẩu hiện tại */}
-                      <label style={labelStyle}>
-                        Mật khẩu hiện tại
-                        <div className="pw-field-wrap">
-                          <input
-                            type={showCurrentPw ? 'text' : 'password'}
-                            value={currentPassword}
-                            onChange={(e) => setCurrentPassword(e.target.value)}
-                            placeholder="Nhập mật khẩu đang dùng"
-                            required
-                            style={fieldStyle}
-                            autoComplete="current-password"
-                          />
-                          <button
-                            type="button"
-                            className="pw-toggle-btn"
-                            onClick={() => setShowCurrentPw((v) => !v)}
-                            tabIndex={-1}
-                            aria-label={showCurrentPw ? 'Ẩn mật khẩu' : 'Hiện mật khẩu'}
-                          >
-                            {showCurrentPw ? <EyeOff size={17} /> : <Eye size={17} />}
-                          </button>
-                        </div>
-                      </label>
-
-                      {/* Đường kẻ phân cách */}
-                      <div style={{ height: 1, background: '#F1F5F9', margin: '0 -4px' }} />
-
-                      {/* Mật khẩu mới */}
-                      <label style={labelStyle}>
-                        Mật khẩu mới
-                        <div className="pw-field-wrap">
-                          <input
-                            type={showNewPw ? 'text' : 'password'}
-                            value={newPassword}
-                            onChange={(e) => setNewPassword(e.target.value)}
-                            placeholder="Tối thiểu 6 ký tự"
-                            required
-                            style={fieldStyle}
-                            autoComplete="new-password"
-                          />
-                          <button
-                            type="button"
-                            className="pw-toggle-btn"
-                            onClick={() => setShowNewPw((v) => !v)}
-                            tabIndex={-1}
-                            aria-label={showNewPw ? 'Ẩn mật khẩu' : 'Hiện mật khẩu'}
-                          >
-                            {showNewPw ? <EyeOff size={17} /> : <Eye size={17} />}
-                          </button>
-                        </div>
-                        {/* Thanh độ mạnh mật khẩu */}
-                        {newPassword.length > 0 && (
-                          <div>
-                            <div className="pw-strength">
-                              {[0, 1, 2, 3].map((i) => {
-                                const s = getPwStrength(newPassword);
-                                return (
-                                  <div
-                                    key={i}
-                                    className="pw-strength-bar"
-                                    style={{ background: i <= s ? strengthColors[s] : '#E2E8F0' }}
-                                  />
-                                );
-                              })}
-                            </div>
-                            <span style={{ fontSize: 12, color: strengthColors[getPwStrength(newPassword)], marginTop: 2, display: 'inline-block' }}>
-                              {strengthLabels[getPwStrength(newPassword)]}
-                            </span>
-                          </div>
-                        )}
-                      </label>
-
-                      {/* Xác nhận mật khẩu */}
-                      <label style={labelStyle}>
-                        Xác nhận mật khẩu mới
-                        <div className="pw-field-wrap">
-                          <input
-                            type={showConfirmPw ? 'text' : 'password'}
-                            value={confirmPassword}
-                            onChange={(e) => setConfirmPassword(e.target.value)}
-                            placeholder="Nhập lại mật khẩu mới"
-                            required
-                            style={{
-                              ...fieldStyle,
-                              borderColor:
-                                confirmPassword && confirmPassword !== newPassword
-                                  ? '#EF4444'
-                                  : confirmPassword && confirmPassword === newPassword
-                                  ? '#16803C'
-                                  : '#D9E1EF',
-                            }}
-                            autoComplete="new-password"
-                          />
-                          <button
-                            type="button"
-                            className="pw-toggle-btn"
-                            onClick={() => setShowConfirmPw((v) => !v)}
-                            tabIndex={-1}
-                            aria-label={showConfirmPw ? 'Ẩn mật khẩu' : 'Hiện mật khẩu'}
-                          >
-                            {showConfirmPw ? <EyeOff size={17} /> : <Eye size={17} />}
-                          </button>
-                        </div>
-                        {confirmPassword && confirmPassword !== newPassword && (
-                          <span style={{ fontSize: 12, color: '#EF4444', marginTop: 2 }}>Mật khẩu không khớp</span>
-                        )}
-                        {confirmPassword && confirmPassword === newPassword && (
-                          <span style={{ fontSize: 12, color: '#16803C', marginTop: 2 }}>✓ Khớp</span>
-                        )}
-                      </label>
-
-                      {/* Thông báo lỗi */}
-                      {pwError && (
-                        <div style={{ padding: '10px 14px', background: '#FEF2F2', border: '1px solid #FECACA', borderRadius: 6, color: '#B91C1C', fontSize: 14 }}>
-                          {pwError}
-                        </div>
-                      )}
-
-                      <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 12 }}>
-                        <button type="button" style={textButton} onClick={togglePwSection}>Hủy</button>
-                        <button
-                          type="submit"
-                          disabled={pwSubmitting}
-                          style={{ ...primaryButton, opacity: pwSubmitting ? 0.7 : 1, cursor: pwSubmitting ? 'default' : 'pointer' }}
-                        >
-                          {pwSubmitting ? 'Đang xác thực...' : 'Lưu mật khẩu mới'}
-                        </button>
-                      </div>
-                    </form>
                   )}
-                </div>
-              )}
-            </section>
+
+                  <div className="flex flex-col-reverse gap-2 border-t border-slate-100 pt-4 sm:col-span-2 sm:flex-row sm:justify-end sm:gap-3">
+                    <button type="button" onClick={togglePwSection} className={SETTINGS_BTN_SECONDARY}>Hủy</button>
+                    <button type="submit" disabled={pwSubmitting} className={SETTINGS_BTN_PRIMARY}>
+                      {pwSubmitting ? 'Đang xác thực...' : 'Lưu mật khẩu mới'}
+                    </button>
+                  </div>
+                </form>
+              ))}
+            </SettingsSection>
           </div>
-
-          {/* ── Right Sidebar — Hồ sơ ── */}
-          <aside
-            className="settings-profile settings-card"
-            style={{ ...cardStyle, display: 'grid', justifyItems: 'center', textAlign: 'center', gap: 14, background: 'linear-gradient(180deg, #FFFFFF 0%, #F4F8FF 100%)' }}
-          >
-            <div style={{ position: 'relative', width: 104, height: 104, borderRadius: '50%', background: currentUser?.color, color: 'white', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 36, fontWeight: 'bold', border: '3px solid #E4ECFA' }}>
-              {profile?.avatarUrl
-                ? <img src={profile.avatarUrl} alt="Ảnh đại diện" style={{ width: '100%', height: '100%', borderRadius: '50%', objectFit: 'cover' }} />
-                : currentUser?.initials}
-              <input ref={avatarInputRef} type="file" accept="image/jpeg,image/png,image/webp,image/gif" onChange={(event) => void changeAvatar(event)} style={{ display: 'none' }} />
-              <button
-                type="button"
-                aria-label="Thay đổi ảnh đại diện"
-                title="Thay đổi ảnh đại diện"
-                onClick={() => avatarInputRef.current?.click()}
-                disabled={uploadingAvatar}
-                style={{ position: 'absolute', right: -3, bottom: -3, width: 34, height: 34, padding: 0, borderRadius: '50%', border: '2px solid white', background: '#062A78', color: 'white', display: 'flex', alignItems: 'center', justifyContent: 'center', cursor: uploadingAvatar ? 'wait' : 'pointer' }}
-              >
-                <Camera size={17} />
-              </button>
-            </div>
-            <div>
-              <h2 style={sectionTitle}>{name}</h2>
-              <p style={mutedText}>{user?.email || 'Chưa cập nhật'}</p>
-              <span style={{ display: 'inline-block', marginTop: 10, padding: '4px 10px', borderRadius: 999, background: '#E8F0FF', color: '#0A347F', fontSize: 12, fontWeight: 700 }}>Sinh viên</span>
-            </div>
-            <div style={{ width: '100%', borderTop: '1px solid #DEE5F0', paddingTop: 14, display: 'grid', gap: 10, textAlign: 'left', fontSize: 14, color: '#475569' }}>
-              <div>
-                <strong style={{ color: '#172139' }}>Tổ chức</strong>
-                <div style={{ marginTop: 2 }}>{organization || 'Chưa cập nhật'}</div>
-              </div>
-              <div>
-                <strong style={{ color: '#172139' }}>Tham gia</strong>
-                <div style={{ marginTop: 2 }}>Tháng 9, 2023</div>
-              </div>
-            </div>
-          </aside>
-        </div>
-
-        {/* ── Footer Actions — Lưu thông tin cá nhân ── */}
-        <div className="settings-actions">
-          <span style={{ color: '#16803C', fontSize: 14, visibility: saved ? 'visible' : 'hidden' }}>Đã lưu thay đổi</span>
-          <button
-            type="button"
-            style={textButton}
-            onClick={() => {
-              setName(profile?.displayName || currentUser?.name || '');
-              setOrganization(profile?.organization || '');
-              setBio(profile?.bio || '');
-              setSaved(false);
-            }}
-          >
-            Hủy
-          </button>
-          <button type="button" style={primaryButton} onClick={() => void save()}>Lưu thay đổi</button>
         </div>
       </div>
     </main>

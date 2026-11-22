@@ -21,7 +21,7 @@ function renderSlider() {
   return screen.getByRole('region', { name: 'Nhóm học của tôi' });
 }
 
-describe('CardSlider (2-card slider on small screens)', () => {
+describe('CardSlider (2–5 card slider)', () => {
   afterEach(() => vi.restoreAllMocks());
 
   it('shows ← → buttons when the row overflows and enables them by scroll position', () => {
@@ -38,7 +38,7 @@ describe('CardSlider (2-card slider on small screens)', () => {
     expect(screen.getByRole('button', { name: 'Xem nhóm tiếp theo' })).toBeDisabled();
   });
 
-  it('moves by exactly one card (card width + gap) per press', () => {
+  it('moves by one page of fully visible cards per press', () => {
     const row = renderSlider();
     fakeLayout(row, 0);
     row.style.columnGap = '16px';
@@ -47,7 +47,8 @@ describe('CardSlider (2-card slider on small screens)', () => {
     act(() => { fireEvent.scroll(row); });
 
     fireEvent.click(screen.getByRole('button', { name: 'Xem nhóm tiếp theo' }));
-    expect(scrollBy).toHaveBeenLastCalledWith({ left: 158, behavior: 'smooth' });
+    // 300px row, 142px cards + 16px gap → 2 fully visible cards → 2 × 158 = 316px
+    expect(scrollBy).toHaveBeenLastCalledWith({ left: 316, behavior: 'smooth' });
   });
 
   it('hides the buttons when everything already fits (nothing to slide)', () => {
