@@ -37,7 +37,7 @@ function toStudyRoomError(err: unknown): StudyRoomError {
   if (err instanceof ApiError) {
     return { status: err.status, message: err.message };
   }
-  return { status: null, message: 'Đã xảy ra lỗi không xác định.' };
+  return { status: null, message: err instanceof Error ? err.message : 'Đã xảy ra lỗi không xác định.' };
 }
 
 /** Derives, per user, the outcome of the most recent action in `pair` from the (newest-first) moderation log. */
@@ -390,8 +390,11 @@ export function useStudyRoom(roomId: string | undefined) {
       if (!roomId || !currentUserId) return;
       setActionError(null);
       try {
-        await logStudyRoomModeration(roomId, currentUserId, targetUserId, action);
+        const result = await logStudyRoomModeration(roomId, currentUserId, targetUserId, action);
         await Promise.all([loadMembers(), loadModeration()]);
+        if ((action === 'mute' || action === 'kick') && result.media_enforcement !== 'applied') {
+          throw new Error(result.media_error || 'Máy chủ gọi video chưa xác nhận thao tác.');
+        }
       } catch (err) {
         setActionError(toStudyRoomError(err));
         throw err;

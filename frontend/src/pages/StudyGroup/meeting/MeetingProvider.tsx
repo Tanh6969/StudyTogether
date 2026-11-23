@@ -11,13 +11,18 @@ import { MeetingContext } from './MeetingContext';
 export interface ConnectedCallParticipant {
   identity: string;
   name: string;
+  isMicrophoneEnabled: boolean;
 }
 
 /** Read the same LiveKit participant list as MeetingVideoGrid, not study_room_members. */
 function LiveKitRosterObserver({ onChange }: { onChange: (participants: ConnectedCallParticipant[]) => void }) {
   const participants = useParticipants();
   useEffect(() => {
-    onChange(participants.map((participant) => ({ identity: participant.identity, name: participant.name ?? '' })));
+    onChange(participants.map((participant) => ({
+      identity: participant.identity,
+      name: participant.name ?? '',
+      isMicrophoneEnabled: participant.isMicrophoneEnabled,
+    })));
   }, [participants, onChange]);
   useEffect(() => () => onChange([]), [onChange]);
   return null;

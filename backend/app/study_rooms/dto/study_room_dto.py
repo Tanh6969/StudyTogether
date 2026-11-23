@@ -103,6 +103,10 @@ class RoomModerationActionCreate(BaseModel):
 
 class RoomModerationActionResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True)
+    # Auditing and media enforcement belong to separate systems. An action record
+    # alone is never proof that LiveKit actually applied kick/mute.
+    media_enforcement: str = "not_applicable"
+    media_error: str | None = None
 
     id: uuid.UUID
     room_id: uuid.UUID

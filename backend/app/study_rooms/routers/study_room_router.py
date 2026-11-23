@@ -638,6 +638,11 @@ async def log_moderation(
 ):
     """Log a moderation action in a study room (e.g. kick, mute, unmute, raise/lower hand). Self-service hand actions require room access; kick/mute/unmute require the caller to strictly outrank the target (owner > host > group moderator > everyone else)."""
     room = await _get_active_room_or_404(session, room_id)
+    # Remotely enabling a microphone is not an administrative right. Historical
+    # UNMUTE audit values remain supported in the schema, but new calls must
+    # never resume another person's audio without their own action.
+    if data.action == ModerationAction.UNMUTE:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "Only the participant can enable their microphone")
 
     # The acting moderator is always the authenticated caller -- data.moderator_id
     # is client-supplied and never trusted, even though it stays in the DTO for
@@ -661,6 +666,8 @@ async def log_moderation(
         target_member = await service.get_member(session, room_id, data.target_user_id)
         if target_member is None:
             raise HTTPException(status.HTTP_404_NOT_FOUND, "Target is not a member of this study room")
+        if target_member.left_at is not None and data.action != ModerationAction.KICK:
+            raise HTTPException(status.HTTP_409_CONFLICT, "Target has already left this study room")
         if not await can_act_on_member(session, room, current_user.id, data.target_user_id):
             raise HTTPException(status.HTTP_403_FORBIDDEN, "You can only moderate members ranked below you")
 
@@ -674,55 +681,36 @@ async def log_moderation(
             detail=f"Could not log moderation action: {str(e)}"
         )
 
-    # The audit record (and, for KICK, the membership's left_at) is already durably
-    # committed above -- LiveKit is a separate live system with no transactional
-    # relationship to the DB, so the real-time enforcement side effect happens after, on a
-    # best-effort basis: an infra failure here must never undo (or be reported as a failure
-    # of) a moderation action the DB has already recorded. All three LiveKitService methods
-    # below are idempotent for "already disconnected" / "no such track" -- see their
-    # docstrings. UNMUTE's LiveKit call in particular is gated by LiveKit's own
-    # "Admins can remotely unmute tracks" project setting (off by default) -- its return
-    # value is checked below (not just whether it raised) so a silently-rejected remote
-    # unmute is diagnosable, not indistinguishable from a real success.
+    # Database state is committed before requesting the external LiveKit side effect.
+    # We deliberately report the two outcomes separately instead of claiming the
+    # participant was disconnected/muted just because the audit INSERT succeeded.
+    # Repeating a kick is safe (LiveKit remove is idempotent) even if the first
+    # request timed out after committing the membership revocation.
+    media_enforcement = "not_applicable"
+    media_error = None
     if data.action == ModerationAction.KICK:
         try:
             await livekit_service.remove_participant(room_id, data.target_user_id)
+            media_enforcement = "applied"
         except Exception:
-            logger.exception(
-                "Failed to remove kicked participant %s from LiveKit room %s", data.target_user_id, room_id
-            )
+            logger.exception("LiveKit kick enforcement failed: room=%s target=%s", room_id, data.target_user_id)
+            media_enforcement = "failed"
+            media_error = "Đã thu hồi quyền tham gia phòng, nhưng chưa xác nhận được ngắt cuộc gọi. Vui lòng thử lại."
     elif data.action == ModerationAction.MUTE:
         try:
-            await livekit_service.mute_microphone(room_id, data.target_user_id)
+            applied = await livekit_service.mute_microphone(room_id, data.target_user_id)
+            media_enforcement = "applied" if applied else "failed"
+            if not applied:
+                media_error = "Không tìm thấy micro đang phát của thành viên; chưa tắt micro nào."
         except Exception:
-            logger.exception(
-                "Failed to mute participant %s in LiveKit room %s", data.target_user_id, room_id
-            )
-    elif data.action == ModerationAction.UNMUTE:
-        try:
-            # unmute_microphone's return, not just "did it raise", is the truthful signal --
-            # see its docstring: LiveKit can accept this RPC while leaving the track muted
-            # (typically the "Admins can remotely unmute tracks" project setting is off). The
-            # already-committed audit record is deliberately left as-is either way (it's a
-            # factual log of the requested action, not a claim about live LiveKit state) --
-            # this warning exists purely so the gap is diagnosable in production instead of
-            # silently indistinguishable from a real success.
-            confirmed = await livekit_service.unmute_microphone(room_id, data.target_user_id)
-            if not confirmed:
-                logger.warning(
-                    "LiveKit did not confirm microphone unmute for participant %s in room %s -- "
-                    "likely 'Admins can remotely unmute tracks' is disabled for this LiveKit "
-                    "project; the moderation record was saved, but the participant's track "
-                    "remains server-muted until they unmute themselves.",
-                    data.target_user_id, room_id,
-                )
-        except Exception:
-            logger.exception(
-                "Failed to unmute participant %s in LiveKit room %s", data.target_user_id, room_id
-            )
-
+            logger.exception("LiveKit microphone mute failed: room=%s target=%s", room_id, data.target_user_id)
+            media_enforcement = "failed"
+            media_error = "LiveKit chưa xác nhận tắt micro. Vui lòng kiểm tra kết nối và thử lại."
+    # FastAPI response_model serializes the persisted action together with these
+    # transient fields; direct callers with an unflushed fake row also work.
+    action.media_enforcement = media_enforcement
+    action.media_error = media_error
     return action
-
 
 @router.get("/{room_id}/moderation", response_model=list[RoomModerationActionResponse])
 async def list_moderation(

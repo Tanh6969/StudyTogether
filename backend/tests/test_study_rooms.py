@@ -2273,82 +2273,46 @@ async def test_mute_succeeds_even_if_livekit_mute_fails(async_client, monkeypatc
     assert response.status_code == 200
 
 
-async def test_unmute_resumes_the_target_microphone_in_livekit(async_client, monkeypatch, as_fake_user):
-    """UNMUTE calls LiveKitService.unmute_microphone -- confirmed correct because LiveKit's
-    MutePublishedTrack(muted=false) resumes transmission of an already-published track
-    rather than forcing the participant's local hardware on (see that method's docstring).
-    It must not also call remove_participant or the MUTE path."""
+@pytest.mark.parametrize("case", ["normal", "provider_rejects", "provider_unavailable"])
+async def test_remote_unmute_is_rejected_before_audit_or_media_call(async_client, monkeypatch, as_fake_user, case):
+    """A host/moderator never silently re-enables another person's audio.
+
+    Existing enum values remain for historical records, but the API refuses any
+    remote-unmute attempt before touching the database or LiveKit.
+    """
     room = _make_room(host_id=uuid.uuid4())
     target_id = uuid.uuid4()
-    target_member = _room_member(room.id, target_id)
     monkeypatch.setattr(study_room_router.service, "get_by_id", AsyncMock(return_value=room))
-    monkeypatch.setattr(study_room_router.service, "get_member", AsyncMock(return_value=target_member))
+    monkeypatch.setattr(study_room_router.service, "get_member", AsyncMock(return_value=_room_member(room.id, target_id)))
     _mock_group_membership(monkeypatch, _group_member(room.group_id, as_fake_user.id, role=GroupMemberRole.OWNER))
-    action = _moderation_action(room.id, as_fake_user.id, target_id, ModerationAction.UNMUTE)
-    monkeypatch.setattr(study_room_router.service, "log_moderation_action", AsyncMock(return_value=action))
-    unmute_microphone_mock = AsyncMock(return_value=True)
-    monkeypatch.setattr(study_room_router.livekit_service, "unmute_microphone", unmute_microphone_mock)
-    mute_microphone_mock = AsyncMock()
-    monkeypatch.setattr(study_room_router.livekit_service, "mute_microphone", mute_microphone_mock)
-    remove_participant_mock = AsyncMock()
-    monkeypatch.setattr(study_room_router.livekit_service, "remove_participant", remove_participant_mock)
+    log_mock = AsyncMock()
+    unmute_mock = AsyncMock(side_effect=RuntimeError(case))
+    monkeypatch.setattr(study_room_router.service, "log_moderation_action", log_mock)
+    monkeypatch.setattr(study_room_router.livekit_service, "unmute_microphone", unmute_mock)
 
     response = await _post_moderation(async_client, room.id, target_id, "unmute")
 
-    assert response.status_code == 200
-    unmute_microphone_mock.assert_awaited_once_with(room.id, target_id)
-    mute_microphone_mock.assert_not_awaited()
-    remove_participant_mock.assert_not_awaited()
+    assert response.status_code == 400
+    assert "participant" in response.json()["detail"]
+    log_mock.assert_not_awaited()
+    unmute_mock.assert_not_awaited()
 
 
-async def test_unmute_not_confirmed_by_livekit_still_succeeds_but_warns(async_client, monkeypatch, as_fake_user, caplog):
-    """The truthfulness fix: when unmute_microphone reports LiveKit did NOT actually unmute
-    the track (e.g. "Admins can remotely unmute tracks" is disabled for this project), the
-    moderation action must still succeed -- the audit record is a factual log of the
-    requested action, not a claim about live LiveKit state -- but a distinct warning must be
-    logged so the gap is diagnosable, rather than silently indistinguishable from a real
-    success."""
+async def test_mute_provider_failure_does_not_claim_media_success(async_client, monkeypatch, as_fake_user):
     room = _make_room(host_id=uuid.uuid4())
     target_id = uuid.uuid4()
-    target_member = _room_member(room.id, target_id)
     monkeypatch.setattr(study_room_router.service, "get_by_id", AsyncMock(return_value=room))
-    monkeypatch.setattr(study_room_router.service, "get_member", AsyncMock(return_value=target_member))
+    monkeypatch.setattr(study_room_router.service, "get_member", AsyncMock(return_value=_room_member(room.id, target_id)))
     _mock_group_membership(monkeypatch, _group_member(room.group_id, as_fake_user.id, role=GroupMemberRole.OWNER))
-    action = _moderation_action(room.id, as_fake_user.id, target_id, ModerationAction.UNMUTE)
+    action = _moderation_action(room.id, as_fake_user.id, target_id, ModerationAction.MUTE)
     monkeypatch.setattr(study_room_router.service, "log_moderation_action", AsyncMock(return_value=action))
-    monkeypatch.setattr(
-        study_room_router.livekit_service, "unmute_microphone", AsyncMock(return_value=False)
-    )
+    monkeypatch.setattr(study_room_router.livekit_service, "mute_microphone", AsyncMock(return_value=False))
 
-    with caplog.at_level("WARNING", logger=study_room_router.logger.name):
-        response = await _post_moderation(async_client, room.id, target_id, "unmute")
+    response = await _post_moderation(async_client, room.id, target_id, "mute")
 
     assert response.status_code == 200
-    assert any("did not confirm" in record.message for record in caplog.records)
-
-
-async def test_unmute_succeeds_even_if_livekit_unmute_fails(async_client, monkeypatch, as_fake_user):
-    """If LiveKit rejects the remote-unmute RPC (e.g. the project's "Admins can remotely
-    unmute tracks" setting is off), the moderation action itself must still succeed -- the
-    audit record and moderation-mute state are already durably committed; the frontend's real
-    mic-state UI reads LiveKit directly and will correctly keep showing the participant as
-    muted if the RPC didn't actually take effect (see study_room_router.log_moderation's
-    post-commit LiveKit block and LiveKitService.unmute_microphone's docstring)."""
-    room = _make_room(host_id=uuid.uuid4())
-    target_id = uuid.uuid4()
-    target_member = _room_member(room.id, target_id)
-    monkeypatch.setattr(study_room_router.service, "get_by_id", AsyncMock(return_value=room))
-    monkeypatch.setattr(study_room_router.service, "get_member", AsyncMock(return_value=target_member))
-    _mock_group_membership(monkeypatch, _group_member(room.group_id, as_fake_user.id, role=GroupMemberRole.OWNER))
-    action = _moderation_action(room.id, as_fake_user.id, target_id, ModerationAction.UNMUTE)
-    monkeypatch.setattr(study_room_router.service, "log_moderation_action", AsyncMock(return_value=action))
-    monkeypatch.setattr(
-        study_room_router.livekit_service, "unmute_microphone", AsyncMock(side_effect=RuntimeError("boom"))
-    )
-
-    response = await _post_moderation(async_client, room.id, target_id, "unmute")
-
-    assert response.status_code == 200
+    assert response.json()["media_enforcement"] == "failed"
+    assert response.json()["media_error"]
 
 
 async def test_delete_room_closes_the_livekit_room(async_client, monkeypatch, as_fake_user):
