@@ -146,11 +146,12 @@ class GroupsService:
         return member
 
     async def reactivate_member(self, session: AsyncSession, member: GroupMember) -> GroupMember:
-        """Flips a `left` membership back to `active` (mirrors StudyRoomsService.rejoin --
-        study_room_members has no reactivate/rejoin equivalent method name, but the same
-        shape: reuse the existing row instead of inserting a duplicate). Used by invitation
-        redemption only; the manual add_member endpoint still 400s on any existing row
-        (pre-existing, unrelated behavior -- not changed here)."""
+        """Reactivates a previously left membership using its original row.
+        The invitation and public self-join/manager-add routes share this path.
+        A returning member never regains their prior moderator privilege."""
+        # Rejoining never restores an old moderator/owner privilege. The caller
+        # re-enters as a plain member; promotion requires a fresh owner action.
+        member.role = GroupMemberRole.MEMBER
         member.status = MemberStatus.ACTIVE
         await session.flush()
         return member

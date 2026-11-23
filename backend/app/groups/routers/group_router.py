@@ -80,7 +80,9 @@ async def get_my_memberships(
     current_user: CurrentUser = Depends(get_current_user),
     session: AsyncSession = Depends(get_db_session)
 ):
-    """Bulk fetch all active memberships for the caller. Avoids N+1 queries on the frontend."""
+    """Fetch the caller's membership history, including left/banned states.
+    Clients must treat only status=active as membership; a previous row is not access.
+    Historical states also let discovery render an accurate banned/rejoin action."""
     return await service.list_user_memberships(session, current_user.id)
 
 
@@ -253,10 +255,19 @@ async def add_member(
 
     existing = await service.get_member(session, group_id, target_user_id)
     if existing:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="User is already a member of this group"
-        )
+        if existing.status == MemberStatus.BANNED:
+            raise HTTPException(status.HTTP_403_FORBIDDEN, "You are banned from this group")
+        if existing.status == MemberStatus.ACTIVE:
+            raise HTTPException(status.HTTP_400_BAD_REQUEST, "User is already a member of this group")
+        # A voluntary departure keeps the historical row and its unique key.
+        # Reuse it instead of inserting a duplicate, without restoring an old role.
+        try:
+            member = await service.reactivate_member(session, existing)
+            await session.commit()
+            return member
+        except Exception:
+            await session.rollback()
+            raise HTTPException(status.HTTP_400_BAD_REQUEST, "Could not rejoin group")
 
     try:
         # Always joins as a plain active member -- never moderator/owner, even when a
@@ -387,6 +398,9 @@ async def update_member_status(
         )
 
     is_self_leave = user_id == current_user.id and member_status == MemberStatus.LEFT
+    if is_self_leave and member.status == MemberStatus.BANNED:
+        # Otherwise a banned user could self-switch BANNED -> LEFT and rejoin.
+        raise HTTPException(status.HTTP_403_FORBIDDEN, "Banned members cannot leave to clear a ban")
     if is_self_leave and member.role == GroupMemberRole.OWNER:
         # The owner must pick a successor first (POST /groups/{id}/owner/leave), otherwise the
         # group would be left without anyone able to manage it. 409 is the frontend's cue to
