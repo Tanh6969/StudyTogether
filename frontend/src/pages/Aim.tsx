@@ -1,4 +1,5 @@
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
+import { useLiveCollectionRefresh } from '../hooks/useLiveCollectionRefresh';
 import type { FormEvent, KeyboardEvent } from 'react';
 import { Plus, Sparkles, Trash2, X, ZoomIn, ZoomOut, Maximize2 } from 'lucide-react';
 import { TaskManagementSection } from './TaskManagementSection';
@@ -218,17 +219,29 @@ export function AimPage() {
   const [canvasOffset, setCanvasOffset] = useState({ x: 40, y: 32 });
   const [panning, setPanning] = useState<{ x: number; y: number } | null>(null);
 
-  useEffect(() => {
-    void (async () => {
-      try {
-        setRoadmaps(await listRoadmaps());
-      } catch (c) {
-        setLoadError(friendlyError(c));
-      } finally {
-        setLoading(false);
-      }
-    })();
+  const roadmapSequence = useRef(0);
+  const reloadRoadmaps = useCallback(async () => {
+    const sequence = ++roadmapSequence.current;
+    try {
+      const data = await listRoadmaps();
+      if (sequence !== roadmapSequence.current) return;
+      setRoadmaps(data);
+      setLoadError(null);
+    } catch (cause) {
+      if (sequence === roadmapSequence.current) setLoadError(friendlyError(cause));
+    } finally {
+      if (sequence === roadmapSequence.current) setLoading(false);
+    }
   }, []);
+  useEffect(() => {
+    void reloadRoadmaps();
+    return () => { roadmapSequence.current += 1; };
+  }, [reloadRoadmaps]);
+  useLiveCollectionRefresh({
+    enabled: true,
+    watchPaths: ['/roadmaps'],
+    onRefresh: reloadRoadmaps,
+  });
 
   const resetCreate = () => {
     setCTitle(''); setCGoal(''); setCDue(''); setCPhases([]);
@@ -278,7 +291,8 @@ export function AimPage() {
         due_date: cDue || null,
         phases: cPhases.map(name => ({ name })),
       });
-      setRoadmaps(items => [created, ...items]);
+      ++roadmapSequence.current;
+      setRoadmaps(items => items.some(r => r.id === created.id) ? items : [created, ...items]);
       resetCreate();
       setAdding(false);
     } catch (c) { setError(friendlyError(c)); }
@@ -299,6 +313,7 @@ export function AimPage() {
     setSaving(true); setError(null);
     try {
       const updated = await updateRoadmap(editing.id, { title: eTitle.trim(), goal: eGoal.trim(), due_date: eDue || null });
+      ++roadmapSequence.current;
       setRoadmaps(items => items.map(item => item.id === updated.id ? { ...updated, phases: editing.phases } : item));
       setEditing(null);
     } catch (c) { setError(friendlyError(c)); }
@@ -310,6 +325,7 @@ export function AimPage() {
     setDeleting(true); setError(null);
     try {
       await deleteRoadmap(editing.id);
+      ++roadmapSequence.current;
       setRoadmaps(items => items.filter(item => item.id !== editing.id));
       setEditing(null);
     } catch (c) { setError(friendlyError(c)); }
@@ -330,6 +346,7 @@ export function AimPage() {
     setSaving(true);
     try {
       const updated = await updateRoadmapPhase(phaseEditing.roadmapId, phaseEditing.phase.id, { progress });
+      ++roadmapSequence.current;
       setRoadmaps(items => items.map(item =>
         item.id !== phaseEditing.roadmapId ? item
           : { ...item, phases: item.phases.map(p => p.id === updated.id ? updated : p) }

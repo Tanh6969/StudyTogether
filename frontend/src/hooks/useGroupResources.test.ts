@@ -130,6 +130,24 @@ describe('useGroupResources', () => {
     expect(result.current.uploadError).toBeNull();
   });
 
+  it('never lets a slow initial GET erase a newly uploaded file', async () => {
+    let resolveInitial!: (value: Resource[]) => void;
+    mockedList.mockReturnValueOnce(new Promise<Resource[]>((resolve) => { resolveInitial = resolve; }));
+    mockedCreateUploadUrl.mockResolvedValue({ path: 'p', upload_url: 'https://x/upload', token: 't' });
+    mockedUploadFile.mockResolvedValue(undefined);
+    mockedCreateFile.mockResolvedValue(makeResource({ id: 'late-upload', name: 'new.pdf' }));
+
+    const { result } = renderHook(() => useGroupResources('group-1'));
+    await act(async () => {
+      await result.current.upload(new File(['abc'], 'new.pdf', { type: 'application/pdf' }));
+    });
+    expect(result.current.resources.map((r) => r.id)).toEqual(['late-upload']);
+
+    await act(async () => { resolveInitial([]); });
+    expect(result.current.resources.map((r) => r.id)).toEqual(['late-upload']);
+    expect(result.current.loading).toBe(false);
+  });
+
   it('ignores a second upload call while one is already in flight', async () => {
     mockedList.mockResolvedValue([]);
     let resolveUpload!: () => void;

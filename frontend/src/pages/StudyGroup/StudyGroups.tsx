@@ -5,6 +5,7 @@ import { Link, useNavigate, useSearchParams } from 'react-router-dom';
 import { useAuth } from '../../hooks/useAuth';
 import { getGroups, getMyGroups, createGroup, joinGroup, getMemberCounts, getMyMemberships } from '../../lib/group.api';
 import { ApiError } from '../../lib/apiClient';
+import { useLiveCollectionRefresh } from '../../hooks/useLiveCollectionRefresh';
 import { JoinByCodeModal } from '../../components/invitations/JoinByCodeModal';
 import type { Group, GroupMember, GroupMemberRole, GroupStreak } from '../../lib/group.types';
 import { getAvatarInitials, getAvatarColor } from '../../utils/avatarUtils';
@@ -288,12 +289,14 @@ export function StudyRooms() {
     const [groups, setGroups] = useState<GroupWithMembership[] | null>(null);
     const [isLoading, setIsLoading] = useState(true);
     const [loadError, setLoadError] = useState<string | null>(null);
+    const loadSequence = useRef(0);
     
     const [searchParams] = useSearchParams();
     const searchQuery = searchParams.get('q') || '';
 
-    const loadGroups = useCallback(async () => {
-        setIsLoading(true);
+    const loadGroups = useCallback(async (silent = false) => {
+        const sequence = ++loadSequence.current;
+        if (!silent) setIsLoading(true);
         setLoadError(null);
         try {
             const [publicGroups, myGroupsList, memberCountsObj, myMemberships] = await Promise.all([
@@ -332,24 +335,29 @@ export function StudyRooms() {
                 };
             });
 
+            if (sequence !== loadSequence.current) return;
             setGroups(enriched);
+            setLoadError(null);
         } catch (err) {
-            setLoadError(err instanceof ApiError ? err.message : 'Không thể tải danh sách nhóm học.');
-            setGroups(null);
+            if (sequence === loadSequence.current) {
+              setLoadError(err instanceof ApiError ? err.message : 'Không thể tải danh sách nhóm học.');
+              if (!silent) setGroups(null);
+            }
         } finally {
-            setIsLoading(false);
+            if (sequence === loadSequence.current) setIsLoading(false);
         }
     }, [currentUserId, searchQuery]);
 
     useEffect(() => {
-        let cancelled = false;
-        (async () => {
-            if (!cancelled) await loadGroups();
-        })();
-        return () => {
-            cancelled = true;
-        };
+        void loadGroups();
+        return () => { loadSequence.current += 1; };
     }, [loadGroups]);
+
+    useLiveCollectionRefresh({
+        enabled: !!currentUserId,
+        watchPaths: ['/groups', '/invitations'],
+        onRefresh: () => loadGroups(true),
+    });
 
     async function handleConfirmJoin() {
         if (!groupToJoin || isJoining) return;
@@ -357,8 +365,12 @@ export function StudyRooms() {
         setJoinActionError(null);
         try {
             await joinGroup(groupToJoin.id);
+            ++loadSequence.current;
             setGroupToJoin(null);
-            await loadGroups();
+            setGroups((current) => current?.map((item) => item.group.id === groupToJoin.id
+              ? { ...item, isMember: true, role: 'member', activeMembersCount: item.activeMembersCount + 1 }
+              : item) ?? null);
+            void loadGroups(true);
         } catch (err) {
             setJoinActionError(
                 err instanceof ApiError ? err.message : 'Không thể tham gia nhóm học.'

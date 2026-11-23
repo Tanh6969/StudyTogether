@@ -122,3 +122,8 @@ async def local_preview_identity(request: Request, call_next):
             # 401; the preview middleware never relaxes signature validation.
             logger.debug("Preview identity not provisioned: %s", type(exc).__name__)
     return await call_next(request)
+
+# Preview only: local blob objects, no production Supabase Storage permissions.
+if PREVIEW_RESOURCE_MODE == 'isolated':
+    from local_resources_preview import attach_preview_blob_routes
+    attach_preview_blob_routes(app)

@@ -10,6 +10,7 @@ import {
   uploadResourceFile,
 } from '../lib/resource.api';
 import type { Resource } from '../lib/resource.types';
+import { useLiveCollectionRefresh } from './useLiveCollectionRefresh';
 
 export interface ResourceError {
   status: number | null;
@@ -75,32 +76,45 @@ export function useGroupResources(groupId: string | undefined) {
   // Guards against a second upload firing while one is already in flight (e.g. a fast
   // double-click on the upload button), independent of the isUploading render state.
   const uploadInFlight = useRef(false);
+  const listSequence = useRef(0);
   // Same guard, per-resource, for download -- a fast double-click on the Download button
   // must not start two overlapping fetch+blob downloads of the same file.
   const downloadInFlight = useRef<Set<string>>(new Set());
 
-  const load = useCallback(async () => {
+  const load = useCallback(async (silent = false) => {
+    const sequence = ++listSequence.current;
     if (!groupId || !isLoggedIn) {
       setResources([]);
       setLoading(false);
       return;
     }
-    setLoading(true);
-    setListError(null);
+    if (!silent) setLoading(true);
     try {
       const data = await listGroupResources(groupId);
+      if (sequence !== listSequence.current) return;
       setResources(data);
+      setListError(null);
     } catch (err) {
-      setResources([]);
+      if (sequence !== listSequence.current) return;
+      // A background refresh should not erase already visible, verified files.
+      if (!silent) setResources([]);
       setListError(toResourceError(err));
     } finally {
-      setLoading(false);
+      if (sequence === listSequence.current) setLoading(false);
     }
   }, [groupId, isLoggedIn]);
 
   useEffect(() => {
-    load();
+    void load();
+    return () => { listSequence.current += 1; };
   }, [load]);
+
+  useLiveCollectionRefresh({
+    enabled: !!groupId && isLoggedIn,
+    table: 'resources', filter: groupId ? `group_id=eq.${groupId}` : undefined,
+    watchPaths: ['/resources/files'],
+    onRefresh: () => load(true),
+  });
 
   const upload = useCallback(
     async (file: File) => {
@@ -123,7 +137,11 @@ export function useGroupResources(groupId: string | undefined) {
           file_type: contentType,
           file_size: file.size,
         });
-        setResources((prev) => [created, ...prev]);
+        ++listSequence.current;
+        setLoading(false);
+        setListError(null);
+        setResources((prev) => prev.some((item) => item.id === created.id)
+          ? prev.map((item) => item.id === created.id ? created : item) : [created, ...prev]);
       } catch (err) {
         setUploadError(toResourceError(err));
         throw err;
@@ -140,6 +158,8 @@ export function useGroupResources(groupId: string | undefined) {
     setDeleteError(null);
     try {
       await deleteResourceFile(fileId);
+      ++listSequence.current;
+      setLoading(false);
       setResources((prev) => prev.filter((r) => r.id !== fileId));
     } catch (err) {
       setDeleteError(toResourceError(err));
@@ -208,6 +228,6 @@ export function useGroupResources(groupId: string | undefined) {
     open,
     download,
     canDelete,
-    refetch: load,
+    refetch: () => load(),
   };
 }

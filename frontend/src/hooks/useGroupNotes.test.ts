@@ -16,6 +16,9 @@ vi.mock('../lib/note.api', () => ({
   deleteNote: vi.fn(),
   getNote: vi.fn(),
 }));
+// Realtime hook tests must exercise the authenticated (non-demo) path.
+vi.mock('../mocks/config', () => ({ USE_MOCK: false }));
+
 vi.mock('../lib/supabase', () => ({
   supabase: { channel: vi.fn(), removeChannel: vi.fn() },
 }));

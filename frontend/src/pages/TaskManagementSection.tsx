@@ -1,4 +1,5 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useLiveCollectionRefresh } from '../hooks/useLiveCollectionRefresh';
 import type { FormEvent } from 'react';
 import { CalendarDays, Check, LoaderCircle, Plus, Sparkles, Trash2, Zap } from 'lucide-react';
 import { Modal } from '../components/ui/Modal';
@@ -130,19 +131,31 @@ export function TaskManagementSection({ roadmaps }: { roadmaps: Roadmap[] }) {
   const [aiLoading, setAiLoading] = useState(false);
   const [aiError, setAiError] = useState<string | null>(null);
 
-  const loadTasks = async () => {
-    setLoading(true);
-    setLoadError(null);
+  const taskSequence = useRef(0);
+  const loadTasks = useCallback(async (silent = false) => {
+    const sequence = ++taskSequence.current;
+    if (!silent) setLoading(true);
     try {
       const range = monthRange(month);
-      setTasks(await listTasks(range.from, range.to));
+      const loaded = await listTasks(range.from, range.to);
+      if (sequence !== taskSequence.current) return;
+      setTasks(loaded);
+      setLoadError(null);
     } catch (cause) {
-      setLoadError(friendlyError(cause));
+      if (sequence === taskSequence.current) setLoadError(friendlyError(cause));
     } finally {
-      setLoading(false);
+      if (sequence === taskSequence.current) setLoading(false);
     }
-  };
-  useEffect(() => { void loadTasks(); }, [month]);
+  }, [month]);
+  useEffect(() => {
+    void loadTasks();
+    return () => { taskSequence.current += 1; };
+  }, [loadTasks]);
+  useLiveCollectionRefresh({
+    enabled: true,
+    watchPaths: ['/tasks'],
+    onRefresh: () => loadTasks(true),
+  });
 
   const tasksByDate = useMemo(() => tasks.reduce<Record<string, StudyTask[]>>((result, task) => {
     (result[task.due_date] ??= []).push(task); return result;
@@ -191,7 +204,9 @@ export function TaskManagementSection({ roadmaps }: { roadmaps: Roadmap[] }) {
     setActionError(null);
     try {
       const created = await createTasks(parsedTasks.map(t => ({ title: t.title, due_date: t.due_date, priority: t.priority })));
-      setTasks(items => [...items, ...created]);
+      ++taskSequence.current;
+      setLoading(false);
+      setTasks(items => [...items, ...created.filter(task => !items.some(existing => existing.id === task.id))]);
       // Navigate to the date of the first task
       setSelectedDate(parsedTasks[0].due_date);
       setLines('');
@@ -208,6 +223,7 @@ export function TaskManagementSection({ roadmaps }: { roadmaps: Roadmap[] }) {
     const previousTasks = [...tasks];
     
     // Optimistic UI update: cập nhật UI ngay lập tức
+    ++taskSequence.current;
     setTasks(items => items.map(item => 
       item.id === task.id 
         ? { ...item, completed_at: item.completed_at ? null : new Date().toISOString() } 
@@ -217,9 +233,11 @@ export function TaskManagementSection({ roadmaps }: { roadmaps: Roadmap[] }) {
     try {
       const updated = await toggleTaskComplete(task.id);
       // Cập nhật lại data chuẩn từ server (sau khi request xong)
+      ++taskSequence.current;
       setTasks(items => items.map(item => item.id === task.id ? updated : item));
     } catch (cause) {
       // Nếu API lỗi, revert lại state cũ
+      ++taskSequence.current;
       setTasks(previousTasks);
       setActionError(friendlyError(cause));
     }
@@ -240,6 +258,7 @@ export function TaskManagementSection({ roadmaps }: { roadmaps: Roadmap[] }) {
     setActionError(null);
     try {
       const updated = await updateTask(editingTask.id, { title: editTitle.trim(), due_date: editDueDate, priority: editPriority });
+      ++taskSequence.current;
       setTasks(items => items.map(item => item.id === updated.id ? updated : item));
       setEditingTask(null);
     } catch (cause) {
@@ -254,6 +273,7 @@ export function TaskManagementSection({ roadmaps }: { roadmaps: Roadmap[] }) {
     setDeletingId(taskId);
     try {
       await deleteTask(taskId);
+      ++taskSequence.current;
       setTasks(items => items.filter(item => item.id !== taskId));
       if (editingTask?.id === taskId) setEditingTask(null);
     } catch (cause) {
