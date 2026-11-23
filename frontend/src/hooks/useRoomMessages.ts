@@ -3,6 +3,7 @@ import { ApiError } from '../lib/apiClient';
 import { listConversationMessages, sendConversationMessage } from '../lib/message.api';
 import { useChannelMessagesRealtime } from './useChannelMessagesRealtime';
 import { useMessageReactionsRealtime } from './useMessageReactionsRealtime';
+import { useLiveCollectionRefresh } from './useLiveCollectionRefresh';
 import type { Message, MessageReactionSummary } from '../lib/message.types';
 
 export interface RoomMessagesError {
@@ -63,7 +64,12 @@ export function useRoomMessages(conversationId: string | null) {
       .then((res) => {
         if (cancelled || conversationRef.current !== conversationId) return;
         // Backend returns newest-first; reverse for standard oldest-to-newest chat display.
-        setMessages([...res.items].reverse());
+        const snapshot = [...res.items].reverse();
+        setMessages((prev) => {
+          const ids = new Set(snapshot.map((m) => m.id));
+          // Preserve messages received through Realtime or own POST while GET was in flight.
+          return [...snapshot, ...prev.filter((m) => !ids.has(m.id))];
+        });
       })
       .catch((err) => {
         if (cancelled || conversationRef.current !== conversationId) return;
@@ -80,6 +86,21 @@ export function useRoomMessages(conversationId: string | null) {
 
   useChannelMessagesRealtime(conversationId, (incoming) => {
     setMessages((prev) => appendMessageDeduped(prev, incoming));
+  });
+
+  useLiveCollectionRefresh({
+    enabled: !!conversationId,
+    watchPaths: [conversationId ? '/conversations/' + conversationId + '/messages' : ''],
+    onRefresh: async () => {
+      if (!conversationId) return;
+      const data = await listConversationMessages(conversationId);
+      if (conversationRef.current !== conversationId) return;
+      const snapshot = [...data.items].reverse();
+      setMessages((prev) => {
+        const ids = new Set(snapshot.map((m) => m.id));
+        return [...snapshot, ...prev.filter((m) => !ids.has(m.id))];
+      });
+    },
   });
 
   const updateMessageReactions = useCallback((messageId: string, reactions: MessageReactionSummary[]) => {

@@ -3,6 +3,9 @@ import { act, renderHook, waitFor } from '@testing-library/react';
 import { supabase } from '../lib/supabase';
 import { useGroupTableRealtime } from './useGroupTableRealtime';
 
+// Realtime hook tests must exercise the authenticated (non-demo) path.
+vi.mock('../mocks/config', () => ({ USE_MOCK: false }));
+
 vi.mock('../lib/supabase', () => ({
   supabase: { channel: vi.fn(), removeChannel: vi.fn() },
 }));

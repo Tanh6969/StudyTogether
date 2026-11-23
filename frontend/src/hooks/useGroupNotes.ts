@@ -5,6 +5,7 @@ import { createNote, deleteNote, listGroupNotes, updateNote } from '../lib/note.
 import { NOTE_CONTENT_MAX_LENGTH, NOTE_TITLE_MAX_LENGTH } from '../lib/note.types';
 import type { Note } from '../lib/note.types';
 import { useGroupNotesRealtime } from './useGroupNotesRealtime';
+import { useLiveCollectionRefresh } from './useLiveCollectionRefresh';
 
 export interface NoteError {
   status: number | null;
@@ -55,6 +56,7 @@ export function useGroupNotes(groupId: string | undefined) {
   // Guards against a second mutation firing while one is already in flight (e.g. a fast
   // double-click), independent of the render-visible pending state.
   const createInFlight = useRef(false);
+  const listSequence = useRef(0);
   const editInFlight = useRef<Set<string>>(new Set());
   const deleteInFlight = useRef<Set<string>>(new Set());
   // Tracks which note the open editor belongs to, independent of `focusedNote` (which can
@@ -63,28 +65,38 @@ export function useGroupNotes(groupId: string | undefined) {
   // open against whatever note the focus happened to land on afterward.
   const editingNoteIdRef = useRef<string | null>(null);
 
-  const load = useCallback(async () => {
+  const load = useCallback(async (silent = false) => {
+    const sequence = ++listSequence.current;
     if (!groupId || !isLoggedIn) {
       setNotes([]);
       setLoading(false);
       return;
     }
-    setLoading(true);
-    setListError(null);
+    if (!silent) setLoading(true);
     try {
       const data = await listGroupNotes(groupId);
+      if (sequence !== listSequence.current) return;
       setNotes(data);
+      setListError(null);
     } catch (err) {
-      setNotes([]);
+      if (sequence !== listSequence.current) return;
+      if (!silent) setNotes([]);
       setListError(toNoteError(err));
     } finally {
-      setLoading(false);
+      if (sequence === listSequence.current) setLoading(false);
     }
   }, [groupId, isLoggedIn]);
 
   useEffect(() => {
-    load();
+    void load();
+    return () => { listSequence.current += 1; };
   }, [load]);
+
+  useLiveCollectionRefresh({
+    enabled: !!groupId && isLoggedIn,
+    watchPaths: ['/notes'],
+    onRefresh: () => load(true),
+  });
 
   // Stable deterministic order: chronological (created_at ascending), matching the backend's
   // NotesService.list_by_group -- the paper-stack UI navigates this as a fixed sequence.
@@ -147,7 +159,9 @@ export function useGroupNotes(groupId: string | undefined) {
     setCreateError(null);
     try {
       const created = await createNote({ group_id: groupId, title: newTitle.trim() || null, content: newContent.trim() });
-      setNotes((prev) => [...prev, created]);
+      ++listSequence.current;
+      setLoading(false);
+      setNotes((prev) => prev.some((n) => n.id === created.id) ? prev : [...prev, created]);
       setPendingFocusNoteId(created.id);
       setIsAdding(false);
       setNewTitleState('');
@@ -186,6 +200,8 @@ export function useGroupNotes(groupId: string | undefined) {
     setEditError(null);
     try {
       const updated = await updateNote(noteId, { title: editingTitle.trim() || null, content: editingContent.trim() });
+      ++listSequence.current;
+      setLoading(false);
       setNotes((prev) => prev.map((n) => (n.id === noteId ? updated : n)));
       editingNoteIdRef.current = null;
       setIsEditing(false);
@@ -207,6 +223,8 @@ export function useGroupNotes(groupId: string | undefined) {
     setDeleteError(null);
     try {
       await deleteNote(noteId);
+      ++listSequence.current;
+      setLoading(false);
       setNotes((prev) => prev.filter((n) => n.id !== noteId));
       if (editingNoteIdRef.current === noteId) {
         editingNoteIdRef.current = null;
@@ -227,6 +245,7 @@ export function useGroupNotes(groupId: string | undefined) {
   // no separate "remote notes" list -- so `sortedNotes`/`focusedIndex` above apply uniformly
   // regardless of whether a note arrived via REST or Realtime.
   const handleRemoteUpsert = useCallback((note: Note) => {
+    ++listSequence.current;
     setNotes((prev) => {
       const idx = prev.findIndex((n) => n.id === note.id);
       if (idx === -1) return [...prev, note];
@@ -238,6 +257,7 @@ export function useGroupNotes(groupId: string | undefined) {
   }, []);
 
   const handleRemoteDelete = useCallback((noteId: string) => {
+    ++listSequence.current;
     setNotes((prev) => (prev.some((n) => n.id === noteId) ? prev.filter((n) => n.id !== noteId) : prev));
     if (editingNoteIdRef.current === noteId) {
       editingNoteIdRef.current = null;
@@ -258,7 +278,7 @@ export function useGroupNotes(groupId: string | undefined) {
     notes: sortedNotes,
     loading,
     listError,
-    refetch: load,
+    refetch: () => load(),
 
     focusedIndex,
     focusedNote: focusedNote as Note | undefined,

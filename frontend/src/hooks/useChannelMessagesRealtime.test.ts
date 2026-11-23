@@ -5,6 +5,9 @@ import { getMessage } from '../lib/message.api';
 import { useChannelMessagesRealtime } from './useChannelMessagesRealtime';
 import type { Message } from '../lib/message.types';
 
+// Realtime hook tests must exercise the authenticated (non-demo) path.
+vi.mock('../mocks/config', () => ({ USE_MOCK: false }));
+
 vi.mock('../lib/supabase', () => ({
   supabase: { channel: vi.fn(), removeChannel: vi.fn() },
 }));

@@ -37,6 +37,7 @@ import { ErrorBoundary } from '../../components/ui/ErrorBoundary';
 import { RestrictionBanner } from '../../components/ui/RestrictionBanner';
 import { useGroupTableRealtime } from '../../hooks/useGroupTableRealtime';
 import { useGroupResources } from '../../hooks/useGroupResources';
+import { useLiveCollectionRefresh } from '../../hooks/useLiveCollectionRefresh';
 import { useGroupNotes } from '../../hooks/useGroupNotes';
 import { NotesStackPanel } from './NotesStackPanel';
 import { TaskFlowBoard } from './TaskFlowBoard';
@@ -157,7 +158,7 @@ export function StudyGroupDetail() {
   // Per-list load failures. Shown as an error with a retry button -- never as an empty list,
   // which used to look exactly like "this group has no rooms/channels" until a page refresh.
   const [listErrors, setListErrors] = useState<{ channels?: string; rooms?: string; members?: string }>({});
-  const listLoadSeqRef = useRef(0);
+  const listLoadSeqRef = useRef({ channels: 0, rooms: 0, members: 0 });
 
   // Leave-group mutation state
   const [isLeaving, setIsLeaving] = useState(false);
@@ -229,10 +230,11 @@ export function StudyGroupDetail() {
    * which only re-fetches the lists that failed. Responses from an older call (another group,
    * or a superseded retry) are ignored via the sequence number. */
   const loadLists = useCallback(
-    async (which: Array<'channels' | 'rooms' | 'members'>) => {
+    async (which: Array<'channels' | 'rooms' | 'members'>, silent = false) => {
       if (!groupId) return;
-      const seq = ++listLoadSeqRef.current;
-      const stale = () => seq !== listLoadSeqRef.current;
+      const seq = { ...listLoadSeqRef.current };
+      for (const key of which) seq[key] = ++listLoadSeqRef.current[key];
+      const stale = (key: 'channels' | 'rooms' | 'members') => seq[key] !== listLoadSeqRef.current[key];
       const message = (err: unknown, fallback: string) => (err instanceof ApiError ? err.message : fallback);
       setListErrors((prev) => {
         const next = { ...prev };
@@ -241,52 +243,52 @@ export function StudyGroupDetail() {
       });
       const jobs: Promise<void>[] = [];
       if (which.includes('channels')) {
-        setIsChannelsLoading(true);
+        if (!silent) setIsChannelsLoading(true);
         jobs.push(
           listChannelsByGroup(groupId)
             .then((data) => {
-              if (stale()) return;
+              if (stale('channels')) return;
               setChannels(data);
               setActiveChannel((prev) => (data.some((c) => c.id === prev) ? prev : (data[0]?.id ?? '')));
             })
             .catch((err) => {
-              if (!stale()) setListErrors((prev) => ({ ...prev, channels: message(err, 'Không tải được danh sách kênh.') }));
+              if (!stale('channels')) setListErrors((prev) => ({ ...prev, channels: message(err, 'Không tải được danh sách kênh.') }));
             })
             .finally(() => {
-              if (!stale()) setIsChannelsLoading(false);
+              if (!stale('channels')) setIsChannelsLoading(false);
             })
         );
       }
       if (which.includes('rooms')) {
-        setIsRoomsLoading(true);
+        if (!silent) setIsRoomsLoading(true);
         jobs.push(
           listStudyRoomsByGroup(groupId)
             .then((data) => {
-              if (!stale()) {
+              if (!stale('rooms')) {
                 setStudyRooms(data);
                 if (data.length > 0) preloadStudyRoomPage();
               }
             })
             .catch((err) => {
-              if (!stale()) setListErrors((prev) => ({ ...prev, rooms: message(err, 'Không tải được danh sách phòng học.') }));
+              if (!stale('rooms')) setListErrors((prev) => ({ ...prev, rooms: message(err, 'Không tải được danh sách phòng học.') }));
             })
             .finally(() => {
-              if (!stale()) setIsRoomsLoading(false);
+              if (!stale('rooms')) setIsRoomsLoading(false);
             })
         );
       }
       if (which.includes('members')) {
-        setIsMembersLoading(true);
+        if (!silent) setIsMembersLoading(true);
         jobs.push(
           listGroupMembers(groupId)
             .then((data) => {
-              if (!stale()) setGroupMembers(data);
+              if (!stale('members')) setGroupMembers(data);
             })
             .catch((err) => {
-              if (!stale()) setListErrors((prev) => ({ ...prev, members: message(err, 'Không tải được danh sách thành viên.') }));
+              if (!stale('members')) setListErrors((prev) => ({ ...prev, members: message(err, 'Không tải được danh sách thành viên.') }));
             })
             .finally(() => {
-              if (!stale()) setIsMembersLoading(false);
+              if (!stale('members')) setIsMembersLoading(false);
             })
         );
       }
@@ -296,6 +298,12 @@ export function StudyGroupDetail() {
   );
   const loadListsRef = useRef(loadLists);
   loadListsRef.current = loadLists;
+  useLiveCollectionRefresh({
+    enabled: !!groupId,
+    watchPaths: ['/groups/', '/channels/', '/study-rooms/'],
+    onRefresh: () => loadLists(['channels', 'rooms', 'members'], true),
+  });
+
   const failedLists = (Object.keys(listErrors) as Array<'channels' | 'rooms' | 'members'>).filter((k) => listErrors[k]);
   const retryFailedLists = () => void loadLists(failedLists);
 
@@ -334,6 +342,15 @@ export function StudyGroupDetail() {
       cancelled = true;
     };
   }, [groupId]);
+
+  useLiveCollectionRefresh({
+    enabled: !!groupId,
+    watchPaths: ['/groups/'],
+    onRefresh: async () => {
+      if (!groupId) return;
+      try { setGroup(await getGroup(groupId)); } catch { /* list error is handled by the initial load */ }
+    },
+  });
 
   // Live-syncs Channels/Study Rooms as other Group members create/rename/edit them, on top of
   // the REST load above (see useGroupTableRealtime.ts). Both hydrate every INSERT/UPDATE via
@@ -776,7 +793,10 @@ export function StudyGroupDetail() {
         if (cancelled || activeChannelRef.current !== channelId) return;
         // Backend returns newest-first; reverse for standard oldest-to-newest chat display.
         const newMessages = [...res.items].reverse();
-        setMessages(newMessages);
+        setMessages((prev) => {
+          const ids = new Set(newMessages.map((m) => m.id));
+          return [...newMessages, ...prev.filter((m) => !ids.has(m.id))];
+        });
         chatCache.set(conversationId, newMessages);
       })
       .catch((err) => {

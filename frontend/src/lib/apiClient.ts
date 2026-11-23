@@ -3,6 +3,7 @@
  */
 import { USE_MOCK } from '../mocks/config';
 import { mockApiRequest } from '../mocks/api';
+import { emitDataChange } from './dataChange';
 
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL ?? '';
 
@@ -156,6 +157,7 @@ async function request<T>(path: string, options: RequestOptions = {}): Promise<T
           : response.statusText;
       throw new ApiError(response.status, message, data);
     }
+    if (method !== 'GET' && !keepalive) emitDataChange({ path, method });
     return data as T;
   }
 }

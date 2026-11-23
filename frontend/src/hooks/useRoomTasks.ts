@@ -4,6 +4,7 @@ import { USE_MOCK } from '../mocks/config';
 import { createRoomTask, deleteRoomTask, listRoomTasks, updateRoomTask } from '../lib/roomTask.api';
 import type { RoomTask, RoomTaskStatus } from '../lib/roomTask.api';
 import { playCheer } from '../utils/cheerSounds';
+import { useLiveCollectionRefresh } from './useLiveCollectionRefresh';
 
 interface ClapPayload {
   task_id: string;
@@ -30,17 +31,20 @@ export function useRoomTasks(roomId: string | null, currentUserId: string | null
   const [clapPulse, setClapPulse] = useState<Record<string, number>>({});
   const channelRef = useRef<ReturnType<typeof supabase.channel> | null>(null);
   const lastClapSentRef = useRef(0);
+  const listSequence = useRef(0);
 
   const reload = useCallback(async () => {
     if (!roomId) return;
+    const sequence = ++listSequence.current;
     try {
       const data = await listRoomTasks(roomId);
+      if (sequence !== listSequence.current) return;
       setTasks(data);
       setError(null);
     } catch {
-      setError('Không tải được danh sách việc của phòng.');
+      if (sequence === listSequence.current) setError('Không tải được danh sách việc của phòng.');
     } finally {
-      setIsLoading(false);
+      if (sequence === listSequence.current) setIsLoading(false);
     }
   }, [roomId]);
 
@@ -49,7 +53,14 @@ export function useRoomTasks(roomId: string | null, currentUserId: string | null
     setClaps({});
     setIsLoading(true);
     void reload();
+    return () => { listSequence.current += 1; };
   }, [reload]);
+
+  useLiveCollectionRefresh({
+    enabled: !!roomId,
+    watchPaths: [roomId ? '/study-rooms/' + roomId + '/tasks' : ''],
+    onRefresh: reload,
+  });
 
   const registerClap = useCallback((taskId: string, style: string | undefined) => {
     setClaps((prev) => ({ ...prev, [taskId]: (prev[taskId] ?? 0) + 1 }));
@@ -90,6 +101,7 @@ export function useRoomTasks(roomId: string | null, currentUserId: string | null
       if (!trimmed) return;
       try {
         const created = await createRoomTask(roomId, trimmed);
+        ++listSequence.current;
         setTasks((prev) => (prev.some((t) => t.id === created.id) ? prev : [...prev, created]));
       } catch {
         setError('Không thêm được việc. Thử lại nhé.');
@@ -102,6 +114,7 @@ export function useRoomTasks(roomId: string | null, currentUserId: string | null
   const setStatus = useCallback(
     async (taskId: string, status: RoomTaskStatus) => {
       if (!roomId || !currentUserId) return;
+      ++listSequence.current;
       setTasks((prev) =>
         prev.map((t) => {
           if (t.id === taskId) return { ...t, status, done_at: status === 'done' ? new Date().toISOString() : null };
@@ -112,6 +125,7 @@ export function useRoomTasks(roomId: string | null, currentUserId: string | null
       );
       try {
         const updated = await updateRoomTask(roomId, taskId, { status });
+        ++listSequence.current;
         setTasks((prev) => prev.map((t) => (t.id === updated.id ? updated : t)));
       } catch {
         setError('Không cập nhật được. Đang tải lại.');
@@ -124,6 +138,7 @@ export function useRoomTasks(roomId: string | null, currentUserId: string | null
   const removeTask = useCallback(
     async (taskId: string) => {
       if (!roomId) return;
+      ++listSequence.current;
       setTasks((prev) => prev.filter((t) => t.id !== taskId));
       try {
         await deleteRoomTask(roomId, taskId);

@@ -4,6 +4,7 @@ import { supabase } from '../lib/supabase';
 import * as notificationApi from '../lib/notification.api';
 import { playNotificationChime } from '../utils/sound';
 import { USE_MOCK } from '../mocks/config';
+import { useLiveCollectionRefresh } from '../hooks/useLiveCollectionRefresh';
 import type {
   NotificationCategory,
   NotificationItem,
@@ -87,6 +88,18 @@ export const NotificationProvider: React.FC<{ children: React.ReactNode }> = ({ 
     }
   }, [isLoggedIn, fetchUnreadCounts, fetchNotifications]);
 
+  useLiveCollectionRefresh({
+    enabled: isLoggedIn,
+    watchPaths: ['/notifications'],
+    onRefresh: async () => {
+      await Promise.all([
+        fetchUnreadCounts(),
+        fetchNotifications(activeCategory === 'all' ? undefined : activeCategory),
+      ]);
+    },
+    intervalMs: 30000,
+  });
+
   // Realtime subscription via Supabase with detailed debugging logs
   useEffect(() => {
     if (USE_MOCK) return;
@@ -122,11 +135,7 @@ export const NotificationProvider: React.FC<{ children: React.ReactNode }> = ({ 
               console.log('[RealtimeNoti] 📦 Fetched latest notification item:', newItem);
               setNotifications((prev) => [newItem, ...prev.filter((n) => n.id !== newItem.id)]);
               const cat = newItem.category || 'forum';
-              setUnreadCounts((prev) => ({
-                ...prev,
-                total: prev.total + 1,
-                ...(isCountableCategory(cat) ? { [cat]: (prev[cat] || 0) + 1 } : {}),
-              }));
+              void fetchUnreadCounts();
 
               // Play notification sound if enabled in settings
               void notificationApi
@@ -145,7 +154,7 @@ export const NotificationProvider: React.FC<{ children: React.ReactNode }> = ({ 
             }
           } catch (err) {
             console.error('[RealtimeNoti] ❌ Failed to fetch latest notification on realtime trigger:', err);
-            setUnreadCounts((prev) => ({ ...prev, total: prev.total + 1 }));
+            void fetchUnreadCounts();
             playNotificationChime();
           }
         }
@@ -161,7 +170,7 @@ export const NotificationProvider: React.FC<{ children: React.ReactNode }> = ({ 
       console.log(`[RealtimeNoti] 🔌 Cleaning up Realtime channel for user: ${userId}`);
       supabase.removeChannel(channel);
     };
-  }, [isLoggedIn, currentUser?.id]);
+  }, [isLoggedIn, currentUser?.id, fetchUnreadCounts]);
 
   // Optimistic Mark Single Item Read
   const markAsRead = useCallback(

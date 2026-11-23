@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useLiveCollectionRefresh } from '../../hooks/useLiveCollectionRefresh';
 import type { ReactNode } from 'react';
 import { CalendarDays, Check, ListChecks, LoaderCircle, Maximize2, Minus, Plus, RotateCcw, Sparkles, StickyNote, X } from 'lucide-react';
 import { WorkspaceTabs } from '../../components/groups/WorkspaceTabs';
@@ -165,16 +166,21 @@ export function TaskFlowBoard({ groupId, notesHeader }: { groupId: string; notes
   const completed = tasks.filter(task => task.done);
   const button: React.CSSProperties = { height: 30, minWidth: 30, display: 'grid', placeItems: 'center', border: '1px solid #CBD5E1', borderRadius: 7, background: 'white', color: '#334155', cursor: 'pointer' };
 
+  const listSequence = useRef(0);
   const reload = useCallback(async () => {
     if (!groupId) return;
+    const sequence = ++listSequence.current;
     try {
-      setTasks(await listGroupTasks(groupId));
+      const data = await listGroupTasks(groupId);
+      if (sequence !== listSequence.current) return;
+      setTasks(data);
       setError(null);
     } catch (err) {
+      if (sequence !== listSequence.current) return;
       console.error('Failed to load group tasks', err);
       setError('Không tải được bảng nhiệm vụ nhóm.');
     } finally {
-      setLoading(false);
+      if (sequence === listSequence.current) setLoading(false);
     }
   }, [groupId]);
 
@@ -182,7 +188,15 @@ export function TaskFlowBoard({ groupId, notesHeader }: { groupId: string; notes
     setLoading(true);
     setTasks([]);
     void reload();
+    return () => { listSequence.current += 1; };
   }, [reload]);
+  useLiveCollectionRefresh({
+    enabled: !!groupId,
+    table: 'group_tasks',
+    filter: groupId ? 'group_id=eq.' + groupId : undefined,
+    watchPaths: ['/groups/', '/group-tasks/'],
+    onRefresh: reload,
+  });
 
   useEffect(() => {
     const canvas = canvasRef.current;
@@ -206,9 +220,10 @@ export function TaskFlowBoard({ groupId, notesHeader }: { groupId: string; notes
 
   /** Optimistic local update; on failure re-sync from the server so the board never drifts. */
   const patchTask = (taskId: string, changes: GroupTaskUpdate) => {
+    ++listSequence.current;
     setTasks(current => current.map(task => task.id === taskId ? { ...task, ...changes } : task));
     updateGroupTask(groupId, taskId, changes)
-      .then(saved => setTasks(current => current.map(task => task.id === saved.id ? saved : task)))
+      .then(saved => { ++listSequence.current; setTasks(current => current.map(task => task.id === saved.id ? saved : task)); })
       .catch(err => {
         console.error('Failed to update group task', err);
         setError('Không lưu được thay đổi, đã tải lại bảng.');
@@ -222,7 +237,8 @@ export function TaskFlowBoard({ groupId, notesHeader }: { groupId: string; notes
     setChildTitle(''); setChildDraftId(undefined);
     try {
       const created = await createGroupTask(groupId, { title: trimmed, parent_id: parentTaskId });
-      setTasks(current => [...current, created]);
+      ++listSequence.current;
+      setTasks(current => current.some(t => t.id === created.id) ? current : [...current, created]);
       setError(null);
     } catch (err) {
       console.error('Failed to create child task', err);
@@ -238,7 +254,8 @@ export function TaskFlowBoard({ groupId, notesHeader }: { groupId: string; notes
     setTitle(''); setDueDate('');
     try {
       const created = await createGroupTask(groupId, draft);
-      setTasks(current => [...current, created]);
+      ++listSequence.current;
+      setTasks(current => current.some(t => t.id === created.id) ? current : [...current, created]);
       setError(null);
     } catch (err) {
       console.error('Failed to create group task', err);
@@ -251,6 +268,7 @@ export function TaskFlowBoard({ groupId, notesHeader }: { groupId: string; notes
   const moveTask = (taskId: string, position: { x: number; y: number }) => patchTask(taskId, { position });
   const removeTask = (taskId: string) => {
     const removed = subtreeIds(tasks, taskId);
+    ++listSequence.current;
     setTasks(current => current.filter(task => !removed.has(task.id)));
     deleteGroupTask(groupId, taskId).catch(err => {
       console.error('Failed to delete group task', err);
