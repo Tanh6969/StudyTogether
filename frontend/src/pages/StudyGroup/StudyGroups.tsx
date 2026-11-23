@@ -7,7 +7,7 @@ import { getGroups, getMyGroups, createGroup, joinGroup, getMemberCounts, getMyM
 import { ApiError } from '../../lib/apiClient';
 import { useLiveCollectionRefresh } from '../../hooks/useLiveCollectionRefresh';
 import { JoinByCodeModal } from '../../components/invitations/JoinByCodeModal';
-import type { Group, GroupMember, GroupMemberRole, GroupStreak } from '../../lib/group.types';
+import type { Group, GroupMember, GroupMemberRole, GroupStreak, MemberStatus } from '../../lib/group.types';
 import { getAvatarInitials, getAvatarColor } from '../../utils/avatarUtils';
 import { StudyGroupCardSkeleton } from '../../components/ui/Skeleton';
 import { RestrictionBanner } from '../../components/ui/RestrictionBanner';
@@ -16,6 +16,7 @@ interface GroupWithMembership {
     group: Group;
     activeMembersCount: number;
     isMember: boolean;
+    membershipStatus: MemberStatus | null;
     role: GroupMemberRole | null;
 }
 
@@ -330,8 +331,10 @@ export function StudyRooms() {
                 return {
                     group,
                     activeMembersCount: memberCountsObj[group.id] || 0,
-                    isMember: !!mine,
-                    role: mine?.role ?? null,
+                    // A retained left/banned row is history, NOT active membership.
+                    isMember: mine?.status === 'active',
+                    membershipStatus: mine?.status ?? null,
+                    role: mine?.status === 'active' ? mine.role : null,
                 };
             });
 
@@ -368,7 +371,7 @@ export function StudyRooms() {
             ++loadSequence.current;
             setGroupToJoin(null);
             setGroups((current) => current?.map((item) => item.group.id === groupToJoin.id
-              ? { ...item, isMember: true, role: 'member', activeMembersCount: item.activeMembersCount + 1 }
+              ? { ...item, isMember: true, membershipStatus: 'active', role: 'member', activeMembersCount: item.activeMembersCount + 1 }
               : item) ?? null);
             void loadGroups(true);
         } catch (err) {
@@ -564,17 +567,20 @@ export function StudyRooms() {
                     />
                     {isDiscoverOpen && (
                         <CardSlider label={searchQuery ? 'Kết quả tìm kiếm nhóm học' : 'Khám phá nhóm học'}>
-                            {discoverGroups.map(({ group, activeMembersCount }) => (
+                            {discoverGroups.map(({ group, activeMembersCount, membershipStatus }) => (
                                 <GroupCard
                                     key={group.id}
                                     group={group}
                                     activeMembersCount={activeMembersCount}
                                     badge={
                                         <span className={`${CARD_BADGE_CLASSES} border-slate-200 bg-[#F8F9FF] text-[#757682]`}>
-                                            {group.is_public ? 'Công khai' : 'Riêng tư'}
+                                            {membershipStatus === 'banned' ? 'Bị cấm' : group.is_public ? 'Công khai' : 'Riêng tư'}
                                         </span>
                                     }
                                     action={
+                                        membershipStatus === 'banned' ? (
+                                            <span className="text-xs font-semibold text-red-600">Đã bị cấm</span>
+                                        ) : (
                                         <div
                                             onClick={() => { if (joinGroupBan) return; setJoinActionError(null); setGroupToJoin(group); }}
                                             title={joinGroupBan ? 'Bạn đang bị hạn chế tham gia nhóm học tập' : undefined}
@@ -584,6 +590,7 @@ export function StudyRooms() {
                                         >
                                             <span className="flex items-center gap-1 sm:gap-1.5"><Users className="h-3.5 w-3.5 sm:h-4 sm:w-4" /> Tham gia</span>
                                         </div>
+                                        )
                                     }
                                 />
                             ))}

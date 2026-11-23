@@ -43,13 +43,14 @@ import { NotesStackPanel } from './NotesStackPanel';
 import { TaskFlowBoard } from './TaskFlowBoard';
 import { WorkspaceTabs, HeaderIconButton } from '../../components/groups/WorkspaceTabs';
 import { ApiError } from '../../lib/apiClient';
-import { deleteGroup, getGroup, listGroupMembers, leaveGroup, leaveGroupAsOwner, removeMember, updateMemberRole } from '../../lib/group.api';
+import { deleteGroup, getGroup, getMyMemberships, listGroupMembers, leaveGroup, leaveGroupAsOwner, removeMember, updateMemberRole } from '../../lib/group.api';
 import { InviteModal } from '../../components/invitations/InviteModal';
 import { GroupStreakStrip } from '../../components/groups/GroupStreakStrip';
 import { FramedAvatar } from '../../components/ui/FramedAvatar';
 import { JoinByCodeModal } from '../../components/invitations/JoinByCodeModal';
 import { GroupSettingsModal } from '../../components/groups/GroupSettingsModal';
 import { GroupMembersPanel } from '../../components/groups/GroupMembersPanel';
+import { GroupAccessNotice } from '../../components/groups/GroupAccessNotice';
 import { OwnerLeaveModal } from '../../components/groups/OwnerLeaveModal';
 import { createChannel, deleteChannel, getChannel, listChannelMembers, listChannelsByGroup, removeChannelMember } from '../../lib/channel.api';
 import { createStudyRoom, deleteStudyRoom, getStudyRoom, listStudyRoomsByGroup } from '../../lib/studyRoom.api';
@@ -284,7 +285,20 @@ export function StudyGroupDetail() {
             .then((data) => {
               if (!stale('members')) setGroupMembers(data);
             })
-            .catch((err) => {
+            .catch(async (err) => {
+              if (stale('members')) return;
+              if (err instanceof ApiError && err.status === 403 && currentUserId) {
+                // Private groups hide their roster from former members. Inspect the
+                // caller's own historical membership to distinguish left/banned/kicked
+                // from a transient error, without exposing the private member roster.
+                try {
+                  const mine = await getMyMemberships();
+                  if (!stale('members')) setGroupMembers(mine.filter((m) => m.group_id === groupId));
+                  return;
+                } catch {
+                  // Membership lookup also failed: show retry, never assume access.
+                }
+              }
               if (!stale('members')) setListErrors((prev) => ({ ...prev, members: message(err, 'Không tải được danh sách thành viên.') }));
             })
             .finally(() => {
@@ -294,7 +308,7 @@ export function StudyGroupDetail() {
       }
       await Promise.all(jobs);
     },
-    [groupId]
+    [groupId, currentUserId]
   );
   const loadListsRef = useRef(loadLists);
   loadListsRef.current = loadLists;
@@ -402,14 +416,15 @@ export function StudyGroupDetail() {
   });
 
   const activeMembers = groupMembers.filter((m) => m.status === 'active');
-  const isOwner = !!group && !!currentUserId && group.owner_id === currentUserId;
+  const isActiveMember = !!currentUserId && activeMembers.some((m) => m.user_id === currentUserId);
+  const ownMembership = groupMembers.find((m) => m.user_id === currentUserId);
+  const isOwner = !!group && isActiveMember && group.owner_id === currentUserId;
   // Backend rule (POST /channels/ and POST /study-rooms/, both via is_group_manager): only
   // the group owner or an active moderator may create a channel or a study room -- a plain
   // member cannot (changed 2026-08-18: study room creation used to be open to any active
   // member, see STUDY_PLATFORM_DATABASE_SPEC.md §16).
   const isGroupManager =
     isOwner || (!!currentUserId && activeMembers.some((m) => m.user_id === currentUserId && m.role === 'moderator'));
-  const isActiveMember = !!currentUserId && activeMembers.some((m) => m.user_id === currentUserId);
   // Room authority (lib/roomPermissions.ts): settings / delete belong to the group owner and the
   // room's host; invitations to owner, host and group moderators. UX-only -- the backend
   // re-checks (study_room_router / invitation_router).
@@ -1136,6 +1151,24 @@ export function StudyGroupDetail() {
           Quay lại danh sách nhóm
         </button>
       </div>
+    );
+  }
+
+  // A bookmarked group URL may remain open after leave, kick, or ban in another tab.
+  // Never render the full workspace as though a historical row still grants access.
+  // A member-list request error must not be mistaken for a revoked membership.
+  if (!isMembersLoading && (!currentUserId || listErrors.members || !isActiveMember)) {
+    const reason = !currentUserId ? 'visitor'
+      : listErrors.members ? 'error'
+      : ownMembership?.status === 'banned' ? 'banned'
+      : ownMembership?.status === 'left' ? 'left'
+      : 'visitor';
+    return (
+      <GroupAccessNotice
+        reason={reason}
+        onBack={() => navigate('/groups')}
+        onRetry={() => void loadLists(['members'])}
+      />
     );
   }
 

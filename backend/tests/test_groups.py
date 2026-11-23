@@ -804,3 +804,82 @@ async def test_owner_leave_forbidden_for_non_owner(async_client, monkeypatch, as
     )
     assert response.status_code == 403
 
+
+
+# --- Group membership lifecycle: regression tests for exited accounts ---
+
+
+async def test_rejoin_left_group_membership_preserves_history_and_resets_role(async_client, monkeypatch, as_fake_user):
+    group = _make_group(is_public=True)
+    old_member = _group_member(group.id, as_fake_user.id, role=GroupMemberRole.MODERATOR, status=MemberStatus.LEFT)
+    monkeypatch.setattr(group_router.service, "get_by_id", AsyncMock(return_value=group))
+    monkeypatch.setattr(group_router.service, "get_member", AsyncMock(return_value=old_member))
+    add_member = AsyncMock()
+    monkeypatch.setattr(group_router.service, "add_member", add_member)
+
+    response = await async_client.post(f"/groups/{group.id}/members", json={}, headers=AUTH_HEADERS)
+
+    assert response.status_code == 201
+    assert response.json()["id"] == str(old_member.id)
+    assert response.json()["status"] == "active"
+    assert response.json()["role"] == "member"
+    add_member.assert_not_awaited()
+
+
+async def test_rejoin_banned_member_is_denied(async_client, monkeypatch, as_fake_user):
+    group = _make_group()
+    banned = _group_member(group.id, as_fake_user.id, status=MemberStatus.BANNED)
+    monkeypatch.setattr(group_router.service, "get_by_id", AsyncMock(return_value=group))
+    monkeypatch.setattr(group_router.service, "get_member", AsyncMock(return_value=banned))
+
+    response = await async_client.post(f"/groups/{group.id}/members", json={}, headers=AUTH_HEADERS)
+
+    assert response.status_code == 403
+    assert banned.status == MemberStatus.BANNED
+
+
+async def test_banned_member_cannot_leave_to_clear_ban(async_client, monkeypatch, as_fake_user):
+    group = _make_group()
+    banned = _group_member(group.id, as_fake_user.id, status=MemberStatus.BANNED)
+    monkeypatch.setattr(group_router.service, "get_by_id", AsyncMock(return_value=group))
+    monkeypatch.setattr(group_router.service, "get_member", AsyncMock(return_value=banned))
+    update_status = AsyncMock()
+    monkeypatch.setattr(group_router.service, "update_member_status", update_status)
+
+    response = await async_client.put(
+        f"/groups/{group.id}/members/{as_fake_user.id}/status",
+        params={"member_status": "left"}, headers=AUTH_HEADERS
+    )
+
+    assert response.status_code == 403
+    update_status.assert_not_awaited()
+
+
+async def test_group_manager_can_restore_a_left_member_as_plain_member(async_client, monkeypatch, as_fake_user):
+    group = _make_group(is_public=False, owner_id=as_fake_user.id)
+    invited_user_id = uuid.uuid4()
+    left_member = _group_member(group.id, invited_user_id, role=GroupMemberRole.MODERATOR, status=MemberStatus.LEFT)
+    monkeypatch.setattr(group_router.service, "get_by_id", AsyncMock(return_value=group))
+    monkeypatch.setattr(group_router.service, "get_member", AsyncMock(return_value=left_member))
+    monkeypatch.setattr(
+        permissions.groups_service, "get_member",
+        AsyncMock(return_value=_group_member(group.id, as_fake_user.id, role=GroupMemberRole.OWNER))
+    )
+    response = await async_client.post(
+        f"/groups/{group.id}/members", json={"user_id": str(invited_user_id)}, headers=AUTH_HEADERS
+    )
+    assert response.status_code == 201
+    assert response.json()["role"] == "member"
+    assert response.json()["status"] == "active"
+
+
+async def test_invitation_rejoin_reactivates_only_plain_member_role(monkeypatch):
+    from app.invitations.routers import invitation_router
+    group = _make_group()
+    participant_id = uuid.uuid4()
+    old_member = _group_member(group.id, participant_id, role=GroupMemberRole.MODERATOR, status=MemberStatus.LEFT)
+    monkeypatch.setattr(invitation_router.groups_service, "get_member", AsyncMock(return_value=old_member))
+    result = await invitation_router._join_target(_fake_session(), "group", group, participant_id)
+    assert result == "reactivated"
+    assert old_member.role == GroupMemberRole.MEMBER
+    assert old_member.status == MemberStatus.ACTIVE
