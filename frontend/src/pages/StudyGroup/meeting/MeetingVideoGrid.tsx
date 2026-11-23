@@ -1,15 +1,16 @@
-import { useMemo } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { FramedAvatar } from '../../../components/ui/FramedAvatar';
 import type { ReactNode } from 'react';
 import { Track } from 'livekit-client';
 import { isTrackReference, useParticipants, useTracks, VideoTrack } from '@livekit/components-react';
 import type { TrackReference } from '@livekit/components-react';
-import { AlertTriangle, Loader2, Mic, MicOff, ScreenShare, VideoOff } from 'lucide-react';
+import { AlertTriangle, Loader2, Mic, MicOff, ScreenShare, VideoOff, MoreVertical, UserX } from 'lucide-react';
 import type { StudyRoomMember } from '../../../lib/studyRoom.types';
 import { getAvatarColor, getAvatarInitials } from '../../../utils/avatarUtils';
 import { getDisplayName } from '../../../utils/userDisplay';
 import { useMeetingContext } from './MeetingContext';
 import { useIsMobile } from '../../../hooks/useIsMobile';
+import { canActOn, RoomRank } from '../../../lib/roomPermissions';
 
 interface MeetingStatusMessageProps {
   icon: ReactNode;
@@ -45,9 +46,12 @@ interface MeetingVideoGridProps {
    * a UX shortcut only; the backend still independently rejects the token request either way. */
   unavailableReason?: string;
   onRetryMembership?: () => void;
+  /** UI permission hints; the API re-verifies rank and current room membership. */
+  rankOf?: (userId: string) => RoomRank;
+  onModerate?: (userId: string, action: 'mute' | 'kick') => Promise<void>;
 }
 
-export function MeetingVideoGrid({ members, currentUserId, currentUserName, currentUserAvatarUrl, unavailableReason, onRetryMembership }: MeetingVideoGridProps) {
+export function MeetingVideoGrid({ members, currentUserId, currentUserName, currentUserAvatarUrl, unavailableReason, onRetryMembership, rankOf, onModerate }: MeetingVideoGridProps) {
   const { status, error, retry, connected, liveKitError, transferred } = useMeetingContext();
 
   if (transferred) {
@@ -107,12 +111,19 @@ export function MeetingVideoGrid({ members, currentUserId, currentUserName, curr
       currentUserId={currentUserId}
       currentUserName={currentUserName}
       currentUserAvatarUrl={currentUserAvatarUrl}
+      rankOf={rankOf}
+      onModerate={onModerate}
     />
   );
 }
 
-function ConnectedGrid({ members, currentUserId, currentUserName, currentUserAvatarUrl }: Omit<MeetingVideoGridProps, 'unavailableReason'>) {
+function ConnectedGrid({ members, currentUserId, currentUserName, currentUserAvatarUrl, rankOf, onModerate }: Omit<MeetingVideoGridProps, 'unavailableReason'>) {
   const isMobile = useIsMobile();
+  const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [confirmKick, setConfirmKick] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [moderationError, setModerationError] = useState<string | null>(null);
+  const [moderationNotice, setModerationNotice] = useState<string | null>(null);
   const participants = useParticipants();
   const cameraTrackRefs = useTracks([Track.Source.Camera], { onlySubscribed: false });
   // Screen-share tracks are identified via LiveKit's own `Track.Source.ScreenShare`, never by
@@ -135,6 +146,39 @@ function ConnectedGrid({ members, currentUserId, currentUserName, currentUserAva
 
   const memberByUserId = useMemo(() => new Map(members.map((m) => [m.user_id, m])), [members]);
   const participantByIdentity = useMemo(() => new Map(participants.map((p) => [p.identity, p])), [participants]);
+  const selectedParticipant = selectedId ? participantByIdentity.get(selectedId) : null;
+  const selectedMember = selectedId ? memberByUserId.get(selectedId) : null;
+  const canModerateSelected = !!selectedMember && !selectedMember.left_at && !!selectedId && selectedId !== currentUserId && !!rankOf && !!currentUserId && canActOn(rankOf(currentUserId), rankOf(selectedId));
+  useEffect(() => {
+    if (!selectedId || busy) return;
+    const onEscape = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') { setSelectedId(null); setConfirmKick(false); }
+    };
+    window.addEventListener('keydown', onEscape);
+    return () => window.removeEventListener('keydown', onEscape);
+  }, [selectedId, busy]);
+  useEffect(() => {
+    if (selectedId && (!selectedParticipant || !canModerateSelected) && !busy) {
+      setSelectedId(null);
+      setConfirmKick(false);
+    }
+  }, [selectedId, selectedParticipant, canModerateSelected, busy]);
+
+  const runModeration = async (action: 'mute' | 'kick') => {
+    if (!selectedId || !canModerateSelected || !onModerate || busy) return;
+    setBusy(true);
+    setModerationError(null);
+    try {
+      await onModerate(selectedId, action);
+      setModerationNotice(action === 'kick' ? 'Đã mời thành viên rời khỏi cuộc gọi.' : 'Đã gửi lệnh tắt micro.');
+      setSelectedId(null);
+      setConfirmKick(false);
+    } catch (error) {
+      setModerationError(error instanceof Error ? error.message : 'Không thể thực hiện thao tác. Vui lòng thử lại.');
+    } finally {
+      setBusy(false);
+    }
+  };
   const nameForIdentity = (identity: string) => {
     if (identity === currentUserId) return `${currentUserName} (Bạn)`;
     const member = memberByUserId.get(identity);
@@ -205,6 +249,7 @@ function ConnectedGrid({ members, currentUserId, currentUserName, currentUserAva
         const isCameraOn = !!cameraTrackRef && !cameraTrackRef.publication.isMuted;
         const isMicOn = p.isMicrophoneEnabled;
         const isHost = member?.role === 'host';
+        const showModeration = !isSelf && !!member && !member.left_at && !!onModerate && !!rankOf && !!currentUserId && canActOn(rankOf(currentUserId), rankOf(p.identity));
 
         return (
           <div
@@ -238,15 +283,59 @@ function ConnectedGrid({ members, currentUserId, currentUserName, currentUserAva
               {isHost && <span style={{ background: '#3B82F6', color: 'white', fontSize: 10, fontWeight: '700', padding: '2px 6px', borderRadius: 4 }}>HOST</span>}
             </div>
 
-            <div style={{ position: 'absolute', top: 12, right: 12, display: 'flex', gap: 6 }}>
+            <div style={{ position: 'absolute', top: 12, right: 12, display: 'flex', gap: 6, alignItems: 'center' }}>
               <div style={{ background: isMicOn ? '#10B981' : '#EF4444', color: 'white', padding: 6, borderRadius: '50%', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
                 {isMicOn ? <Mic size={16} /> : <MicOff size={16} />}
               </div>
+              {showModeration && (
+                <button type="button" aria-label={`Điều hành ${name}`} title={`Điều hành ${name}`}
+                  onClick={() => { setSelectedId(p.identity); setConfirmKick(false); setModerationError(null); setModerationNotice(null); }}
+                  style={{ display: 'flex', padding: 7, border: '1px solid #64748B', borderRadius: 8, background: '#1E293B', color: 'white', cursor: 'pointer' }}>
+                  <MoreVertical size={17} />
+                </button>
+              )}
             </div>
           </div>
         );
       })}
       </div>
+      {moderationNotice && (
+        <div role="status" style={{ color: '#BBF7D0', fontSize: 13, padding: 8 }}>
+          {moderationNotice}
+          <button type="button" onClick={() => setModerationNotice(null)} aria-label="Đóng thông báo" style={{ marginLeft: 12, color: 'white', background: 'none', border: 0, cursor: 'pointer' }}>×</button>
+        </div>
+      )}
+      {selectedParticipant && canModerateSelected && (
+        <div role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget && !busy) setSelectedId(null); }}
+          style={{ position: 'fixed', inset: 0, zIndex: 80, background: 'rgba(2, 6, 23, 0.78)', display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 16 }}>
+          <div role="dialog" aria-modal="true" aria-label="Điều hành thành viên" style={{ width: '100%', maxWidth: 380, background: '#1E293B', color: 'white', border: '1px solid #475569', padding: 20, borderRadius: 14, boxShadow: '0 16px 45px #020617' }}>
+            <div style={{ fontWeight: 700, marginBottom: 8, fontSize: 16 }}>
+              {confirmKick ? 'Xác nhận mời ra khỏi phòng' : 'Điều hành thành viên'}
+            </div>
+            <p style={{ color: '#CBD5E1', fontSize: 14, margin: '0 0 16px' }}>
+              {nameForIdentity(selectedParticipant.identity)}
+              {confirmKick ? ' sẽ bị ngắt khỏi cuộc gọi ngay lập tức.' : ' — thao tác chỉ áp dụng trong phòng học hiện tại.'}
+            </p>
+            {moderationError && <p role="alert" style={{ color: '#FCA5A5', fontSize: 13 }}>{moderationError}</p>}
+            {confirmKick ? (
+              <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8 }}>
+                <button type="button" disabled={busy} onClick={() => setConfirmKick(false)} style={moderationButtonStyle}>Quay lại</button>
+                <button type="button" disabled={busy} onClick={() => void runModeration('kick')} style={{ ...moderationButtonStyle, background: '#B91C1C' }}>{busy ? 'Đang xử lý…' : 'Mời ra khỏi phòng'}</button>
+              </div>
+            ) : (
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 9 }}>
+                <button type="button" disabled={busy || !selectedParticipant.isMicrophoneEnabled} onClick={() => void runModeration('mute')} style={{ ...moderationButtonStyle, opacity: selectedParticipant.isMicrophoneEnabled ? 1 : 0.55 }}>
+                  <MicOff size={16} /> {selectedParticipant.isMicrophoneEnabled ? 'Tắt micro của thành viên' : 'Micro đang tắt'}
+                </button>
+                <button type="button" disabled={busy} onClick={() => setConfirmKick(true)} style={{ ...moderationButtonStyle, background: '#7F1D1D' }}><UserX size={16} /> Mời ra khỏi phòng</button>
+                <button type="button" disabled={busy} onClick={() => setSelectedId(null)} style={{ ...moderationButtonStyle, background: 'transparent' }}>Đóng</button>
+              </div>
+            )}
+          </div>
+        </div>
+      )}
     </div>
   );
 }
+
+const moderationButtonStyle = { display: 'inline-flex', justifyContent: 'center', alignItems: 'center', gap: 8, borderRadius: 8, border: '1px solid #475569', background: '#334155', color: 'white', padding: '11px 12px', fontSize: 13, fontWeight: 600, cursor: 'pointer' } as const;

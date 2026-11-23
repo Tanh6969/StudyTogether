@@ -192,13 +192,13 @@ class LiveKitService:
                 )
             except ServerError as e:
                 if self._is_not_found(e):
-                    return True  # Not connected -- nothing exists to be in the wrong state.
+                    return not muted  # A mute cannot be confirmed without a published mic.
                 raise
             mic_track = next(
                 (track for track in participant.tracks if track.source == TrackSource.MICROPHONE), None
             )
             if mic_track is None:
-                return True  # No published mic track -- vacuously already "not transmitting".
+                return not muted  # No mic to mute. Never report a successful forced mute.
             if mic_track.muted == muted:
                 return True
             try:
@@ -209,20 +209,20 @@ class LiveKitService:
                 )
             except ServerError as e:
                 if self._is_not_found(e):
-                    return True
+                    return not muted
                 raise
-            return response.track.muted == muted
+            return bool(response.track) and response.track.muted == muted
 
-    async def mute_microphone(self, room_id: uuid.UUID, identity: uuid.UUID) -> None:
+    async def mute_microphone(self, room_id: uuid.UUID, identity: uuid.UUID) -> bool:
         """Force-mutes `identity`'s published microphone track in LiveKit -- the server-side
         counterpart of moderation MUTE. LiveKit always allows a server-initiated mute
         regardless of project configuration, so unlike `unmute_microphone` there is no
         "accepted but didn't actually take effect" case worth returning to the caller here.
 
         Idempotent: no active LiveKit session for this identity, no currently-published
-        microphone track, or a track that's already muted are all no-op successes -- there is
-        nothing left to mute in any of those cases."""
-        await self._set_microphone_muted(room_id, identity, muted=True)
+        microphone track, or a track that's already muted are safe no-ops; the former
+        returns False (not applied) and the latter True (already in the requested state)."""
+        return await self._set_microphone_muted(room_id, identity, muted=True)
 
     async def unmute_microphone(self, room_id: uuid.UUID, identity: uuid.UUID) -> bool:
         """Resumes transmission of `identity`'s already-published microphone track -- the

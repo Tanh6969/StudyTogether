@@ -81,6 +81,9 @@ export interface StudyRoomCreate {
 
 /** Mirrors RoomModerationActionResponse */
 export interface RoomModerationAction {
+  /** Audit persisted; this field separately confirms real LiveKit enforcement. */
+  media_enforcement?: 'applied' | 'failed' | 'not_applicable';
+  media_error?: string | null;
   id: string;
   room_id: string;
   moderator_id: string;

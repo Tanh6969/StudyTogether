@@ -110,7 +110,6 @@ export function StudyRoom() {
     whiteboardEditorIds,
     isCurrentUserMember,
     handRaisedUserIds,
-    moderationMutedUserIds,
     join,
     leave,
     deleteRoom,
@@ -159,7 +158,7 @@ export function StudyRoom() {
   const [callParticipants, setCallParticipants] = useState<ConnectedCallParticipant[]>([]);
   const handleCallParticipantsChange = useCallback((next: ConnectedCallParticipant[]) => {
     setCallParticipants((previous) =>
-      previous.length === next.length && previous.every((p, index) => p.identity === next[index].identity && p.name === next[index].name)
+      previous.length === next.length && previous.every((p, index) => p.identity === next[index].identity && p.name === next[index].name && p.isMicrophoneEnabled === next[index].isMicrophoneEnabled)
         ? previous : next
     );
   }, []);
@@ -180,6 +179,12 @@ export function StudyRoom() {
     void refetchRoom();
   }, [refetchMembers, refetchRoom]);
   const { isOnline } = useRoomConnectionWatch(resyncAfterResume);
+  // Keep the callback stable: a transient roster refresh must never remount the
+  // media provider or trigger an accidental reconnect.
+  const handleMediaSessionEnded = useCallback(() => {
+    void refetchRoom();
+    void refetchMembers();
+  }, [refetchRoom, refetchMembers]);
 
   // Membership ended while this page was in the call, without the user pressing
   // "Rời phòng": a passive disconnect closed by the server, or a kick.
@@ -326,11 +331,13 @@ export function StudyRoom() {
         cheerStyle: member?.user.cheer_style ?? 'clap',
         isHost: member?.role === 'host',
         isSelf,
-        isMuted: moderationMutedUserIds.has(callParticipant.identity),
+        // The audit records an attempted moderation action; the live track state
+        // is the only source of truth about whether audio is actually muted.
+        isMuted: !callParticipant.isMicrophoneEnabled,
         handRaised: isSelf ? currentUserHandRaised : handRaisedUserIds.has(callParticipant.identity),
       };
     });
-  }, [callParticipants, members, currentUserId, currentUser, moderationMutedUserIds, handRaisedUserIds, currentUserHandRaised]);
+  }, [callParticipants, members, currentUserId, currentUser, handRaisedUserIds, currentUserHandRaised]);
 
   // Hook must be called unconditionally, BEFORE loading/error early returns.
   // This is the connected media roster, not all stored members with left_at=NULL.
@@ -530,7 +537,7 @@ export function StudyRoom() {
       initialVideoEnabled={mediaChoice.videoEnabled}
       audioDeviceId={mediaChoice.audioDeviceId}
       videoDeviceId={mediaChoice.videoDeviceId}
-      onSessionEnded={refetchRoom}
+      onSessionEnded={handleMediaSessionEnded}
       onParticipantsChange={handleCallParticipantsChange}
     >
     <RoomActivitiesProvider
@@ -792,6 +799,8 @@ export function StudyRoom() {
               currentUserName={currentUser.name}
               currentUserAvatarUrl={currentUser.avatarUrl}
               onRetryMembership={refetchMembers}
+              rankOf={rankOf}
+              onModerate={(userId, action) => moderate(userId, action)}
             />
           </div>
         )}
