@@ -1,4 +1,4 @@
-import type { AuthError } from '@supabase/supabase-js';
+import type { AuthError, User } from '@supabase/supabase-js';
 import { supabase } from './supabase';
 
 /** Where Supabase should send users back to after clicking a signup confirmation link.
@@ -7,10 +7,26 @@ export function getEmailConfirmationRedirect(): string {
   return `${window.location.origin}/login`;
 }
 
+export const normalizeAuthEmail = (email: string) => email.trim().toLowerCase();
+
+export function validateRegistration(name: string, email: string, password: string, confirmation: string): string | null {
+  if (!name.trim() || name.trim().length > 120) return 'Vui lòng nhập họ và tên hợp lệ (tối đa 120 ký tự).';
+  if (email.length > 254 || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) return 'Địa chỉ email không hợp lệ.';
+  if (password.length < 8) return 'Mật khẩu phải có ít nhất 8 ký tự.';
+  if (new TextEncoder().encode(password).length > 72) return 'Mật khẩu quá dài (tối đa 72 byte).';
+  if (password !== confirmation) return 'Mật khẩu xác nhận không khớp.';
+  return null;
+}
+
+/** Supabase may return an obfuscated user with no identities for an existing confirmed email. */
+export function isDuplicateSignup(user: User | null): boolean {
+  return Array.isArray(user?.identities) && user.identities.length === 0;
+}
+
 export function resendSignupConfirmation(email: string) {
   return supabase.auth.resend({
     type: 'signup',
-    email,
+    email: normalizeAuthEmail(email),
     options: { emailRedirectTo: getEmailConfirmationRedirect() },
   });
 }
@@ -22,6 +38,15 @@ export function describeAuthError(err: AuthError): string {
     case 'over_email_send_rate_limit':
     case 'over_request_rate_limit':
       return 'Bạn đã yêu cầu gửi email quá nhiều lần. Vui lòng thử lại sau.';
+    case 'email_address_not_authorized':
+      return 'Hiện chưa thể gửi email xác nhận đến địa chỉ này. Vui lòng liên hệ bộ phận hỗ trợ.';
+    case 'signup_disabled':
+    case 'email_provider_disabled':
+      return 'Đăng ký bằng email hiện chưa khả dụng. Vui lòng thử lại sau.';
+    case 'same_password':
+      return 'Mật khẩu mới phải khác mật khẩu hiện tại.';
+    case 'otp_expired':
+      return 'Liên kết đã hết hạn. Vui lòng yêu cầu liên kết mới.';
     case 'email_address_invalid':
       return 'Địa chỉ email không hợp lệ.';
     case 'weak_password':
@@ -50,8 +75,8 @@ const AUTH_URL_ERROR_MESSAGE =
 export function readAuthUrlError(): string | null {
   const hash = window.location.hash.replace(/^#/, '');
   const search = window.location.search.replace(/^\?/, '');
-  const params = new URLSearchParams(hash || search);
-  if (!params.get('error') && !params.get('error_code')) return null;
+  const params = [new URLSearchParams(hash), new URLSearchParams(search)];
+  if (!params.some(p => p.has('error') || p.has('error_code'))) return null;
   return AUTH_URL_ERROR_MESSAGE;
 }
 

@@ -1,6 +1,7 @@
 import uuid
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.exc import IntegrityError
 
 from app.auth.dependencies import get_current_user
 from app.auth.dto.auth_dto import CurrentUser
@@ -53,12 +54,17 @@ async def create_profile(
         profile = await service.create(session, data)
         await session.commit()
         return profile
-    except Exception as e:
+    except IntegrityError as exc:
         await session.rollback()
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"Could not create profile: {str(e)}",
-        )
+        # A concurrent first login can insert the same profile in another request.
+        # Return the existing row without overwriting its data or privileges.
+        existing = await service.get_by_id(session, current_user.id)
+        if existing is not None:
+            return existing
+        raise HTTPException(status.HTTP_409_CONFLICT, "Profile data conflicts with an existing profile") from exc
+    except Exception as exc:
+        await session.rollback()
+        raise HTTPException(status.HTTP_500_INTERNAL_SERVER_ERROR, "Could not create profile") from exc
 
 
 @router.get("/{profile_id}", response_model=ProfileResponse)

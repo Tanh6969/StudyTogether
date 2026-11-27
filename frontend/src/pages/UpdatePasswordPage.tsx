@@ -2,12 +2,14 @@ import { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { Lock, ArrowRight, CheckCircle } from 'lucide-react';
 import { supabase } from '../lib/supabase';
+import { describeAuthError, readAuthUrlError } from '../lib/authFlow';
 import { useAuth } from '../hooks/useAuth';
 
 export function UpdatePasswordPage() {
   const navigate = useNavigate();
   const { isLoggedIn, loading } = useAuth();
   
+  const [invalidLink] = useState(() => Boolean(readAuthUrlError()));
   const [password, setPassword] = useState('');
   const [confirmPassword, setConfirmPassword] = useState('');
   const [error, setError] = useState<string | null>(null);
@@ -27,8 +29,13 @@ export function UpdatePasswordPage() {
       return;
     }
 
-    if (password.length < 6) {
-      setError('Mật khẩu phải có ít nhất 6 ký tự.');
+    if (new TextEncoder().encode(password).length > 72) {
+      setError('Mật khẩu quá dài (tối đa 72 byte).');
+      return;
+    }
+
+    if (password.length < 8) {
+      setError('Mật khẩu phải có ít nhất 8 ký tự.');
       return;
     }
 
@@ -41,7 +48,7 @@ export function UpdatePasswordPage() {
       });
 
       if (updateError) {
-        setError(updateError.message);
+        setError(describeAuthError(updateError));
       } else {
         setSuccess(true);
         // Redirect to login or home after a few seconds
@@ -60,7 +67,7 @@ export function UpdatePasswordPage() {
 
   // If we require the user to be logged in (which the reset link does by establishing a session)
   // If they are not logged in, maybe the link is invalid or expired.
-  if (!isLoggedIn && !success) {
+  if ((invalidLink || !isLoggedIn) && !success) {
     return (
       <div style={{minHeight: '100vh', width: '100%', background: '#F8FAFC', display: 'flex', justifyContent: 'center', alignItems: 'center', padding: 24}}>
         <div style={{textAlign: 'center', maxWidth: 400}}>

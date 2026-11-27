@@ -3,7 +3,7 @@ import { Link, useNavigate } from 'react-router-dom';
 import { Mail, Lock, ArrowRight } from 'lucide-react';
 import { supabase } from '../lib/supabase';
 import { useAuthContext } from '../contexts/auth-context';
-import { clearAuthUrlError, describeAuthError, readAuthUrlError, resendSignupConfirmation } from '../lib/authFlow';
+import { clearAuthUrlError, describeAuthError, readAuthUrlError, resendSignupConfirmation, normalizeAuthEmail } from '../lib/authFlow';
 import { useResendCooldown } from '../hooks/useResendCooldown';
 import type { AuthError, Session } from '@supabase/supabase-js';
 import { USE_MOCK, MOCK_PASSWORD } from '../mocks/config';
@@ -60,10 +60,11 @@ function describeSignInError(err: AuthError): string {
 
 export function LoginPage() {
   const navigate = useNavigate();
-  const { setDevSession } = useAuthContext();
+  const { setDevSession, session, loading } = useAuthContext();
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
-  const [error, setError] = useState<string | null>(null);
+  const [initialUrlError] = useState(readAuthUrlError);
+  const [error, setError] = useState<string | null>(initialUrlError);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [needsConfirmation, setNeedsConfirmation] = useState(false);
   const [isResending, setIsResending] = useState(false);
@@ -71,12 +72,12 @@ export function LoginPage() {
   const { cooldown: resendCooldown, start: startResendCooldown } = useResendCooldown();
 
   useEffect(() => {
-    const urlError = readAuthUrlError();
-    if (urlError) {
-      setError(urlError);
-      clearAuthUrlError();
-    }
-  }, []);
+    if (initialUrlError) clearAuthUrlError();
+  }, [initialUrlError]);
+
+  useEffect(() => {
+    if (!loading && session && !initialUrlError) navigate('/', { replace: true });
+  }, [loading, session, initialUrlError, navigate]);
 
   const handleLogin = (e: React.FormEvent) => {
     e.preventDefault();
@@ -109,7 +110,7 @@ export function LoginPage() {
         return;
       }
 
-      const { data, error: signInError } = await supabase.auth.signInWithPassword({ email, password });
+      const { data, error: signInError } = await supabase.auth.signInWithPassword({ email: normalizeAuthEmail(email), password });
 
       if (!signInError && data.session) {
         navigate('/');
@@ -117,16 +118,16 @@ export function LoginPage() {
       }
 
       if (signInError) {
-        if (!IS_SUPABASE_CONFIGURED) {
+        if (import.meta.env.DEV && !IS_SUPABASE_CONFIGURED) {
           setDevSession(createDevSession(email));
           navigate('/');
           return;
         }
         setError(describeSignInError(signInError));
-        setNeedsConfirmation(signInError.code === 'email_not_confirmed');
+        setNeedsConfirmation(signInError.code === 'email_not_confirmed' || signInError.message.includes('Email not confirmed'));
       }
     } catch (err) {
-      if (!IS_SUPABASE_CONFIGURED) {
+      if (import.meta.env.DEV && !IS_SUPABASE_CONFIGURED) {
         setDevSession(createDevSession(email));
         navigate('/');
         return;
@@ -139,7 +140,7 @@ export function LoginPage() {
   };
 
   const handleResend = async () => {
-    if (isResending || resendCooldown > 0) return;
+    if (isResending || isSubmitting || resendCooldown > 0) return;
     setIsResending(true);
     setResendInfo(null);
     try {
@@ -148,7 +149,7 @@ export function LoginPage() {
         console.error('resend confirmation error', resendError);
         setError(describeAuthError(resendError));
       } else {
-        setResendInfo('Đã gửi lại email xác nhận. Vui lòng kiểm tra hộp thư của bạn.');
+        setResendInfo('Yêu cầu gửi lại đã được tiếp nhận. Vui lòng kiểm tra hộp thư đến và thư rác.');
         startResendCooldown();
       }
     } catch (err) {
@@ -183,7 +184,9 @@ export function LoginPage() {
                   type="email"
                   required
                   value={email}
-                  onChange={e => setEmail(e.target.value)}
+                  onChange={e => { setEmail(e.target.value); setNeedsConfirmation(false); setResendInfo(null); setError(null); }}
+                  autoComplete="email"
+                  disabled={isSubmitting || isResending}
                   placeholder="nhapemail@example.com"
                   style={{width: '100%', padding: '12px 16px 12px 42px', background: '#F8FAFC', border: '1px solid #E2E8F0', borderRadius: 12, outline: 'none', fontSize: 15, color: '#0F172A', boxSizing: 'border-box', transition: 'border-color 0.2s'}}
                   onFocus={e => e.currentTarget.style.borderColor = '#3B82F6'}
@@ -201,6 +204,8 @@ export function LoginPage() {
                 <Lock size={18} color="#94A3B8" style={{position: 'absolute', left: 16, top: '50%', transform: 'translateY(-50%)'}} />
                 <input
                   type="password"
+                  autoComplete="current-password"
+                  disabled={isSubmitting}
                   required
                   value={password}
                   onChange={e => setPassword(e.target.value)}
@@ -213,17 +218,17 @@ export function LoginPage() {
             </div>
 
             {error && (
-              <p style={{color: '#EF4444', fontSize: 14, margin: 0}}>{error}</p>
+              <p role="alert" style={{color: '#EF4444', fontSize: 14, margin: 0}}>{error}</p>
             )}
             {resendInfo && (
               <p style={{color: '#16A34A', fontSize: 14, margin: 0}}>{resendInfo}</p>
             )}
 
-            {needsConfirmation && (
+            {(needsConfirmation || (initialUrlError && email.trim())) && (
               <button
                 type="button"
                 onClick={handleResend}
-                disabled={isResending || resendCooldown > 0}
+                disabled={isResending || isSubmitting || resendCooldown > 0}
                 style={{width: '100%', padding: '10px', background: 'transparent', color: '#00236F', border: '1px solid #CBD5E1', borderRadius: 12, fontSize: 14, fontWeight: '600', cursor: isResending || resendCooldown > 0 ? 'default' : 'pointer', opacity: isResending || resendCooldown > 0 ? 0.6 : 1}}
               >
                 {isResending
@@ -234,7 +239,7 @@ export function LoginPage() {
               </button>
             )}
 
-            <button type="submit" disabled={isSubmitting} style={{width: '100%', marginTop: 8, padding: '14px', background: '#00236F', color: 'white', border: 'none', borderRadius: 12, fontSize: 16, fontWeight: '600', cursor: isSubmitting ? 'default' : 'pointer', opacity: isSubmitting ? 0.7 : 1, display: 'flex', justifyContent: 'center', alignItems: 'center', gap: 8, transition: 'background 0.2s'}} onMouseOver={e => e.currentTarget.style.background = '#1E3A8A'} onMouseOut={e => e.currentTarget.style.background = '#00236F'}>
+            <button type="submit" disabled={isSubmitting || isResending} style={{width: '100%', marginTop: 8, padding: '14px', background: '#00236F', color: 'white', border: 'none', borderRadius: 12, fontSize: 16, fontWeight: '600', cursor: isSubmitting ? 'default' : 'pointer', opacity: isSubmitting ? 0.7 : 1, display: 'flex', justifyContent: 'center', alignItems: 'center', gap: 8, transition: 'background 0.2s'}} onMouseOver={e => e.currentTarget.style.background = '#1E3A8A'} onMouseOut={e => e.currentTarget.style.background = '#00236F'}>
               {isSubmitting ? 'Đang đăng nhập...' : 'Đăng nhập'}
               <ArrowRight size={18} />
             </button>
