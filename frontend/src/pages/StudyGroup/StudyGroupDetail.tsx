@@ -1711,7 +1711,7 @@ export function StudyGroupDetail() {
                     </div>
                 </div>
             ) : mainView === 'tasks' ? (
-                <TaskFlowBoard groupId={groupId ?? ""} notesHeader={notesHeader} />
+                <TaskFlowBoard key={groupId} groupId={groupId ?? ""} notesHeader={notesHeader} />
             ) : (
                 <div style={{flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column', background: 'white'}}>
                     <div style={{minHeight: 56, flexShrink: 0, padding: '0 16px 0 4px', borderBottom: '1px solid #E2E8F0', display: 'flex', alignItems: 'center', justifyContent: 'space-between', color: '#0F172A', fontSize: 15, fontWeight: '700', background: 'white'}}>

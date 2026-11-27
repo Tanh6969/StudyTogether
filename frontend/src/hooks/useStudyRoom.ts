@@ -78,6 +78,7 @@ export function useStudyRoom(roomId: string | undefined) {
   const memberRequestRevision = useRef(0);
   const sessionRequestRevision = useRef(0);
   const moderationRequestRevision = useRef(0);
+  const groupRequestRevision = useRef(0);
 
   const loadRoom = useCallback(async () => {
     const revision = ++roomRequestRevision.current;
@@ -106,10 +107,14 @@ export function useStudyRoom(roomId: string | undefined) {
   // network error is not evidence that a previously loaded room has disappeared.
   const refreshRoom = useCallback(async () => {
     if (!roomId) return;
+    const revision = ++roomRequestRevision.current;
     try {
-      setRoom(await getStudyRoom(roomId));
+      const data = await getStudyRoom(roomId);
+      if (revision !== roomRequestRevision.current) return;
+      setRoom(data);
       setRoomError(null);
     } catch (err) {
+      if (revision !== roomRequestRevision.current) return;
       if (err instanceof ApiError && (err.status === 403 || err.status === 404)) {
         setRoomError(toStudyRoomError(err));
         setRoom(null);
@@ -189,12 +194,15 @@ export function useStudyRoom(roomId: string | undefined) {
   const activeRoom = room?.id === roomId ? room : null;
   const groupId = activeRoom?.group_id ?? null;
   const loadGroupMembers = useCallback(async () => {
+    const revision = ++groupRequestRevision.current;
     if (!groupId || !isLoggedIn) return;
     try {
-      setGroupMembers(await listGroupMembers(groupId));
-    } catch {
-      // Non-critical for read access -- only used to decide which controls to show.
-      setGroupMembers([]);
+      const data = await listGroupMembers(groupId);
+      if (revision === groupRequestRevision.current) setGroupMembers(data);
+    } catch (err) {
+      if (revision !== groupRequestRevision.current) return;
+      if (err instanceof ApiError && [401, 403, 404].includes(err.status)) setGroupMembers([]);
+      else console.warn('[StudyRoom] Group role refresh failed; retaining confirmed roles', err);
     }
   }, [groupId, isLoggedIn]);
 
@@ -209,7 +217,9 @@ export function useStudyRoom(roomId: string | undefined) {
   }, [activeRoom?.id, loadMembers, loadSession]);
 
   useEffect(() => {
-    loadGroupMembers();
+    setGroupMembers([]);
+    void loadGroupMembers();
+    return () => { groupRequestRevision.current++; };
   }, [loadGroupMembers]);
 
   // `members` otherwise only refreshes after the current user's own join/leave/moderate
@@ -224,7 +234,8 @@ export function useStudyRoom(roomId: string | undefined) {
   const reconcileMembership = useCallback(() => {
     void loadMembers();
     void loadSession();
-  }, [loadMembers, loadSession]);
+    void loadGroupMembers();
+  }, [loadMembers, loadSession, loadGroupMembers]);
 
   useEffect(() => {
     if (!activeRoom) return;

@@ -2,10 +2,16 @@ import { apiClient } from './apiClient';
 import { supabase } from './supabase';
 import type { Group, GroupCreate, GroupMember, GroupMemberCreate, GroupMemberRole, GroupUpdate } from './group.types';
 
-export function getGroups(publicOnly: boolean, search?: string): Promise<Group[]> {
-  const query = new URLSearchParams({ public_only: String(publicOnly) });
-  if (search) query.set('search', search);
-  return apiClient.get<Group[]>(`/groups/?${query.toString()}`);
+export async function getGroups(publicOnly: boolean, search?: string): Promise<Group[]> {
+  const pageSize = 50;
+  const groups = new Map<string, Group>();
+  for (let skip = 0; ; skip += pageSize) {
+    const query = new URLSearchParams({ public_only: String(publicOnly), skip: String(skip), limit: String(pageSize) });
+    if (search?.trim()) query.set('search', search.trim());
+    const page = await apiClient.get<Group[]>(`/groups/?${query.toString()}`);
+    for (const group of page) groups.set(group.id, group);
+    if (page.length < pageSize) return [...groups.values()];
+  }
 }
 
 /** "My Groups": every Group the caller currently has an ACTIVE membership in, public or

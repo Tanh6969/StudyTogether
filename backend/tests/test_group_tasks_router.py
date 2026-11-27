@@ -291,3 +291,20 @@ async def test_apply_group_task_tree_adds_parent_and_child(async_client, session
     assert added[0].created_at < added[1].created_at
     # One roadmap = one lane on the board.
     assert added[0].roadmap_id is not None and added[0].roadmap_id == added[1].roadmap_id
+
+
+async def test_deadline_lifecycle_is_partial_update(async_client, session):
+    task = _task(notes=["keep"], done=True)
+    session.scalar.return_value = task
+    for value in ("2027-01-01", "2027-02-01", None):
+        response = await async_client.patch(
+            f"/groups/{GROUP_ID}/tasks/{task.id}", json={"due_date": value}, headers=AUTH_HEADERS
+        )
+        assert response.status_code == 200, response.text
+        assert response.json()["due_date"] == value
+        assert response.json()["done"] is True
+        assert response.json()["notes"] == ["keep"]
+    response = await async_client.patch(
+        f"/groups/{GROUP_ID}/tasks/{task.id}", json={"due_date": "not-date"}, headers=AUTH_HEADERS
+    )
+    assert response.status_code == 422

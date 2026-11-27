@@ -5,7 +5,7 @@
 import type { GroupTask } from '../../lib/groupTask.api';
 
 export const CARD_WIDTH = 250;
-const CARD_BASE_HEIGHT = 116; // header + status row + footer, before notes
+const CARD_BASE_HEIGHT = 142; // header + status row + footer, before notes
 export const HEADER_MID = 18;   // vertical centre of a card's title bar, where connectors attach
 const DEPTH_INDENT = 34; // each level below a phase shifts right by this much inside its column
 const ROW_GAP = 18;

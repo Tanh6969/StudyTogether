@@ -6,6 +6,7 @@ import { useMeetingContext } from './MeetingContext';
 const buttonBaseStyle = {
   width: 42,
   height: 42,
+  flexShrink: 0,
   borderRadius: '50%',
   border: 'none',
   color: 'white',

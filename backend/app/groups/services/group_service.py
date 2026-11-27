@@ -47,16 +47,16 @@ class GroupsService:
     async def list_all(self, session: AsyncSession, search: str | None = None, skip: int = 0, limit: int = 50) -> list[Group]:
         stmt = select(Group).options(selectinload(Group.streak))
         if search:
-            stmt = stmt.where(Group.name.ilike(f"%{search}%"))
-        stmt = stmt.offset(skip).limit(limit)
+            stmt = stmt.where(Group.name.icontains(search.strip(), autoescape=True))
+        stmt = stmt.order_by(Group.created_at.desc(), Group.id).offset(skip).limit(limit)
         result = await session.execute(stmt)
         return list(result.scalars().all())
 
     async def list_public(self, session: AsyncSession, search: str | None = None, skip: int = 0, limit: int = 50) -> list[Group]:
         stmt = select(Group).options(selectinload(Group.streak)).where(Group.is_public.is_(True))
         if search:
-            stmt = stmt.where(Group.name.ilike(f"%{search}%"))
-        stmt = stmt.offset(skip).limit(limit)
+            stmt = stmt.where(Group.name.icontains(search.strip(), autoescape=True))
+        stmt = stmt.order_by(Group.created_at.desc(), Group.id).offset(skip).limit(limit)
         result = await session.execute(stmt)
         return list(result.scalars().all())
 

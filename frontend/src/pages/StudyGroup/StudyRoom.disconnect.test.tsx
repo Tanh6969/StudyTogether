@@ -120,6 +120,19 @@ describe('StudyRoom: membership closed while in the call (phone passive disconne
     expect(screen.getByTestId('prejoin-lobby')).toBeInTheDocument();
   });
 
+  it('keeps the call workspace and toolbar mounted when the roster changes', async () => {
+    const view = await enterCall();
+    const toolbar = screen.getByLabelText('Thanh công cụ phòng học');
+    expect(toolbar).toHaveStyle({ flexShrink: 0 });
+    vi.mocked(useStudyRoom).mockReturnValue(hookResult(true, {
+      members: Array.from({ length: 20 }, (_, i) => ({ user_id: 'other-' + i, left_at: null })),
+    }));
+    view.rerender(page());
+    expect(screen.getByLabelText('Thanh công cụ phòng học')).toBe(toolbar);
+    expect(screen.getByTitle('Thoát phòng học')).toBeInTheDocument();
+    expect(screen.getByTestId('video-grid')).toBeInTheDocument();
+  });
+
   it('does not show the disconnected screen when the user leaves on purpose', async () => {
     let finishLeave: () => void = () => {};
     const leave = vi.fn(() => new Promise<void>((resolve) => { finishLeave = resolve; }));

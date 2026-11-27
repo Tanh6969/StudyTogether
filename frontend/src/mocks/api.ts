@@ -147,9 +147,13 @@ export async function mockApiRequest<T>(path: string, method: MockMethod, body?:
     result = [];
   } else if (route === '/groups' && method === 'GET') {
     const publicOnly = url.searchParams.get('public_only') !== 'false';
-    const search = (url.searchParams.get('search') ?? '').toLocaleLowerCase();
+    const search = (url.searchParams.get('search') ?? '').trim().toLowerCase();
+    const skip = Number(url.searchParams.get('skip') ?? 0);
+    const limit = Number(url.searchParams.get('limit') ?? 50);
     result = db.groups
-      .filter((group) => (!publicOnly || group.is_public) && group.name.toLocaleLowerCase().includes(search))
+      .filter((group) => (!publicOnly || group.is_public) && group.name.toLowerCase().includes(search))
+      .sort((a, b) => Date.parse(b.created_at) - Date.parse(a.created_at) || a.id.localeCompare(b.id))
+      .slice(skip, skip + limit)
       .map(groupWithStreak);
   } else if (route === '/groups/mine' && method === 'GET') {
     const myGroupIds = new Set(db.groupMembers.filter((member) => member.user_id === viewerId && member.status === 'active').map((member) => member.group_id));
