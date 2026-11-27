@@ -27,6 +27,10 @@ class Settings(BaseSettings):
     # Supabase for room membership/auth, without production schema changes.
     meeting_session_required: bool = False
     meeting_session_database_url: str | None = None
+    live_captions_enabled: bool = False
+    soniox_api_key: str | None = None
+    soniox_stt_model: str = "stt-rt-v6"
+    live_captions_terms: str = "StudyTogether, ITSS, HUST"
     cors_allowed_origins: str = "http://localhost:5173,http://localhost:5174,http://127.0.0.1:5173,http://127.0.0.1:5174"
 
     # Invitations
@@ -54,6 +58,10 @@ class Settings(BaseSettings):
     anthropic_api_key: str | None = None
     gemini_api_key: str | None = None
     gemini_model: str = "gemini-3.5-flash-lite"
+
+    @property
+    def live_captions_available(self) -> bool:
+        return self.live_captions_enabled and bool(self.soniox_api_key)
 
     @property
     def cors_origins(self) -> list[str]:

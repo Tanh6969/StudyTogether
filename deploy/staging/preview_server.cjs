@@ -3,6 +3,7 @@ const http = require('node:http');
 const fs = require('node:fs');
 const path = require('node:path');
 const { Readable } = require('node:stream');
+const { pipeline } = require('node:stream/promises');
 const crypto = require('node:crypto');
 
 // A private one-click link grants access only to the preview shell.
@@ -95,11 +96,15 @@ async function proxyAPI(req, res, url) {
     if (bytes > 24 * 1024 * 1024) return error(res,413,'Preview request too large');
     chunks.push(chunk);
   }
+  const abort = new AbortController();
+  const timer = setTimeout(() => abort.abort(), 30000);
+  const cancelUpstream = () => abort.abort();
+  res.once('close', cancelUpstream);
   try {
     const upstream = await fetch(target, {
       method: req.method, headers,
       body: chunks.length ? Buffer.concat(chunks) : undefined,
-      signal: AbortSignal.timeout(30000),
+      signal: abort.signal,
       redirect: 'manual'
     });
     const out = {'cache-control':'no-store','x-content-type-options':'nosniff'};
@@ -107,12 +112,25 @@ async function proxyAPI(req, res, url) {
       const value = upstream.headers.get(key);
       if (value) out[key] = value;
     }
+    const captionStream = upstream.ok
+      && req.method === 'GET'
+      && /^\/study-rooms\/[^/]+\/meeting\/captions$/.test(target.pathname)
+      && out['content-type']?.includes('application/x-ndjson');
+    if (captionStream) {
+      clearTimeout(timer);
+      out['cache-control'] = 'no-store, no-transform';
+    }
     res.writeHead(upstream.status, out);
-    if (upstream.body) Readable.fromWeb(upstream.body).pipe(res);
+    if (upstream.body) await pipeline(Readable.fromWeb(upstream.body), res);
     else res.end();
   } catch (err) {
+    if (res.destroyed) return;
     console.error('preview API proxy error:', err.message);
-    error(res,502,'Preview API unavailable');
+    if (res.headersSent) res.destroy();
+    else error(res,502,'Preview API unavailable');
+  } finally {
+    clearTimeout(timer);
+    res.off('close', cancelUpstream);
   }
 }
 const server = http.createServer(async (req,res) => {

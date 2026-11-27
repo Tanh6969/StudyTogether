@@ -1,7 +1,10 @@
+import json
 import logging
 import uuid
+from contextlib import aclosing
 from datetime import datetime
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi.responses import StreamingResponse
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -32,6 +35,7 @@ from app.groups.services.group_service import GroupsService
 from app.meetings.dto.meeting_dto import (
     MeetingTokenRequest, MeetingTokenResponse, MeetingSessionClaim, MeetingSessionStatus,
 )
+from app.meetings.services.live_caption_service import live_caption_service
 from app.meetings.services.meeting_session_service import meeting_session_service
 from app.meetings.services.livekit_service import LiveKitService
 from app.profiles.services.profile_service import ProfilesService
@@ -762,7 +766,11 @@ async def check_meeting_owner(
     return MeetingSessionStatus(active=owned)
 
 
-@router.post("/{room_id}/meeting/token", response_model=MeetingTokenResponse)
+@router.post(
+    "/{room_id}/meeting/token",
+    response_model=MeetingTokenResponse,
+    response_model_exclude_defaults=True,
+)
 async def create_meeting_token(
     room_id: uuid.UUID,
     request: MeetingTokenRequest | None = None,
@@ -804,4 +812,37 @@ async def create_meeting_token(
     token = livekit_service.create_participant_token(
         room_id=room.id, identity=current_user.id, name=participant_name, can_publish_data=True
     )
-    return MeetingTokenResponse(server_url=settings.livekit_url, participant_token=token)
+    return MeetingTokenResponse(
+        server_url=settings.livekit_url, participant_token=token,
+        captions_available=settings.live_captions_available,
+    )
+
+
+@router.get("/{room_id}/meeting/captions", response_class=StreamingResponse)
+async def stream_meeting_captions(
+    room_id: uuid.UUID,
+    client_session_id: uuid.UUID,
+    participant_sid: str = Query(min_length=1, max_length=128),
+    current_user: CurrentUser = Depends(get_current_user),
+    session: AsyncSession = Depends(get_db_session, scope="function"),
+):
+    """Only the current call session can open a live caption stream."""
+    if not settings.live_captions_available:
+        raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, "Live captions are unavailable")
+    room = await _get_active_room_or_404(session, room_id)
+    if not await can_join_room_meeting(session, room, current_user.id):
+        raise HTTPException(status.HTTP_403_FORBIDDEN, "You do not have access to this study room")
+    if not await meeting_session_service.is_owner(room_id, current_user.id, client_session_id):
+        raise HTTPException(status.HTTP_409_CONFLICT, "Media session was transferred to another tab or device")
+
+    async def lines():
+        events = live_caption_service.events(room_id, str(current_user.id), participant_sid)
+        async with aclosing(events):
+            async for event in events:
+                yield json.dumps(event, ensure_ascii=False) + "\n"
+
+    return StreamingResponse(
+        lines(),
+        media_type="application/x-ndjson",
+        headers={"Cache-Control": "no-store, no-transform", "X-Accel-Buffering": "no"},
+    )

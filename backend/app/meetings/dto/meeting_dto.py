@@ -5,6 +5,7 @@ import uuid
 class MeetingTokenResponse(BaseModel):
     server_url: str
     participant_token: str
+    captions_available: bool = False
 
 
 class MeetingSessionClaim(BaseModel):

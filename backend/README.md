@@ -22,6 +22,16 @@ cp .env.example .env        # fill in values, see below
 postgresql+psycopg://postgres.<ref>:<password>@aws-1-ap-northeast-1.pooler.supabase.com:5432/postgres
 ```
 
+## Vietnamese live captions
+
+Enable `LIVE_CAPTIONS_ENABLED=true` and set `SONIOX_API_KEY` on the API server.
+The call toolbar offers captions once an authenticated participant connects to LiveKit.
+Run the caption endpoint on one API worker so viewers in the same room share the
+microphone streams. The API sends audio from unmuted microphones to Soniox while
+the room has a caption viewer. The caption panel keeps recent text in memory for
+the viewer. `LIVE_CAPTIONS_TERMS` is a comma-separated set of recognition hints
+for project names and course terminology.
+
 ## Database
 
 Plain SQL in `db/migrations/`, applied manually (psql or Supabase SQL editor), in order:

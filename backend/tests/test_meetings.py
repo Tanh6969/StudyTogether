@@ -1,3 +1,4 @@
+import json
 import uuid
 from datetime import datetime, timezone
 from unittest.mock import AsyncMock
@@ -301,6 +302,38 @@ async def test_meeting_token_response_never_leaks_livekit_secret(async_client, m
     assert settings.livekit_api_secret not in response.text
     assert settings.livekit_api_key not in response.text
     assert set(body.keys()) == {"server_url", "participant_token"}
+
+
+@pytest.mark.parametrize("current_session", [False, True])
+async def test_captions_require_the_current_media_session(
+    async_client, monkeypatch, as_fake_user, current_session
+):
+    room = _make_room(host_id=as_fake_user.id)
+    client_session_id = uuid.uuid4()
+    monkeypatch.setattr(settings, "live_captions_enabled", True)
+    monkeypatch.setattr(settings, "soniox_api_key", "example-secret")
+    monkeypatch.setattr(study_room_router.service, "get_by_id", AsyncMock(return_value=room))
+    monkeypatch.setattr(study_room_router, "can_join_room_meeting", AsyncMock(return_value=True))
+    monkeypatch.setattr(
+        study_room_router.meeting_session_service, "is_owner", AsyncMock(return_value=current_session)
+    )
+
+    async def events(room_id, identity, participant_sid):
+        assert current_session
+        assert (room_id, identity, participant_sid) == (room.id, str(as_fake_user.id), "PA_voice")
+        yield {"type": "caption", "text": "Giải tích"}
+
+    monkeypatch.setattr(study_room_router.live_caption_service, "events", events)
+    response = await async_client.get(
+        f"/study-rooms/{room.id}/meeting/captions",
+        params={"client_session_id": str(client_session_id), "participant_sid": "PA_voice"},
+        headers=AUTH_HEADERS,
+    )
+    assert response.status_code == (200 if current_session else 409)
+    if current_session:
+        assert response.headers["content-type"] == "application/x-ndjson"
+        assert json.loads(response.text)["text"] == "Giải tích"
+        assert settings.soniox_api_key not in response.text
 
 
 # --- Token claims ---

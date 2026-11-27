@@ -42,6 +42,7 @@ import { MeetingProvider } from './meeting/MeetingProvider';
 import type { ConnectedCallParticipant } from './meeting/MeetingProvider';
 import { MeetingVideoGrid } from './meeting/MeetingVideoGrid';
 import { MeetingControls } from './meeting/MeetingControls';
+import { MeetingCaptions } from './meeting/MeetingCaptions';
 import { WhiteboardPermissionsModal } from './meeting/WhiteboardPermissionsModal';
 import { WhiteboardPanel } from './meeting/WhiteboardPanel';
 import { PresentationViewer } from './meeting/PresentationViewer';
@@ -1147,6 +1148,7 @@ export function StudyRoom() {
           
           {/* Mic / Camera — real LiveKit track state, see meeting/MeetingControls.tsx. */}
           <MeetingControls disabled={false} />
+          <MeetingCaptions roomId={room.id} clientSessionId={clientSessionId} />
 
           {/* In-call activities: break game + shared music (src/activities). */}
           <ActivitiesButton disabled={!isCurrentUserMember} />

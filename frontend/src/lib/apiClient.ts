@@ -162,7 +162,33 @@ async function request<T>(path: string, options: RequestOptions = {}): Promise<T
   }
 }
 
+/** Open a streaming read without buffering the response or exposing the auth token in the URL. */
+async function openStream(path: string, signal: AbortSignal): Promise<ReadableStream<Uint8Array>> {
+  const send = (token: string | null) => fetch(`${API_BASE_URL}${path}`, {
+    headers: {
+      Accept: 'application/x-ndjson',
+      ...(token ? { Authorization: `Bearer ${token}` } : {}),
+    },
+    signal,
+  });
+  const token = getAccessToken() ?? null;
+  let response = await send(token);
+  if (response.status === 401 && token) {
+    const fresh = await refreshOnce();
+    if (fresh && fresh !== token) {
+      await response.body?.cancel();
+      response = await send(fresh);
+    }
+  }
+  if (!response.ok || !response.body || !response.headers.get('content-type')?.includes('application/x-ndjson')) {
+    await response.body?.cancel();
+    throw new ApiError(response.status, 'Could not connect to the streaming endpoint');
+  }
+  return response.body;
+}
+
 export const apiClient = {
+  openStream,
   get: <T>(path: string, options?: Omit<RequestOptions, 'method' | 'body'>) =>
     request<T>(path, { ...options, method: 'GET' }),
   post: <T>(path: string, body?: unknown, options?: Omit<RequestOptions, 'method' | 'body'>) =>

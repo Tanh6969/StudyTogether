@@ -1,5 +1,5 @@
 import { apiClient } from './apiClient';
-import type { MeetingSessionStatus, MeetingTokenResponse } from './meeting.types';
+import type { MeetingCaptionEvent, MeetingSessionStatus, MeetingTokenResponse } from './meeting.types';
 
 /**
  * Caller is always derived from the bearer token on the backend; no user id is ever sent.
@@ -27,4 +27,33 @@ export function createMeetingToken(roomId: string, sessionId: string, signal?: A
   return apiClient.post<MeetingTokenResponse>(
     `/study-rooms/${roomId}/meeting/token`, { client_session_id: sessionId }, { signal }
   );
+}
+
+export async function streamMeetingCaptions(
+  roomId: string,
+  sessionId: string,
+  participantSid: string,
+  onEvent: (event: MeetingCaptionEvent) => void,
+  signal: AbortSignal,
+): Promise<void> {
+  const params = new URLSearchParams({ client_session_id: sessionId, participant_sid: participantSid });
+  const stream = await apiClient.openStream(`/study-rooms/${roomId}/meeting/captions?${params}`, signal);
+  const reader = stream.getReader();
+  const decoder = new TextDecoder();
+  let pending = '';
+  try {
+    for (;;) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      // A fetch chunk may split a line or straddle a multi-byte vowel/tone mark.
+      const lines = (pending + decoder.decode(value, { stream: true })).split('\n');
+      pending = lines.pop() ?? '';
+      for (const line of lines) {
+        if (line && !signal.aborted) onEvent(JSON.parse(line) as MeetingCaptionEvent);
+      }
+    }
+  } finally {
+    await reader.cancel().catch(() => {});
+    reader.releaseLock();
+  }
 }
