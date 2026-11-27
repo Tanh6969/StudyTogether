@@ -66,12 +66,12 @@ export function AuthProvider({ children }: { children: ReactNode }) {
           return nextProfile;
         } catch (createErr) {
           console.error('Failed to auto-create profile after email confirmation', createErr);
-          setProfile(null);
+          if (sessionRef.current?.user.id === userId) setProfile(null);
           return null;
         }
       }
       console.error('Failed to fetch profile from the backend', err);
-      setProfile(null);
+      if (sessionRef.current?.user.id === userId) setProfile(null);
       return null;
     }
   };
@@ -112,13 +112,14 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     // refresh once and let apiClient re-send. The TOKEN_REFRESHED event below also updates
     // sessionRef, this just makes the new token available to the waiting request right away.
     setSessionRefresher(async () => {
-      if (USE_MOCK || localStorage.getItem('dev_session')) return null;
+      if (USE_MOCK || (import.meta.env.DEV && localStorage.getItem('dev_session'))) return null;
       const { data, error } = await supabase.auth.refreshSession();
       if (error || !data.session) return null;
       sessionRef.current = data.session;
       return data.session.access_token;
     });
     const applySession = async (nextSession: Session | null) => {
+      if (sessionRef.current?.user.id !== nextSession?.user.id) setProfile(null);
       sessionRef.current = nextSession;
       setSession(nextSession);
       const userId = nextSession?.user?.id ?? null;
@@ -135,6 +136,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       }
     };
     const getDevSession = (): Session | null => {
+      if (!USE_MOCK && !import.meta.env.DEV) return null;
       const stored = localStorage.getItem('dev_session');
       if (!stored) return null;
       try { return JSON.parse(stored) as Session; } catch { return null; }
@@ -158,6 +160,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }, []);
 
   const setDevSession = (nextSession: Session | null) => {
+    if (nextSession && !USE_MOCK && !import.meta.env.DEV) return;
     if (nextSession) localStorage.setItem('dev_session', JSON.stringify(nextSession));
     else localStorage.removeItem('dev_session');
     sessionRef.current = nextSession;

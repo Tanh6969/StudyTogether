@@ -2,6 +2,7 @@ import { useState } from 'react';
 import { Link } from 'react-router-dom';
 import { Mail, ArrowRight, ArrowLeft } from 'lucide-react';
 import { supabase } from '../lib/supabase';
+import { describeAuthError, normalizeAuthEmail } from '../lib/authFlow';
 
 export function ForgotPasswordPage() {
   const [email, setEmail] = useState('');
@@ -17,12 +18,12 @@ export function ForgotPasswordPage() {
     setIsSubmitting(true);
 
     try {
-      const { error: resetError } = await supabase.auth.resetPasswordForEmail(email, {
+      const { error: resetError } = await supabase.auth.resetPasswordForEmail(normalizeAuthEmail(email), {
         redirectTo: `${window.location.origin}/update-password`,
       });
 
       if (resetError) {
-        setError(resetError.message);
+        setError(describeAuthError(resetError));
       } else {
         setSuccess(true);
       }
@@ -46,8 +47,8 @@ export function ForgotPasswordPage() {
           {success ? (
             <div style={{textAlign: 'center', padding: '24px 0'}}>
               <div style={{background: '#ECFDF5', color: '#059669', padding: '16px', borderRadius: '12px', marginBottom: '24px'}}>
-                <p style={{margin: 0, fontWeight: '500'}}>Email khôi phục đã được gửi!</p>
-                <p style={{margin: '8px 0 0 0', fontSize: '14px'}}>Vui lòng kiểm tra hộp thư đến của bạn để đặt lại mật khẩu.</p>
+                <p style={{margin: 0, fontWeight: '500'}}>Đã tiếp nhận yêu cầu khôi phục.</p>
+                <p style={{margin: '8px 0 0 0', fontSize: '14px'}}>Nếu email đã được đăng ký, bạn sẽ nhận được liên kết đặt lại mật khẩu. Vui lòng kiểm tra hộp thư đến và thư rác.</p>
               </div>
               <Link to="/login" style={{display: 'inline-flex', alignItems: 'center', gap: '8px', color: '#00236F', fontWeight: '600', textDecoration: 'none'}}>
                 <ArrowLeft size={18} />
@@ -62,6 +63,8 @@ export function ForgotPasswordPage() {
                   <Mail size={18} color="#94A3B8" style={{position: 'absolute', left: 16, top: '50%', transform: 'translateY(-50%)'}} />
                   <input
                     type="email"
+                    autoComplete="email"
+                    disabled={isSubmitting}
                     required
                     value={email}
                     onChange={e => setEmail(e.target.value)}

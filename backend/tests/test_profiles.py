@@ -133,3 +133,25 @@ async def test_delete_profile_allows_current_user(async_client, monkeypatch, as_
     response = await async_client.delete(f"/profiles/{as_fake_user.id}", headers=AUTH_HEADERS)
 
     assert response.status_code == 204
+
+
+async def test_concurrent_profile_creation_returns_existing_without_overwrite(async_client, monkeypatch, as_fake_user):
+    from sqlalchemy.exc import IntegrityError
+
+    existing = _profile(as_fake_user.id)
+    existing.display_name = "Original name"
+    monkeypatch.setattr(profile_router.service, "create", AsyncMock(side_effect=IntegrityError("insert", {}, Exception("duplicate"))))
+    monkeypatch.setattr(profile_router.service, "get_by_id", AsyncMock(return_value=existing))
+    response = await async_client.post("/profiles/", json=_create_payload(as_fake_user.id), headers=AUTH_HEADERS)
+    assert response.status_code == 201
+    assert response.json()["display_name"] == "Original name"
+
+
+async def test_create_profile_conflict_does_not_leak_database_details(async_client, monkeypatch, as_fake_user):
+    from sqlalchemy.exc import IntegrityError
+
+    monkeypatch.setattr(profile_router.service, "create", AsyncMock(side_effect=IntegrityError("insert", {}, Exception("private database detail"))))
+    monkeypatch.setattr(profile_router.service, "get_by_id", AsyncMock(return_value=None))
+    response = await async_client.post("/profiles/", json=_create_payload(as_fake_user.id), headers=AUTH_HEADERS)
+    assert response.status_code == 409
+    assert "private database detail" not in response.text
