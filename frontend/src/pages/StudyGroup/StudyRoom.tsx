@@ -549,12 +549,12 @@ export function StudyRoom() {
       onShowGame={showGame}
       onShowMusic={showMusic}
     >
-    <div style={{width: '100%', height: FULL_HEIGHT, background: '#0F172A', display: 'flex', flexDirection: 'column', overflow: 'hidden', fontFamily: 'Inter, sans-serif'}}>
+    <div style={{width: '100%', height: FULL_HEIGHT, minHeight: 0, background: '#0F172A', display: 'flex', flexDirection: 'column', overflow: 'hidden', fontFamily: 'Inter, sans-serif'}}>
 
       {/* Top Header Bar -- one row on desktop; on phones the mode tabs drop to a second row. */}
       <header style={isMobile
-        ? {background: '#1E293B', borderBottom: '1px solid #334155', padding: '8px 12px', paddingTop: 'max(8px, env(safe-area-inset-top))', display: 'flex', flexWrap: 'wrap', alignItems: 'center', rowGap: 8, columnGap: 8, zIndex: 20, position: 'relative'}
-        : {height: 64, background: '#1E293B', borderBottom: '1px solid #334155', padding: '0 24px', display: 'flex', justifyContent: 'space-between', alignItems: 'center', zIndex: 20, position: 'relative'}}>
+        ? {background: '#1E293B', borderBottom: '1px solid #334155', padding: '8px 12px', paddingTop: 'max(8px, env(safe-area-inset-top))', flexShrink: 0, display: 'flex', flexWrap: 'wrap', alignItems: 'center', rowGap: 8, columnGap: 8, zIndex: 20, position: 'relative'}
+        : {height: 64, flexShrink: 0, background: '#1E293B', borderBottom: '1px solid #334155', padding: '0 24px', display: 'flex', justifyContent: 'space-between', alignItems: 'center', zIndex: 20, position: 'relative'}}>
 
         {/* Left Info & Back button */}
         <div style={{display: 'flex', alignItems: 'center', gap: isMobile ? 8 : 16, minWidth: 0, flex: isMobile ? 1 : undefined}}>
@@ -788,11 +788,12 @@ export function StudyRoom() {
       )}
 
       {/* Main Workspace Body */}
-      <div style={{flex: 1, display: 'flex', overflow: 'hidden', position: 'relative'}}>
+      <div style={{flex: 1, minHeight: 0, minWidth: 0, display: 'flex', overflow: 'hidden', position: 'relative'}}>
         
         {/* MODE A: LIVEKIT VIDEO CALL VIEW */}
         {activeMode === 'video' && (
-          <div style={{flex: 1, minWidth: 0, padding: isMobile ? 8 : 20, display: 'flex', flexDirection: 'column', gap: isMobile ? 8 : 16, overflowY: 'auto', background: '#0F172A'}}>
+          <div style={{flex: 1, minHeight: 0, minWidth: 0, padding: isMobile ? 8 : 20, display: 'flex', flexDirection: 'column', gap: isMobile ? 8 : 16, overflowY: 'auto', background: '#0F172A'}}>
+            <ErrorBoundary key={room.id} fallback={<div role="alert">Không thể hiển thị video. Các điều khiển cuộc gọi vẫn khả dụng.</div>}>
             <MeetingVideoGrid
               members={members}
               currentUserId={currentUserId}
@@ -802,6 +803,7 @@ export function StudyRoom() {
               rankOf={rankOf}
               onModerate={(userId, action) => moderate(userId, action)}
             />
+            </ErrorBoundary>
           </div>
         )}
 
@@ -813,7 +815,7 @@ export function StudyRoom() {
           <div style={{flex: 1, display: activeMode === 'whiteboard' ? 'flex' : 'none', flexDirection: 'column', background: '#F8FAFC', minWidth: 0}}>
             
             {/* Board Sub-header */}
-            <div style={{height: 48, background: 'white', borderBottom: '1px solid #E2E8F0', padding: isMobile ? '0 8px' : '0 20px', display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8, overflowX: 'auto'}}>
+            <div style={{height: 48, flexShrink: 0, background: 'white', borderBottom: '1px solid #E2E8F0', padding: isMobile ? '0 8px' : '0 20px', display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8, overflowX: 'auto'}}>
               <div style={{display: 'flex', gap: isMobile ? 4 : 8, whiteSpace: 'nowrap'}}>
                 <button 
                   onClick={() => setActiveBoardTab('whiteboard')}
@@ -841,7 +843,7 @@ export function StudyRoom() {
             </div>
 
             {/* Canvas Area */}
-            <div style={{flex: 1, position: 'relative', overflow: 'hidden'}}>
+            <div style={{flex: 1, minHeight: 0, position: 'relative', overflow: 'hidden'}}>
               
               <div style={{position: 'absolute', inset: 0, display: activeBoardTab === 'whiteboard' ? 'block' : 'none'}}>
                 <WhiteboardPanel
@@ -871,7 +873,7 @@ export function StudyRoom() {
         {isSidebarOpen ? (
           <aside style={isMobile
             ? {position: 'absolute', inset: 0, background: '#1E293B', display: 'flex', flexDirection: 'column', zIndex: 40}
-            : {width: 'min(40vw, 420px)', minWidth: 340, background: '#1E293B', borderLeft: '1px solid #334155', display: 'flex', flexDirection: 'column', zIndex: 10, position: 'relative'}}>
+            : {width: 'min(40vw, 420px)', minWidth: 340, minHeight: 0, flexShrink: 0, background: '#1E293B', borderLeft: '1px solid #334155', display: 'flex', flexDirection: 'column', zIndex: 10, position: 'relative'}}>
 
             {/* Phone: the sheet covers the call, so it needs its own visible close bar. */}
             {isMobile && (
@@ -1126,9 +1128,9 @@ export function StudyRoom() {
       </div>
 
       {/* Floating Bottom Control Dock */}
-      <footer style={isMobile
-        ? {background: '#1E293B', borderTop: '1px solid #334155', padding: '8px 8px', paddingBottom: 'max(8px, env(safe-area-inset-bottom))', display: 'flex', justifyContent: 'center', alignItems: 'center', zIndex: 30, position: 'relative'}
-        : {height: 60, background: '#1E293B', borderTop: '1px solid #334155', padding: '0 24px', display: 'flex', justifyContent: 'space-between', alignItems: 'center', zIndex: 30, position: 'relative'}}>
+      <footer aria-label="Thanh công cụ phòng học" style={isMobile
+        ? {flexShrink: 0, background: '#1E293B', borderTop: '1px solid #334155', padding: '8px 8px', paddingBottom: 'max(8px, env(safe-area-inset-bottom))', display: 'flex', justifyContent: 'center', alignItems: 'center', zIndex: 30, position: 'relative'}
+        : {height: 60, flexShrink: 0, background: '#1E293B', borderTop: '1px solid #334155', padding: '0 24px', display: 'flex', justifyContent: 'space-between', alignItems: 'center', zIndex: 30, position: 'relative'}}>
 
         {/* Left indicators */}
         {!isMobile && (
@@ -1140,7 +1142,7 @@ export function StudyRoom() {
 
         {/* Center Control Buttons */}
         <div style={isMobile
-          ? {display: 'flex', alignItems: 'center', justifyContent: 'space-evenly', width: '100%', maxWidth: 420, gap: 6}
+          ? {display: 'flex', alignItems: 'center', justifyContent: 'center', flexWrap: 'wrap', width: '100%', maxWidth: 420, gap: 6}
           : {position: 'absolute', left: '50%', transform: 'translateX(-50%)', display: 'flex', alignItems: 'center', gap: 12}}>
           
           {/* Mic / Camera — real LiveKit track state, see meeting/MeetingControls.tsx. */}
@@ -1155,6 +1157,7 @@ export function StudyRoom() {
             style={{
               width: 42,
               height: 42,
+              flexShrink: 0,
               borderRadius: '50%',
               border: 'none',
               background: currentUserHandRaised ? '#F59E0B' : '#334155',

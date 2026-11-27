@@ -193,7 +193,7 @@ function ConnectedGrid({ members, currentUserId, currentUserName, currentUserAva
   return (
     <div style={{ flex: 1, display: 'flex', flexDirection: 'column', gap: 16, minHeight: 0 }}>
       {activeScreenShares.length > 0 && (
-        <div style={{ display: 'grid', gridTemplateColumns: activeScreenShares.length > 1 ? 'repeat(2, 1fr)' : '1fr', gap: 16 }}>
+        <div style={{ display: 'grid', gridTemplateColumns: activeScreenShares.length > 1 ? 'repeat(2, minmax(0, 1fr))' : '1fr', gap: 16 }}>
           {activeScreenShares.map((trackRef) => (
             <div
               key={trackRef.publication.trackSid}
@@ -223,10 +223,11 @@ function ConnectedGrid({ members, currentUserId, currentUserName, currentUserAva
           display: 'grid',
           // Phones: a single tile fills the width; otherwise 2 columns (3 would be thumbnails).
           gridTemplateColumns: isMobile
-            ? (participants.length > 1 ? 'repeat(2, 1fr)' : '1fr')
-            : participants.length > 4 ? 'repeat(3, 1fr)' : 'repeat(2, 1fr)',
+            ? (participants.length > 1 ? 'repeat(2, minmax(0, 1fr))' : '1fr')
+            : participants.length > 4 ? 'repeat(3, minmax(0, 1fr))' : 'repeat(2, minmax(0, 1fr))',
           gap: isMobile ? 8 : 16,
-          alignContent: 'center',
+          minWidth: 0,
+          alignContent: 'start',
         }}
       >
       {participants.map((p) => {

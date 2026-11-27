@@ -98,3 +98,32 @@ describe('StudyGroups membership truth', () => {
     expect(joinGroup).toHaveBeenCalledWith('g-1');
   });
 });
+
+describe('home sorting', () => {
+  beforeEach(() => vi.resetAllMocks());
+  it('sorts both membership and discovery, not just the label', async () => {
+    const a = { ...group, id: 'a', name: 'Alpha', created_at: '2025-01-01T00:00:00Z', is_public: false };
+    const b = { ...group, id: 'b', name: 'Beta', created_at: '2026-01-01T00:00:00Z' };
+    const c = { ...group, id: 'c', name: 'Charlie', created_at: '2025-01-01T00:00:00Z' };
+    const d = { ...group, id: 'd', name: 'Delta', created_at: '2026-01-01T00:00:00Z' };
+    vi.mocked(getGroups).mockResolvedValue([c, d, b]);
+    vi.mocked(getMyGroups).mockResolvedValue([a, b]);
+    vi.mocked(getMyMemberships).mockResolvedValue([{ ...membership('active', 'owner'), group_id: 'a' }, { ...membership('active'), group_id: 'b' }]);
+    vi.mocked(getMemberCounts).mockResolvedValue({ a: 9, b: 1, c: 8, d: 2 });
+    render(<MemoryRouter initialEntries={['/groups']}><StudyRooms /></MemoryRouter>);
+    const mine = await screen.findByRole('region', { name: 'Nhóm học của tôi' });
+    const discovery = screen.getByRole('region', { name: 'Khám phá nhóm học' });
+    const order = (region: HTMLElement, first: string, second: string) =>
+      expect(within(region).getByText(first).compareDocumentPosition(within(region).getByText(second)) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    const select = screen.getByRole('combobox', { name: 'Sắp xếp nhóm học' });
+    order(mine, 'Beta', 'Alpha'); order(discovery, 'Delta', 'Charlie');
+    for (const value of ['oldest', 'members', 'name', 'role']) {
+      fireEvent.change(select, { target: { value } });
+      order(mine, 'Alpha', 'Beta');
+      if (value !== 'role') order(discovery, 'Charlie', 'Delta');
+    }
+    fireEvent.change(select, { target: { value: 'newest' } });
+    order(mine, 'Beta', 'Alpha'); order(discovery, 'Delta', 'Charlie');
+    expect(within(discovery).queryByText('Alpha')).not.toBeInTheDocument();
+  });
+});

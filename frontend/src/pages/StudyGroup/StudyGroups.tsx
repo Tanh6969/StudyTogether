@@ -293,7 +293,8 @@ export function StudyRooms() {
     const loadSequence = useRef(0);
     
     const [searchParams] = useSearchParams();
-    const searchQuery = searchParams.get('q') || '';
+    const searchQuery = (searchParams.get('q') || '').trim();
+    const [sortOrder, setSortOrder] = useState<'newest' | 'oldest' | 'members' | 'name' | 'role'>('newest');
 
     const loadGroups = useCallback(async (silent = false) => {
         const sequence = ++loadSequence.current;
@@ -405,18 +406,17 @@ export function StudyRooms() {
         }
     }
 
-    const myGroups = (groups?.filter((g) => g.isMember) ?? []).sort((a, b) => {
-        const getPriority = (role: GroupMemberRole | null) => {
-            if (role === 'owner') return 2;
-            if (role === 'moderator') return 1;
-            return 0;
-        };
-        const priorityDiff = getPriority(b.role) - getPriority(a.role);
-        if (priorityDiff !== 0) return priorityDiff;
-        // Secondary sort: by active members count or name could be added here if needed
-        return b.activeMembersCount - a.activeMembersCount;
-    });
-    const discoverGroups = groups?.filter((g) => !g.isMember) ?? [];
+    const rolePriority = (role: GroupMemberRole | null) => role === 'owner' ? 2 : role === 'moderator' ? 1 : 0;
+    const compareGroups = (a: GroupWithMembership, b: GroupWithMembership) => {
+        const newest = Date.parse(b.group.created_at) - Date.parse(a.group.created_at);
+        const primary = sortOrder === 'oldest' ? -newest
+            : sortOrder === 'members' ? b.activeMembersCount - a.activeMembersCount
+            : sortOrder === 'name' ? a.group.name.localeCompare(b.group.name, 'vi')
+            : sortOrder === 'role' ? rolePriority(b.role) - rolePriority(a.role) : newest;
+        return primary || newest || a.group.id.localeCompare(b.group.id);
+    };
+    const myGroups = (groups?.filter(g => g.isMember) ?? []).sort(compareGroups);
+    const discoverGroups = (groups?.filter(g => !g.isMember && g.group.is_public) ?? []).sort(compareGroups);
 
     const menuItemClasses = (banned: boolean) =>
         `flex flex-col gap-0.5 px-4 py-3 ${banned ? 'cursor-not-allowed opacity-50' : 'cursor-pointer hover:bg-slate-50'}`;
@@ -437,10 +437,15 @@ export function StudyRooms() {
                         </p>
                     </div>
                     <div className="flex items-center gap-3">
-                        <div className="flex cursor-pointer items-center gap-2 rounded-md border border-slate-200 bg-[#F8F9FF] px-3 py-2">
-                            <span className="text-sm leading-5 text-[#0B1C30]">Sắp xếp: Mới nhất</span>
-                            <ChevronDown size={16} className="text-gray-500" />
-                        </div>
+                        <select aria-label="Sắp xếp nhóm học" value={sortOrder}
+                            onChange={event => setSortOrder(event.target.value as typeof sortOrder)}
+                            className="min-w-0 cursor-pointer rounded-md border border-slate-200 bg-[#F8F9FF] px-3 py-2 text-sm leading-5 text-[#0B1C30]">
+                            <option value="newest">Sắp xếp: Mới nhất</option>
+                            <option value="oldest">Sắp xếp: Cũ nhất</option>
+                            <option value="members">Sắp xếp: Đông thành viên</option>
+                            <option value="name">Sắp xếp: Tên A–Z</option>
+                            <option value="role">Sắp xếp: Vai trò của tôi</option>
+                        </select>
                         <div className="relative" ref={menuRef}>
                             <div
                                 onClick={() => setIsMenuOpen(!isMenuOpen)}
@@ -521,7 +526,7 @@ export function StudyRooms() {
                 )}
 
                 {!isLoading && !loadError && groups && groups.length === 0 && (
-                    <div className="py-6 text-sm text-slate-500">Chưa có nhóm học công khai nào.</div>
+                    <div className="py-6 text-sm text-slate-500">{searchQuery ? 'Không tìm thấy nhóm học phù hợp.' : 'Chưa có nhóm học nào.'}</div>
                 )}
 
                 {!isLoading && !loadError && groups && (

@@ -41,7 +41,7 @@ function taskStatus(task: GroupTask) {
 
 /** Small text+icon button in a card's footer; inline-flex + nowrap so icon and label never split lines. */
 const cardAction: React.CSSProperties = {
-  height: 26, padding: '0 6px', display: 'inline-flex', alignItems: 'center', gap: 4, whiteSpace: 'nowrap',
+  minHeight: 26, maxWidth: '100%', padding: '0 6px', display: 'inline-flex', flexShrink: 0, alignItems: 'center', gap: 4, whiteSpace: 'nowrap',
   border: 0, borderRadius: 6, background: 'transparent', fontSize: 11, fontWeight: 600, cursor: 'pointer',
 };
 
@@ -50,8 +50,8 @@ function InlineDraft({ value, onChange, onSubmit, onCancel, placeholder, submitL
   value: string; onChange: (value: string) => void; onSubmit: () => void; onCancel: () => void; placeholder: string; submitLabel: string;
 }) {
   const empty = !value.trim();
-  return <form onSubmit={event => { event.preventDefault(); if (!empty) onSubmit(); }} style={{ display: 'flex', gap: 4 }}>
-    <input autoFocus value={value} onChange={event => onChange(event.target.value)} onKeyDown={event => { if (event.key === 'Escape') onCancel(); }} placeholder={placeholder} maxLength={500}
+  return <form onSubmit={event => { event.preventDefault(); if (!empty) onSubmit(); }} style={{ display: 'flex', flexWrap: 'wrap', minWidth: 0, gap: 4 }}>
+    <input autoFocus value={value} onChange={event => onChange(event.target.value)} onKeyDown={event => { if (event.key === 'Escape') onCancel(); }} placeholder={placeholder} maxLength={submitLabel === 'Thêm' ? 200 : 500}
       style={{ flex: 1, minWidth: 0, height: 28, padding: '0 8px', border: '1px solid #CBD5E1', borderRadius: 6, background: 'white', fontSize: 11, boxSizing: 'border-box' }} />
     <button type="submit" disabled={empty} style={{ height: 28, padding: '0 10px', flexShrink: 0, whiteSpace: 'nowrap', border: 0, borderRadius: 6, background: empty ? '#94A3B8' : '#2563EB', color: 'white', fontSize: 11, fontWeight: 600, cursor: empty ? 'default' : 'pointer' }}>{submitLabel}</button>
     <button type="button" aria-label="Hủy" title="Hủy (Esc)" onClick={onCancel} style={{ width: 24, height: 28, padding: 0, flexShrink: 0, display: 'grid', placeItems: 'center', border: 0, background: 'transparent', color: '#94A3B8', cursor: 'pointer' }}><X size={13} /></button>
@@ -111,6 +111,10 @@ export function TaskFlowBoard({ groupId, notesHeader }: { groupId: string; notes
   const [drag, setDrag] = useState<{ id: string; x: number; y: number; startX: number; startY: number; originX: number; originY: number } | null>(null);
   const [title, setTitle] = useState('');
   const [dueDate, setDueDate] = useState('');
+  const [deadlineEdit, setDeadlineEdit] = useState<{ id: string; title: string; value: string } | null>(null);
+  const [deadlineSaving, setDeadlineSaving] = useState(false);
+  const [deadlineError, setDeadlineError] = useState<string | null>(null);
+  const [creating, setCreating] = useState(false);
   const [childDraftId, setChildDraftId] = useState<string>();
   const [childTitle, setChildTitle] = useState('');
   const [noteDraftId, setNoteDraftId] = useState<string>();
@@ -166,13 +170,14 @@ export function TaskFlowBoard({ groupId, notesHeader }: { groupId: string; notes
   const completed = tasks.filter(task => task.done);
   const button: React.CSSProperties = { height: 30, minWidth: 30, display: 'grid', placeItems: 'center', border: '1px solid #CBD5E1', borderRadius: 7, background: 'white', color: '#334155', cursor: 'pointer' };
 
+  const pendingPatches = useRef(new Map<string, Promise<boolean>>());
   const listSequence = useRef(0);
   const reload = useCallback(async () => {
     if (!groupId) return;
     const sequence = ++listSequence.current;
     try {
       const data = await listGroupTasks(groupId);
-      if (sequence !== listSequence.current) return;
+      if (sequence !== listSequence.current || pendingPatches.current.size > 0) return;
       setTasks(data);
       setError(null);
     } catch (err) {
@@ -218,17 +223,44 @@ export function TaskFlowBoard({ groupId, notesHeader }: { groupId: string; notes
     return () => observer.disconnect();
   }, [loading, positions]);
 
-  /** Optimistic local update; on failure re-sync from the server so the board never drifts. */
-  const patchTask = (taskId: string, changes: GroupTaskUpdate) => {
+  // Serialize writes to each node; a late response must never overwrite a newer local edit.
+  const patchTask = (taskId: string, changes: GroupTaskUpdate): Promise<boolean> => {
     ++listSequence.current;
     setTasks(current => current.map(task => task.id === taskId ? { ...task, ...changes } : task));
-    updateGroupTask(groupId, taskId, changes)
-      .then(saved => { ++listSequence.current; setTasks(current => current.map(task => task.id === saved.id ? saved : task)); })
-      .catch(err => {
+    const previous = pendingPatches.current.get(taskId) ?? Promise.resolve(true);
+    const request = previous.then(async () => {
+      try {
+        const saved = await updateGroupTask(groupId, taskId, changes);
+        ++listSequence.current;
+        // Keep newer optimistic values intact until their own server response arrives.
+        if (pendingPatches.current.get(taskId) === request) {
+          setTasks(current => current.map(task => task.id === saved.id ? saved : task));
+        }
+        return true;
+      } catch (err) {
         console.error('Failed to update group task', err);
-        setError('Không lưu được thay đổi, đã tải lại bảng.');
+        setError('Không lưu được thay đổi.');
+        return false;
+      }
+    }).finally(() => {
+      if (pendingPatches.current.get(taskId) === request) {
+        pendingPatches.current.delete(taskId);
+        // Reconcile both successes and failures with authoritative server state.
         void reload();
-      });
+      }
+    });
+    pendingPatches.current.set(taskId, request);
+    return request;
+  };
+
+  const saveDeadline = async (value: string) => {
+    if (!deadlineEdit || deadlineSaving) return;
+    setDeadlineSaving(true);
+    setDeadlineError(null);
+    const ok = await patchTask(deadlineEdit.id, { due_date: value || null });
+    setDeadlineSaving(false);
+    if (ok) setDeadlineEdit(null);
+    else setDeadlineError('Không lưu được hạn hoàn thành. Vui lòng thử lại.');
   };
 
   const addChildTask = async (parentTaskId: string) => {
@@ -249,19 +281,18 @@ export function TaskFlowBoard({ groupId, notesHeader }: { groupId: string; notes
 
   const addTask = async () => {
     const trimmed = title.trim();
-    if (!trimmed) return;
+    if (!trimmed || creating) return;
     const draft = { title: trimmed, due_date: dueDate || null, parent_id: null };
-    setTitle(''); setDueDate('');
+    setCreating(true);
     try {
       const created = await createGroupTask(groupId, draft);
       ++listSequence.current;
       setTasks(current => current.some(t => t.id === created.id) ? current : [...current, created]);
-      setError(null);
+      setTitle(''); setDueDate(''); setError(null);
     } catch (err) {
       console.error('Failed to create group task', err);
       setError('Không thêm được nhiệm vụ.');
-      setTitle(trimmed);
-    }
+    } finally { setCreating(false); }
   };
   const toggleDone = (taskId: string, done: boolean) => patchTask(taskId, { done });
   const renameTask = (taskId: string, nextTitle: string) => patchTask(taskId, { title: nextTitle });
@@ -270,7 +301,7 @@ export function TaskFlowBoard({ groupId, notesHeader }: { groupId: string; notes
     const removed = subtreeIds(tasks, taskId);
     ++listSequence.current;
     setTasks(current => current.filter(task => !removed.has(task.id)));
-    deleteGroupTask(groupId, taskId).catch(err => {
+    Promise.all([...removed].map(id => pendingPatches.current.get(id))).then(() => deleteGroupTask(groupId, taskId)).then(() => { void reload(); }).catch(err => {
       console.error('Failed to delete group task', err);
       setError('Không xóa được nhiệm vụ, đã tải lại bảng.');
       void reload();
@@ -351,10 +382,10 @@ export function TaskFlowBoard({ groupId, notesHeader }: { groupId: string; notes
     />
     {error && <div role="alert" style={{ padding: '8px 24px', background: '#FEF2F2', borderBottom: '1px solid #FECACA', color: '#B91C1C', fontSize: 12 }}>{error}</div>}
     <div style={{ padding: '12px 20px', background: 'white', borderBottom: '1px solid #E2E8F0', display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
-      <form onSubmit={event => { event.preventDefault(); void addTask(); }} style={{ display: 'flex', gap: 7, flex: '1 1 420px' }}>
-        <input aria-label="Tên nhiệm vụ" value={title} onChange={event => setTitle(event.target.value)} placeholder="Thêm giai đoạn / nhiệm vụ gốc..." style={{ height: 36, flex: 1, minWidth: 120, padding: '0 10px', border: '1px solid #CBD5E1', borderRadius: 7, fontSize: 13, boxSizing: 'border-box' }} />
-        <input aria-label="Hạn hoàn thành" type="date" value={dueDate} onChange={event => setDueDate(event.target.value)} style={{ height: 36, width: 132, padding: '0 7px', border: '1px solid #CBD5E1', borderRadius: 7, fontSize: 12, boxSizing: 'border-box' }} />
-        <button aria-label="Thêm nhiệm vụ" type="submit" disabled={!title.trim()} style={{ ...button, height: 36, background: title.trim() ? '#2563EB' : '#94A3B8', borderColor: '#2563EB', color: 'white' }}><Plus size={16} /></button>
+      <form onSubmit={event => { event.preventDefault(); void addTask(); }} style={{ display: 'flex', flexWrap: 'wrap', minWidth: 0, gap: 7, flex: '1 1 420px' }}>
+        <input aria-label="Tên nhiệm vụ" disabled={creating} maxLength={200} value={title} onChange={event => setTitle(event.target.value)} placeholder="Thêm giai đoạn / nhiệm vụ gốc..." style={{ height: 36, flex: 1, minWidth: 120, padding: '0 10px', border: '1px solid #CBD5E1', borderRadius: 7, fontSize: 13, boxSizing: 'border-box' }} />
+        <input aria-label="Hạn hoàn thành" disabled={creating} type="date" value={dueDate} onChange={event => setDueDate(event.target.value)} style={{ height: 36, width: 132, padding: '0 7px', border: '1px solid #CBD5E1', borderRadius: 7, fontSize: 12, boxSizing: 'border-box' }} />
+        <button aria-label="Thêm nhiệm vụ" type="submit" disabled={creating || !title.trim()} style={{ ...button, height: 36, background: title.trim() ? '#2563EB' : '#94A3B8', borderColor: '#2563EB', color: 'white' }}><Plus size={16} /></button>
       </form>
       <div style={{ marginLeft: 'auto', display: 'flex', gap: 5, alignItems: 'center' }}>
         <button aria-label="Tạo lộ trình bằng AI" title="Tạo lộ trình bằng AI" onClick={() => {
@@ -377,15 +408,17 @@ export function TaskFlowBoard({ groupId, notesHeader }: { groupId: string; notes
       </g></svg>
       <div style={{ position: 'absolute', left: offset.x, top: offset.y, transform: `scale(${zoom})`, transformOrigin: 'top left' }}>
         {positions.map(({ task, x, y, parentId: nodeParentId }) => <article key={task.id} ref={measureCard} data-task-id={task.id} onPointerDown={event => { if ((event.target as HTMLElement).closest('button,input,form')) return; event.stopPropagation(); viewAdjusted.current = true; event.currentTarget.setPointerCapture(event.pointerId); setDrag({id:task.id,x,y,startX:event.clientX,startY:event.clientY,originX:x,originY:y}); }} onPointerMove={event => { if(drag?.id===task.id) setDrag({...drag,x:drag.originX+(event.clientX-drag.startX)/zoom,y:drag.originY+(event.clientY-drag.startY)/zoom}); }} onPointerUp={() => { if(drag?.id===task.id){ if(drag.x!==drag.originX||drag.y!==drag.originY) moveTask(task.id,{x:drag.x,y:drag.y}); setDrag(null);} }} style={{ position: 'absolute', left: x, top: y, width: CARD_WIDTH, boxSizing: 'border-box', background: task.done ? '#F0FDF4' : 'white', border: task.done ? '1px solid #86EFAC' : '1px solid #93C5FD', borderTop: nodeParentId ? undefined : `3px solid ${task.done ? '#16A34A' : '#7C3AED'}`, boxShadow: '0 3px 10px rgba(15,23,42,.12)', cursor: drag?.id===task.id?'grabbing':'grab', touchAction:'none' }}>
-          <header onDoubleClick={() => { const edited = window.prompt('Chỉnh sửa nhiệm vụ', task.title)?.trim(); if (edited && edited !== task.title) renameTask(task.id, edited); }} style={{ height: 36, padding: '0 10px', borderBottom: '1px solid #64748B', display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 6, fontSize: 13, fontWeight: 700, cursor: 'grab' }}><span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{task.title}</span><button aria-label="Xóa nhiệm vụ" onClick={() => removeTask(task.id)} style={{ border: 0, background: 'transparent', color: '#94A3B8', cursor: 'pointer' }}><X size={14}/></button></header>
-          <div style={{ padding: '10px 12px', display: 'grid', gap: 8, color: '#334155', fontSize: 12 }}>
+          <header onDoubleClick={() => { const edited = window.prompt('Chỉnh sửa nhiệm vụ', task.title)?.trim(); if (edited && edited !== task.title) renameTask(task.id, edited); }} style={{ height: 36, padding: '0 10px', borderBottom: '1px solid #64748B', display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 6, fontSize: 13, fontWeight: 700, cursor: 'grab' }}><span style={{ flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{task.title}</span><button aria-label="Xóa nhiệm vụ" onClick={() => removeTask(task.id)} style={{ flexShrink: 0, display: 'grid', placeItems: 'center', padding: 2, border: 0, background: 'transparent', color: '#94A3B8', cursor: 'pointer' }}><X size={14}/></button></header>
+          <div style={{ padding: '10px 12px', display: 'grid', gridTemplateColumns: 'minmax(0, 1fr)', minWidth: 0, gap: 8, color: '#334155', fontSize: 12 }}>
             {(() => {
               const status = taskStatus(task);
-              return <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+              return <div style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: 4 }}>
                 <span style={{ padding: '2px 8px', borderRadius: 999, background: status.background, color: status.color, fontSize: 10, fontWeight: 700, whiteSpace: 'nowrap' }}>{status.label}</span>
-                <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4, color: status.overdue ? '#B91C1C' : '#64748B', fontSize: 11, whiteSpace: 'nowrap' }}>
-                  <CalendarDays size={12} />{task.due_date ? new Date(`${task.due_date}T00:00:00`).toLocaleDateString('vi-VN') : 'Chưa đặt hạn'}
-                </span>
+                <button type="button" aria-label={`Chỉnh sửa hạn hoàn thành: ${task.title}`} title="Thêm, sửa hoặc bỏ hạn hoàn thành"
+                  onClick={() => { setDeadlineEdit({ id: task.id, title: task.title, value: task.due_date ?? '' }); setDeadlineError(null); }}
+                  style={{ ...cardAction, color: status.overdue ? '#B91C1C' : '#1D4ED8', minWidth: 0 }}>
+                  <CalendarDays size={12} />{task.due_date ? new Date(`${task.due_date}T00:00:00`).toLocaleDateString('vi-VN') : 'Đặt hạn'}
+                </button>
               </div>;
             })()}
             {task.notes.length > 0 && <ul style={{ margin: 0, padding: 0, listStyle: 'none', display: 'grid', gap: 4 }}>
@@ -396,11 +429,11 @@ export function TaskFlowBoard({ groupId, notesHeader }: { groupId: string; notes
             </ul>}
             {noteDraftId === task.id && <InlineDraft value={noteDraft} onChange={setNoteDraft} onSubmit={() => addNote(task.id)} onCancel={() => { setNoteDraftId(undefined); setNoteDraft(''); }} placeholder="Ghi chú, tài liệu, link..." submitLabel="Lưu" />}
             {childDraftId === task.id && <InlineDraft value={childTitle} onChange={setChildTitle} onSubmit={() => void addChildTask(task.id)} onCancel={() => { setChildDraftId(undefined); setChildTitle(''); }} placeholder="Tên nhiệm vụ con" submitLabel="Thêm" />}
-            <div style={{ display: 'flex', alignItems: 'center', gap: 6, paddingTop: 8, borderTop: `1px solid ${task.done ? '#BBF7D0' : '#E2E8F0'}` }}>
+            <div style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: 4, paddingTop: 8, borderTop: `1px solid ${task.done ? '#BBF7D0' : '#E2E8F0'}` }}>
               <button onClick={() => toggleDone(task.id, !task.done)} style={{ ...cardAction, color: task.done ? '#475569' : '#15803D' }}>
                 {task.done ? <RotateCcw size={13} /> : <Check size={13} />}{task.done ? 'Khôi phục' : 'Hoàn thành'}
               </button>
-              <button title="Thêm ghi chú" onClick={() => { setNoteDraftId(task.id); setNoteDraft(''); }} style={{ ...cardAction, marginLeft: 'auto', color: '#2563EB' }}>
+              <button title="Thêm ghi chú" onClick={() => { setNoteDraftId(task.id); setNoteDraft(''); }} style={{ ...cardAction, color: '#2563EB' }}>
                 <StickyNote size={13} />Ghi chú
               </button>
               <button aria-label={`Thêm nhiệm vụ con cho ${task.title}`} title="Thêm nhiệm vụ con" onClick={() => { setChildDraftId(task.id); setChildTitle(''); }} style={{ width: 26, height: 26, padding: 0, flexShrink: 0, display: 'grid', placeItems: 'center', borderRadius: '50%', border: '1px solid #93C5FD', background: '#EFF6FF', color: '#1D4ED8', cursor: 'pointer' }}>
@@ -422,6 +455,23 @@ export function TaskFlowBoard({ groupId, notesHeader }: { groupId: string; notes
         Lộ trình đã sẵn sàng - bấm để xem và áp dụng
       </button>
     )}
+    <Modal isOpen={deadlineEdit !== null} onClose={() => { if (!deadlineSaving) setDeadlineEdit(null); }} title="Chỉnh sửa hạn hoàn thành">
+      {deadlineEdit && <form onSubmit={event => { event.preventDefault(); void saveDeadline(deadlineEdit.value); }} style={{ display: 'grid', gap: 12 }}>
+        <strong>{deadlineEdit.title}</strong>
+        <label style={{ display: 'grid', gap: 6, fontSize: 13 }}>
+          Hạn mục tiêu
+          <input type="date" value={deadlineEdit.value} disabled={deadlineSaving}
+            onChange={event => setDeadlineEdit(current => current ? { ...current, value: event.target.value } : current)}
+            style={{ border: '1px solid #CBD5E1', borderRadius: 8, padding: 10 }} />
+        </label>
+        {deadlineError && <p role="alert" style={{ color: '#B91C1C' }}>{deadlineError}</p>}
+        <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, justifyContent: 'flex-end' }}>
+          <button type="button" disabled={deadlineSaving} onClick={() => void saveDeadline('')} style={{ ...button, padding: '0 10px' }}>Bỏ hạn</button>
+          <button type="button" disabled={deadlineSaving} onClick={() => setDeadlineEdit(null)} style={{ ...button, padding: '0 10px' }}>Hủy</button>
+          <button type="submit" disabled={deadlineSaving} style={{ ...button, padding: '0 10px', background: '#2563EB', color: 'white' }}>{deadlineSaving ? 'Đang lưu...' : 'Lưu hạn'}</button>
+        </div>
+      </form>}
+    </Modal>
     <Modal isOpen={aiOpen} onClose={() => !aiApplying && setAiOpen(false)} title="Tạo lộ trình nhiệm vụ">
       {!aiSuggestion ? (
         aiGenerating ? (
