@@ -43,6 +43,7 @@ import type { ConnectedCallParticipant } from './meeting/MeetingProvider';
 import { MeetingVideoGrid } from './meeting/MeetingVideoGrid';
 import { MeetingControls } from './meeting/MeetingControls';
 import { MeetingCaptions } from './meeting/MeetingCaptions';
+import { InCallArchiveButton, MeetingRecordingIndicator } from './meeting/MeetingRecording';
 import { WhiteboardPermissionsModal } from './meeting/WhiteboardPermissionsModal';
 import { WhiteboardPanel } from './meeting/WhiteboardPanel';
 import { PresentationViewer } from './meeting/PresentationViewer';
@@ -698,6 +699,7 @@ export function StudyRoom() {
           </div>
         </div>
       </header>
+      <MeetingRecordingIndicator />
 
       {/* Connection / error banners: visible on every screen size, never squeezed into the header. */}
       {!isOnline && (
@@ -1149,6 +1151,7 @@ export function StudyRoom() {
           {/* Mic / Camera — real LiveKit track state, see meeting/MeetingControls.tsx. */}
           <MeetingControls disabled={false} />
           <MeetingCaptions roomId={room.id} clientSessionId={clientSessionId} />
+          <InCallArchiveButton roomId={room.id} clientSessionId={clientSessionId} canManage={permissions.canManageRoom} />
 
           {/* In-call activities: break game + shared music (src/activities). */}
           <ActivitiesButton disabled={!isCurrentUserMember} />

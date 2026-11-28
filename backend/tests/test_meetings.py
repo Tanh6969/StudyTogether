@@ -311,7 +311,7 @@ async def test_captions_require_the_current_media_session(
     room = _make_room(host_id=as_fake_user.id)
     client_session_id = uuid.uuid4()
     monkeypatch.setattr(settings, "live_captions_enabled", True)
-    monkeypatch.setattr(settings, "soniox_api_key", "example-secret")
+    monkeypatch.setattr(settings, "gemini_live_project", "example-private-project")
     monkeypatch.setattr(study_room_router.service, "get_by_id", AsyncMock(return_value=room))
     monkeypatch.setattr(study_room_router, "can_join_room_meeting", AsyncMock(return_value=True))
     monkeypatch.setattr(
@@ -333,7 +333,7 @@ async def test_captions_require_the_current_media_session(
     if current_session:
         assert response.headers["content-type"] == "application/x-ndjson"
         assert json.loads(response.text)["text"] == "Giải tích"
-        assert settings.soniox_api_key not in response.text
+        assert settings.gemini_live_project not in response.text
 
 
 # --- Token claims ---
@@ -493,3 +493,72 @@ async def test_meeting_token_isolation_across_rooms(async_client, monkeypatch, a
 
     response_b = await async_client.post(f"/study-rooms/{room_b.id}/meeting/token", headers=AUTH_HEADERS)
     assert response_b.status_code == 403
+
+
+@pytest.mark.parametrize("can_manage,session_active,participant_is_current,expected", [
+    (False, True, True, 403), (True, False, True, 409), (True, True, False, 409), (True, True, True, 200),
+])
+async def test_recording_control_requires_manager_and_current_connected_session(
+    async_client, monkeypatch, as_fake_user, can_manage, session_active, participant_is_current, expected,
+):
+    room = _make_room()
+    capture_id = uuid.uuid4()
+    client_session_id = uuid.uuid4()
+    recording = {
+        "id": uuid.uuid4(),
+        "status": "active",
+        "started_at": datetime.now(timezone.utc),
+        "ended_at": None,
+    }
+    monkeypatch.setattr(settings, "meeting_recording_enabled", True)
+    monkeypatch.setattr(settings, "meeting_recording_s3_bucket", "test-bucket")
+    monkeypatch.setattr(settings, "meeting_recording_s3_access_key", "test-access")
+    monkeypatch.setattr(settings, "meeting_recording_s3_secret_key", "test-secret")
+    monkeypatch.setattr(study_room_router.service, "get_by_id", AsyncMock(return_value=room))
+    monkeypatch.setattr(study_room_router, "can_join_room_meeting", AsyncMock(return_value=True))
+    monkeypatch.setattr(study_room_router, "can_manage_room", AsyncMock(return_value=can_manage))
+    monkeypatch.setattr(study_room_router.meeting_session_service, "is_owner", AsyncMock(return_value=session_active))
+    monkeypatch.setattr(study_room_router.livekit_service, "meeting_presence", AsyncMock(
+        return_value=("RM_current", {as_fake_user.id: "PA_current" if participant_is_current else "PA_other"}),
+    ))
+    monkeypatch.setattr(study_room_router.meeting_capture_store, "observe", AsyncMock(return_value=capture_id))
+    monkeypatch.setattr(study_room_router.meeting_capture_store, "list_recordings", AsyncMock(return_value=[]))
+    start = AsyncMock(return_value=recording)
+    monkeypatch.setattr(study_room_router.meeting_recording_service, "start_recording", start)
+
+    response = await async_client.post(f"/study-rooms/{room.id}/meeting/recordings", headers=AUTH_HEADERS, json={
+        "client_session_id": str(client_session_id), "participant_sid": "PA_current",
+    })
+    assert response.status_code == expected, response.text
+    if expected == 200:
+        assert response.json()["status"] == "active"
+        start.assert_awaited_once_with(room.id, capture_id, "RM_current")
+    else:
+        start.assert_not_awaited()
+
+
+async def test_attendee_can_download_transcript_after_call_ends(
+    async_client, monkeypatch, as_fake_user,
+):
+    room = _make_room(status=StudyRoomStatus.ENDED)
+    capture_id = uuid.uuid4()
+    now = datetime.now(timezone.utc)
+    monkeypatch.setattr(settings, "live_captions_enabled", True)
+    monkeypatch.setattr(settings, "gemini_live_project", "test-project")
+    monkeypatch.setattr(study_room_router.service, "get_by_id", AsyncMock(return_value=room))
+    monkeypatch.setattr(study_room_router, "can_view_room", AsyncMock(return_value=True))
+    transcript = AsyncMock(return_value=(
+        {"started_at": now, "ended_at": now},
+        [{"spoken_at": now, "speaker_name": "Hà", "text": "Không nộp trước ngày 12."}],
+    ))
+    monkeypatch.setattr(study_room_router.meeting_capture_store, "read_transcript", transcript)
+    endpoint = f"/study-rooms/{room.id}/meeting/captures/{capture_id}/transcript"
+
+    response = await async_client.get(endpoint, headers=AUTH_HEADERS)
+    assert response.status_code == 200
+    assert f"ban-chep-loi-{capture_id}.txt" in response.headers["Content-Disposition"]
+    assert response.headers["Content-Type"] == "text/plain; charset=utf-8"
+    assert "[00:00:00] Hà: Không nộp trước ngày 12." in response.text
+    transcript.assert_awaited_once_with(room.id, capture_id, as_fake_user.id)
+    transcript.return_value = None
+    assert (await async_client.get(endpoint, headers=AUTH_HEADERS)).status_code == 404

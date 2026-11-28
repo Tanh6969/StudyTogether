@@ -28,9 +28,16 @@ class Settings(BaseSettings):
     meeting_session_required: bool = False
     meeting_session_database_url: str | None = None
     live_captions_enabled: bool = False
-    soniox_api_key: str | None = None
-    soniox_stt_model: str = "stt-rt-v6"
+    gemini_live_project: str | None = None
+    gemini_live_location: str = "global"
     live_captions_terms: str = "StudyTogether, ITSS, HUST"
+    meeting_recording_enabled: bool = False
+    meeting_recording_s3_bucket: str | None = None
+    meeting_recording_s3_region: str = "ap-southeast-1"
+    meeting_recording_s3_endpoint: str | None = None
+    meeting_recording_s3_access_key: str | None = None
+    meeting_recording_s3_secret_key: str | None = None
+    meeting_recording_s3_session_token: str | None = None
     cors_allowed_origins: str = "http://localhost:5173,http://localhost:5174,http://127.0.0.1:5173,http://127.0.0.1:5174"
 
     # Invitations
@@ -61,7 +68,18 @@ class Settings(BaseSettings):
 
     @property
     def live_captions_available(self) -> bool:
-        return self.live_captions_enabled and bool(self.soniox_api_key)
+        return self.live_captions_enabled and bool(self.gemini_live_project)
+
+    @property
+    def meeting_recording_available(self) -> bool:
+        return self.meeting_recording_enabled and all((
+            self.meeting_recording_s3_bucket, self.meeting_recording_s3_access_key,
+            self.meeting_recording_s3_secret_key,
+        ))
+
+    @property
+    def meeting_capture_available(self) -> bool:
+        return self.live_captions_available or self.meeting_recording_available
 
     @property
     def cors_origins(self) -> list[str]:

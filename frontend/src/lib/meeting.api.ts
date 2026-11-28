@@ -1,5 +1,8 @@
 import { apiClient } from './apiClient';
-import type { MeetingCaptionEvent, MeetingSessionStatus, MeetingTokenResponse } from './meeting.types';
+import type {
+  MeetingCaptionEvent, MeetingCapture, MeetingRecording, MeetingRecordingControl,
+  MeetingSessionStatus, MeetingTokenResponse,
+} from './meeting.types';
 
 /**
  * Caller is always derived from the bearer token on the backend; no user id is ever sent.
@@ -56,4 +59,34 @@ export async function streamMeetingCaptions(
     await reader.cancel().catch(() => {});
     reader.releaseLock();
   }
+}
+
+function meetingPath(roomId: string): string {
+  return `/study-rooms/${roomId}/meeting`;
+}
+
+export function listMeetingCaptures(roomId: string, signal: AbortSignal): Promise<MeetingCapture[]> {
+  return apiClient.get<MeetingCapture[]>(`${meetingPath(roomId)}/captures`, { signal });
+}
+
+export function readMeetingTranscript(roomId: string, captureId: string): Promise<string> {
+  return apiClient.get<string>(`${meetingPath(roomId)}/captures/${captureId}/transcript`, {
+    headers: { Accept: 'text/plain' },
+  });
+}
+
+export function startMeetingRecording(roomId: string, control: MeetingRecordingControl): Promise<MeetingRecording> {
+  return apiClient.post<MeetingRecording>(`${meetingPath(roomId)}/recordings`, control);
+}
+
+export function stopMeetingRecording(
+  roomId: string,
+  recordingId: string,
+  control: MeetingRecordingControl,
+): Promise<MeetingRecording> {
+  return apiClient.post<MeetingRecording>(`${meetingPath(roomId)}/recordings/${recordingId}/stop`, control);
+}
+
+export function getMeetingRecordingDownload(roomId: string, recordingId: string): Promise<{ url: string }> {
+  return apiClient.get<{ url: string }>(`${meetingPath(roomId)}/recordings/${recordingId}/download`);
 }

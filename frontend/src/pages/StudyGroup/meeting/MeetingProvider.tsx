@@ -154,7 +154,7 @@ export function MeetingProvider({
   }
 
   return (
-    <MeetingContext.Provider value={{ status, error, retry: retryConnection, connected, liveKitError, transferred, captionsAvailable: data.captions_available }}>
+    <MeetingContext.Provider value={{ status, error, retry: retryConnection, connected, liveKitError, transferred, captionsAvailable: data.captions_available, recordingAvailable: data.recording_available }}>
       {/* display:contents keeps LiveKitRoom's wrapper <div> out of the page's flex layout. */}
       <LiveKitRoom
         serverUrl={data.server_url}

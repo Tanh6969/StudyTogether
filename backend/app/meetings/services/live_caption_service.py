@@ -1,4 +1,4 @@
-"""Share one LiveKit audio subscriber per study room with a caption viewer."""
+"""One LiveKit microphone subscriber per active study room."""
 
 import asyncio
 import datetime
@@ -10,8 +10,10 @@ from livekit import rtc
 from livekit.api import AccessToken, VideoGrants
 
 from app.core.config import settings
+from app.meetings.services import meeting_capture_store
 from app.meetings.services.livekit_service import study_room_livekit_name
 from app.meetings.services.vietnamese_speech_service import (
+    FRAME_MS,
     SAMPLE_RATE,
     SpeechServiceError,
     transcribe_vietnamese,
@@ -28,13 +30,20 @@ class _CaptionRoom:
         self.room_id = room_id
         self.rtc_room = rtc.Room()
         self.waiting = asyncio.Event()
-        self.finished = asyncio.Event()
+        self.changed = asyncio.Event()
+        self.finished = False
         self.connected = False
         self.failed = False
-        self.listeners = 0
+        self.livekit_sid: str | None = None
+        self.capture_id: uuid.UUID | None = None
         self.viewers: dict[_Queue, tuple[str, str]] = {}
         self.microphones: dict[str, tuple[asyncio.Event, asyncio.Task]] = {}
+        self.history: list[_CaptionEvent] = []
         self.task = asyncio.create_task(self._run())
+
+    def close(self) -> None:
+        self.finished = True
+        self.changed.set()
 
     def can_view(self, identity: str, participant_sid: str) -> bool:
         participant = self.rtc_room.remote_participants.get(identity)
@@ -57,14 +66,20 @@ class _CaptionRoom:
             else:
                 queue.put_nowait(event)
 
-    def sync_microphones(self) -> None:
+    def _participants(self) -> dict[uuid.UUID, rtc.RemoteParticipant]:
+        participants = {}
+        for participant in self.rtc_room.remote_participants.values():
+            try:
+                participants[uuid.UUID(participant.identity)] = participant
+            except ValueError:
+                # Egress and the other bots never represent study-room users.
+                continue
+        return participants
+
+    def _sync_microphones(self, participants: dict[uuid.UUID, rtc.RemoteParticipant]) -> None:
         active = {}
-        if self.connected and self.viewers and not self.finished.is_set():
-            for participant in self.rtc_room.remote_participants.values():
-                try:
-                    uuid.UUID(participant.identity)
-                except ValueError:
-                    continue
+        if self.connected and self.capture_id is not None and not self.finished:
+            for participant in participants.values():
                 for pub in participant.track_publications.values():
                     if pub.source == _MICROPHONE and not pub.muted:
                         active[pub.sid] = pub, participant
@@ -87,24 +102,35 @@ class _CaptionRoom:
         self.microphones.pop(sid, None)
         if not task.cancelled() and task.exception() is not None:
             self.failed = True
-            self.finished.set()
-        self.sync_microphones()
+            self.close()
+        self.changed.set()
 
-    async def _transcribe(self, track: rtc.Track, speaker: rtc.RemoteParticipant, stop: asyncio.Event) -> None:
-        def emit(caption_id: str, text: str, final: bool) -> None:
-            self._broadcast({
+    async def _transcribe(self, track, speaker: rtc.RemoteParticipant, stop: asyncio.Event) -> None:
+        capture_id = self.capture_id
+        speaker_name = speaker.name or "Thành viên"
+
+        async def emit(caption_id, spoken_at, text, final):
+            if final and text:
+                await meeting_capture_store.save_line(capture_id, caption_id, spoken_at, speaker_name, text)
+            event = {
                 "type": "caption",
-                "id": caption_id,
+                "capture_id": str(capture_id),
+                "id": str(caption_id),
+                "spoken_at": spoken_at.isoformat(),
                 "speaker_id": speaker.identity,
-                "speaker_name": speaker.name or "Thành viên",
+                "speaker_name": speaker_name,
                 "text": text,
                 "final": final,
-            })
+            }
+            if final and text:
+                self.history.append(event)
+                del self.history[:-120]
+            self._broadcast(event)
 
         delay = 1
         while not stop.is_set():
             audio = rtc.AudioStream.from_track(
-                track=track, sample_rate=SAMPLE_RATE, num_channels=1, frame_size_ms=100, capacity=15
+                track=track, sample_rate=SAMPLE_RATE, num_channels=1, frame_size_ms=FRAME_MS, capacity=100
             )
 
             async def frames() -> AsyncIterator[bytes]:
@@ -116,12 +142,10 @@ class _CaptionRoom:
                 if not stop.is_set():
                     raise SpeechServiceError(retryable=True)
             except Exception as error:
-                if stop.is_set():
-                    return
-                logger.warning("Live captions speech stream interrupted (%s)", type(error).__name__)
+                logger.warning("Meeting speech stream interrupted (%s)", type(error).__name__)
                 if isinstance(error, SpeechServiceError) and not error.retryable:
                     self.failed = True
-                    self.finished.set()
+                    self.close()
                     return
                 self._broadcast({"type": "reconnecting", "speaker_id": speaker.identity})
             finally:
@@ -135,39 +159,36 @@ class _CaptionRoom:
 
     async def _run(self) -> None:
         room = self.rtc_room
-        room_name = study_room_livekit_name(self.room_id)
 
-        def sync(*_args) -> None:
-            if self.connected:
-                for queue, (identity, participant_sid) in tuple(self.viewers.items()):
-                    if not self.can_view(identity, participant_sid):
-                        self._close_viewer(queue, "closed")
-            self.sync_microphones()
+        def changed(*_args) -> None:
+            self.changed.set()
 
         def reconnecting() -> None:
             self._broadcast({"type": "reconnecting"})
             self.connected = False
-            self.sync_microphones()
+            changed()
 
         def reconnected() -> None:
             self.connected = True
-            sync()
-            self._broadcast({"type": "ready"})
+            changed()
+            self._broadcast({"type": "ready", "capture_id": str(self.capture_id or "")})
 
         def disconnected(_reason) -> None:
             self.connected = False
-            self.finished.set()
+            self.close()
 
         for event in (
             "track_published", "track_unpublished", "track_subscribed", "track_unsubscribed",
-            "track_muted", "track_unmuted", "participant_disconnected",
+            "track_muted", "track_unmuted", "participant_connected", "participant_disconnected",
         ):
-            room.on(event, sync)
+            room.on(event, changed)
         room.on("reconnecting", reconnecting)
         room.on("reconnected", reconnected)
         room.on("disconnected", disconnected)
 
+        ended = False
         try:
+            room_name = study_room_livekit_name(self.room_id)
             token = (
                 AccessToken(settings.livekit_api_key, settings.livekit_api_secret)
                 .with_identity(f"captions-{uuid.uuid4().hex}")
@@ -182,49 +203,98 @@ class _CaptionRoom:
             await room.connect(
                 settings.livekit_url, token, rtc.RoomOptions(auto_subscribe=False, connect_timeout=8)
             )
-            self.connected = not self.finished.is_set()
-            self.waiting.set()
-            await self.finished.wait()
+            self.livekit_sid = await asyncio.wait_for(room.sid, timeout=4)
+            self.connected = not self.finished
+            registered: set[uuid.UUID] = set()
+            while not self.finished:
+                self.changed.clear()
+                if self.connected and await room.sid != self.livekit_sid:
+                    ended = True
+                    self.close()
+                    break
+                participants = self._participants() if self.connected else {}
+                new_users = participants.keys() - registered
+                if new_users:
+                    self.capture_id = await meeting_capture_store.observe(self.room_id, self.livekit_sid, new_users)
+                    registered.update(new_users)
+                self.waiting.set()
+                for queue, (identity, participant_sid) in tuple(self.viewers.items()):
+                    if self.connected and not self.can_view(identity, participant_sid):
+                        self._close_viewer(queue, "closed")
+                self._sync_microphones(participants)
+                try:
+                    idle_timeout = 8 if self.connected and not participants else None
+                    await asyncio.wait_for(self.changed.wait(), timeout=idle_timeout)
+                except TimeoutError:
+                    ended = True
+                    self.close()
         except Exception as error:
             self.failed = True
-            logger.warning("Could not open LiveKit audio for captions (%s)", type(error).__name__)
+            logger.warning("Could not capture LiveKit audio (%s)", type(error).__name__)
         finally:
-            self.connected = False
+            self.close()
             self.waiting.set()
-            self.finished.set()
-            for queue in tuple(self.viewers):
-                self._close_viewer(queue, "unavailable" if self.failed else "closed")
+            for stop, _ in self.microphones.values():
+                stop.set()
             audio_tasks = [task for _, task in self.microphones.values()]
-            for task in audio_tasks:
-                task.cancel()
-            await asyncio.gather(*audio_tasks, return_exceptions=True)
-            await room.disconnect()
+            try:
+                await asyncio.wait_for(asyncio.gather(*audio_tasks, return_exceptions=True), timeout=9)
+                if ended and self.livekit_sid:
+                    await meeting_capture_store.finish(self.room_id, self.livekit_sid)
+            finally:
+                self.connected = False
+                for queue in tuple(self.viewers):
+                    self._close_viewer(queue, "unavailable" if self.failed else "closed")
+                await room.disconnect()
 
 
 class LiveCaptionService:
     def __init__(self):
         self.rooms: dict[uuid.UUID, _CaptionRoom] = {}
 
+    def ensure_room(self, room_id: uuid.UUID) -> _CaptionRoom:
+        caption_room = self.rooms.get(room_id)
+        if caption_room is None:
+            caption_room = self.rooms[room_id] = _CaptionRoom(room_id)
+            caption_room.task.add_done_callback(lambda task: self._room_done(caption_room, task))
+        return caption_room
+
+    def _room_done(self, caption_room: _CaptionRoom, task: asyncio.Task) -> None:
+        if self.rooms.get(caption_room.room_id) is caption_room:
+            del self.rooms[caption_room.room_id]
+        if not task.cancelled() and task.exception() is not None:
+            logger.warning("Could not close meeting capture (%s)", type(task.exception()).__name__)
+
+    def finish_room(self, room_id: uuid.UUID, livekit_sid: str) -> None:
+        caption_room = self.rooms.get(room_id)
+        if caption_room is not None and caption_room.livekit_sid == livekit_sid:
+            caption_room.close()
+
+    async def aclose(self) -> None:
+        rooms = list(self.rooms.values())
+        for room in rooms:
+            room.close()
+        await asyncio.gather(*(room.task for room in rooms), return_exceptions=True)
+
     async def events(
         self, room_id: uuid.UUID, identity: str, participant_sid: str
     ) -> AsyncIterator[_CaptionEvent]:
-        caption_room = self.rooms.get(room_id)
-        if caption_room is None or caption_room.finished.is_set():
-            caption_room = self.rooms[room_id] = _CaptionRoom(room_id)
-        caption_room.listeners += 1
+        caption_room = self.ensure_room(room_id)
         queue: _Queue = asyncio.Queue(maxsize=128)
         try:
             await caption_room.waiting.wait()
             if caption_room.failed:
                 yield {"type": "unavailable"}
                 return
-            if not caption_room.can_view(identity, participant_sid):
+            if caption_room.finished or not caption_room.can_view(identity, participant_sid):
                 yield {"type": "closed"}
                 return
 
             caption_room.viewers[queue] = (identity, participant_sid)
-            caption_room.sync_microphones()
-            yield {"type": "ready"}
+            history = tuple(caption_room.history)
+            yield {"type": "ready", "capture_id": str(caption_room.capture_id or "")}
+            for line in history:
+                yield line
             while True:
                 try:
                     event = await asyncio.wait_for(queue.get(), timeout=10)
@@ -235,14 +305,8 @@ class LiveCaptionService:
                 if event["type"] in {"closed", "unavailable"}:
                     return
         finally:
+            # The recorder belongs to the meeting. Viewers only subscribe to its events.
             caption_room.viewers.pop(queue, None)
-            caption_room.listeners -= 1
-            if caption_room.listeners == 0:
-                if self.rooms.get(room_id) is caption_room:
-                    del self.rooms[room_id]
-                caption_room.finished.set()
-            else:
-                caption_room.sync_microphones()
 
 
 live_caption_service = LiveCaptionService()

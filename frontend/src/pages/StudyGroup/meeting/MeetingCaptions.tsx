@@ -3,6 +3,7 @@ import { useConnectionState, useLocalParticipant } from '@livekit/components-rea
 import { ConnectionState } from 'livekit-client';
 import { Captions } from 'lucide-react';
 import { streamMeetingCaptions } from '../../../lib/meeting.api';
+import { ApiError } from '../../../lib/apiClient';
 import type { MeetingCaption } from '../../../lib/meeting.types';
 import { getAvatarColor, getAvatarInitials } from '../../../utils/avatarUtils';
 import { useMeetingContext } from './MeetingContext';
@@ -15,9 +16,9 @@ interface MeetingCaptionsProps {
 type StreamState = 'opening' | 'listening' | 'reconnecting' | 'unavailable';
 const STATUS_TEXT: Record<StreamState, string> = {
   opening: 'Đang mở phụ đề…',
-  listening: 'Đang nghe tiếng Việt…',
+  listening: 'Đang tự động lưu lời thoại',
   reconnecting: 'Đang kết nối lại phụ đề…',
-  unavailable: 'Phụ đề tạm thời gián đoạn.',
+  unavailable: 'Tạm gián đoạn chép lời.',
 };
 const HISTORY_SIZE = 120;
 
@@ -37,20 +38,27 @@ function ConnectedCaptions({ roomId, clientSessionId }: MeetingCaptionsProps) {
   const [captions, setCaptions] = useState<MeetingCaption[]>([]);
   const scrollArea = useRef<HTMLDivElement>(null);
   const followLatest = useRef(true);
+  const activeCapture = useRef<string | undefined>(undefined);
+  const retries = useRef(0);
 
   useEffect(() => {
-    if (!enabled) return;
     if (connectionState !== ConnectionState.Connected || !participantSid) {
       setCaptions((lines) => lines.filter((line) => line.final));
       setState('reconnecting');
       return;
     }
     const controller = new AbortController();
+    let retryTimer: ReturnType<typeof setTimeout> | undefined;
+    let blocked = false;
     setState('opening');
 
     void streamMeetingCaptions(roomId, clientSessionId, participantSid, (event) => {
       switch (event.type) {
         case 'ready':
+          if (event.capture_id && event.capture_id !== activeCapture.current) {
+            if (activeCapture.current) setCaptions([]);
+            activeCapture.current = event.capture_id;
+          }
           setState('listening');
           break;
         case 'reconnecting':
@@ -60,6 +68,7 @@ function ConnectedCaptions({ roomId, clientSessionId }: MeetingCaptionsProps) {
           ));
           break;
         case 'caption':
+          if (event.final && event.text) retries.current = 0;
           setState('listening');
           setCaptions((lines) => {
             const previous = lines.find((line) => line.id === event.id);
@@ -70,33 +79,45 @@ function ConnectedCaptions({ roomId, clientSessionId }: MeetingCaptionsProps) {
           });
           break;
       }
-    }, controller.signal).catch(() => {
-      // The same retry affordance applies to an HTTP error and a dropped stream.
+    }, controller.signal).catch((error: unknown) => {
+      blocked = error instanceof ApiError && [401, 403, 404, 409].includes(error.status);
     }).finally(() => {
       if (controller.signal.aborted) return;
       setCaptions((lines) => lines.filter((line) => line.final));
       setState('unavailable');
+      if (!blocked) {
+        const delay = Math.min(1500 * 2 ** retries.current, 20_000);
+        retries.current += 1;
+        retryTimer = setTimeout(() => setRetry((attempt) => attempt + 1), delay);
+      }
     });
 
-    return () => controller.abort();
-  }, [clientSessionId, connectionState, enabled, participantSid, retry, roomId]);
+    return () => {
+      controller.abort();
+      clearTimeout(retryTimer);
+    };
+  }, [clientSessionId, connectionState, participantSid, retry, roomId]);
 
   useLayoutEffect(() => {
     const list = scrollArea.current;
     if (followLatest.current && list) list.scrollTop = list.scrollHeight;
-  }, [captions]);
+  }, [captions, enabled]);
 
   function toggleCaptions() {
-    if (!enabled) {
-      followLatest.current = true;
-      setCaptions([]);
-      setState('opening');
-    }
+    if (!enabled) followLatest.current = true;
     setEnabled(!enabled);
   }
 
   return (
     <>
+      {!enabled && (
+        <span
+          role="status"
+          className="pointer-events-none absolute bottom-[calc(100%+8px)] left-1/2 z-10 -translate-x-1/2 whitespace-nowrap rounded-full bg-slate-900/90 px-3 py-1 text-xs text-slate-200"
+        >
+          {STATUS_TEXT[state]}
+        </span>
+      )}
       <button
         type="button"
         className={`flex h-[42px] w-[42px] shrink-0 cursor-pointer items-center justify-center rounded-full border-0 text-white ${enabled ? 'bg-blue-600' : 'bg-slate-700'}`}

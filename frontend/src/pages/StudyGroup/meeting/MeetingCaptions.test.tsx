@@ -13,7 +13,7 @@ vi.mock('@livekit/components-react', () => ({
 
 vi.mock('../../../lib/meeting.api', () => ({ streamMeetingCaptions: vi.fn() }));
 
-it('updates one line per utterance, keeps the speaker, and closes the stream when CC is turned off', async () => {
+it('receives captions automatically, keeps the speaker and continues receiving with CC hidden', async () => {
   let onEvent: (event: MeetingCaptionEvent) => void = () => {};
   let streamSignal: AbortSignal | undefined;
   vi.mocked(streamMeetingCaptions).mockImplementation((_room, _session, _participant, receive, signal) => {
@@ -21,7 +21,7 @@ it('updates one line per utterance, keeps the speaker, and closes the stream whe
     streamSignal = signal;
     return new Promise((resolve) => signal.addEventListener('abort', () => resolve(), { once: true }));
   });
-  render(
+  const { unmount } = render(
     <MeetingContext.Provider value={{
       status: 'ready', error: null, connected: true, captionsAvailable: true,
       liveKitError: null, transferred: false, retry: vi.fn(),
@@ -31,9 +31,8 @@ it('updates one line per utterance, keeps the speaker, and closes the stream whe
   );
 
   const toggle = screen.getByRole('button', { name: 'Phụ đề tiếng Việt' });
-  expect(streamMeetingCaptions).not.toHaveBeenCalled();
-  await userEvent.click(toggle);
   expect(streamMeetingCaptions).toHaveBeenCalledWith('room', 'session', 'PA_caller', expect.any(Function), streamSignal);
+  await userEvent.click(toggle);
 
   act(() => {
     onEvent({ type: 'ready' });
@@ -48,6 +47,11 @@ it('updates one line per utterance, keeps the speaker, and closes the stream whe
   expect(screen.queryByText('Giảng')).not.toBeInTheDocument();
 
   await userEvent.click(toggle);
-  expect(streamSignal?.aborted).toBe(true);
+  expect(streamSignal?.aborted).toBe(false);
   expect(screen.queryByText('Giải tích.')).not.toBeInTheDocument();
+  await userEvent.click(toggle);
+  expect(screen.getByText('Giải tích.')).toBeVisible();
+  expect(streamMeetingCaptions).toHaveBeenCalledTimes(1);
+  unmount();
+  expect(streamSignal?.aborted).toBe(true);
 });

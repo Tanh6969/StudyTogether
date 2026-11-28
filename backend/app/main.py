@@ -25,6 +25,7 @@ from app.rewards.routers.reward_router import router as rewards_router
 from app.roadmaps.routers.roadmap_router import router as roadmaps_router
 from app.activities.routers.activity_router import music_router, router as activities_router
 from app.meetings.routers.livekit_webhook_router import router as livekit_webhook_router
+from app.meetings.services.live_caption_service import live_caption_service
 
 
 @asynccontextmanager
@@ -44,7 +45,10 @@ async def lifespan(app: FastAPI):
     # Launch 5 concurrent connections to warm up the pool
     await asyncio.gather(*[_ping_db() for _ in range(5)])
     
-    yield
+    try:
+        yield
+    finally:
+        await live_caption_service.aclose()
 
 
 app = FastAPI(title="Study Platform API", version="1.0.0", lifespan=lifespan)

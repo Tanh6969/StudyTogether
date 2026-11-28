@@ -238,6 +238,10 @@ export function PreJoinLobby({
             <h1 style={{color: 'white', fontSize: 22, fontWeight: '700', margin: 0}}>{roomName}</h1>
             {roomSubtitle && <p style={{color: '#94A3B8', fontSize: 13, margin: '6px 0 0'}}>{roomSubtitle}</p>}
             <p style={{color: '#64748B', fontSize: 13, margin: '10px 0 0'}}>Kiểm tra camera và micro trước khi vào phòng học.</p>
+            <p style={{color: '#CBD5E1', fontSize: 12, lineHeight: 1.5, margin: '8px 0 0'}}>
+              Ở phòng có bật chép lời, lời thoại qua micro được lưu tự động khi bạn vào cuộc gọi.
+              Bạn sẽ thấy thông báo khi cuộc gọi đang ghi hình.
+            </p>
           </div>
 
           {restrictionBan && <RestrictionBanner ban={restrictionBan} actionLabel="tham gia phòng học" variant="dark" />}

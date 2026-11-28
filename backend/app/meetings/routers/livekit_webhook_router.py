@@ -28,7 +28,10 @@ from fastapi import APIRouter, BackgroundTasks, HTTPException, Request, status
 from livekit.protocol.models import DisconnectReason
 
 from app.core.config import settings
+from app.core.permissions import can_join_room_meeting
 from app.db.session import async_session_factory
+from app.meetings.services import meeting_capture_store, meeting_recording_service
+from app.meetings.services.live_caption_service import live_caption_service
 from app.meetings.services.livekit_service import LiveKitService, parse_study_room_livekit_name
 from app.study_rooms.services.study_room_service import StudyRoomsService
 
@@ -100,6 +103,20 @@ async def close_membership_after_passive_disconnect(
             return False
 
 
+async def _observe_join(room_id: uuid.UUID, livekit_sid: str, user_id: uuid.UUID) -> bool:
+    async with async_session_factory() as session:
+        room = await study_rooms_service.get_by_id(session, room_id)
+        if room is None or not await can_join_room_meeting(session, room, user_id):
+            return False
+    current_sid, participants = await livekit_service.meeting_presence(room_id)
+    if current_sid != livekit_sid or user_id not in participants:
+        return False
+    await meeting_capture_store.observe(room_id, livekit_sid, {user_id})
+    if settings.live_captions_available:
+        live_caption_service.ensure_room(room_id)
+    return True
+
+
 @router.post("/webhook", include_in_schema=False)
 async def livekit_webhook(request: Request, background_tasks: BackgroundTasks):
     body = (await request.body()).decode("utf-8")
@@ -114,7 +131,25 @@ async def livekit_webhook(request: Request, background_tasks: BackgroundTasks):
         logger.warning("LiveKit webhook: rejected event with invalid signature")
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Invalid webhook signature")
 
-    # Answer LiveKit immediately; the grace-period re-check runs after the response.
+    if settings.meeting_capture_available:
+        if event.event in {"egress_started", "egress_updated", "egress_ended"} and settings.meeting_recording_available:
+            await meeting_recording_service.accept_egress_update(event.egress_info)
+            return {"status": "processed"}
+        room_id = parse_study_room_livekit_name(event.room.name)
+        if room_id is not None and event.room.sid:
+            if event.event == "room_finished":
+                live_caption_service.finish_room(room_id, event.room.sid)
+                await meeting_capture_store.finish(room_id, event.room.sid)
+                return {"status": "processed"}
+            if event.event == "participant_joined":
+                try:
+                    user_id = uuid.UUID(event.participant.identity)
+                except ValueError:
+                    return {"status": "ignored"}
+                observed = await _observe_join(room_id, event.room.sid, user_id)
+                return {"status": "processed" if observed else "ignored"}
+
+    # Answer LiveKit immediately; the presence grace-period re-check runs after the response.
     if event.event != "participant_left":
         return {"status": "ignored"}
     room_id = parse_study_room_livekit_name(event.room.name)

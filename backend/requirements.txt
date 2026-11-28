@@ -7,9 +7,10 @@ pyjwt[crypto]
 httpx
 python-dateutil
 anthropic
-google-genai
+google-genai==3.6.1
 pytest
 pytest-asyncio
 livekit-api==1.2.0
 livekit==1.3.0
-websockets>=14,<17
+webrtcvad-wheels==2.0.14.post1
+boto3==1.44.13

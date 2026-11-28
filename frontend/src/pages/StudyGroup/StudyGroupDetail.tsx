@@ -55,6 +55,7 @@ import { OwnerLeaveModal } from '../../components/groups/OwnerLeaveModal';
 import { createChannel, deleteChannel, getChannel, listChannelMembers, listChannelsByGroup, removeChannelMember } from '../../lib/channel.api';
 import { createStudyRoom, deleteStudyRoom, getStudyRoom, listStudyRoomsByGroup } from '../../lib/studyRoom.api';
 import { preloadStudyRoomPage } from './studyRoomPage';
+import { MeetingArchiveButton } from './meeting/MeetingArchive';
 import { useStudyRoomMembersRealtime } from '../../hooks/useStudyRoomMembersRealtime';
 import { useRoomPresence } from '../../hooks/useRoomPresence';
 import { listConversationMessages, sendConversationMessage } from '../../lib/message.api';
@@ -1695,6 +1696,8 @@ export function StudyGroupDetail() {
                                             </ul>
                                         )}
                                     </section>
+
+                                    {isActiveMember && <MeetingArchiveButton key={activeRoom.id} roomId={activeRoom.id} />}
 
                                     <button
                                         type="button"

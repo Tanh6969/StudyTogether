@@ -3,8 +3,9 @@ import logging
 import uuid
 from contextlib import aclosing
 from datetime import datetime
+from zoneinfo import ZoneInfo
 from fastapi import APIRouter, Depends, HTTPException, Query, status
-from fastapi.responses import StreamingResponse
+from fastapi.responses import PlainTextResponse, StreamingResponse
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -33,8 +34,10 @@ from app.db.session import get_db_session
 from app.db.enums import ModerationAction, StudyRoomMemberRole
 from app.groups.services.group_service import GroupsService
 from app.meetings.dto.meeting_dto import (
+    MeetingCaptureResponse, MeetingRecordingControl, MeetingRecordingResponse,
     MeetingTokenRequest, MeetingTokenResponse, MeetingSessionClaim, MeetingSessionStatus,
 )
+from app.meetings.services import meeting_capture_store, meeting_recording_service
 from app.meetings.services.live_caption_service import live_caption_service
 from app.meetings.services.meeting_session_service import meeting_session_service
 from app.meetings.services.livekit_service import LiveKitService
@@ -815,6 +818,7 @@ async def create_meeting_token(
     return MeetingTokenResponse(
         server_url=settings.livekit_url, participant_token=token,
         captions_available=settings.live_captions_available,
+        recording_available=settings.meeting_recording_available,
     )
 
 
@@ -846,3 +850,157 @@ async def stream_meeting_captions(
         media_type="application/x-ndjson",
         headers={"Cache-Control": "no-store, no-transform", "X-Accel-Buffering": "no"},
     )
+
+
+async def _require_archive_access(
+    session: AsyncSession, room_id: uuid.UUID, user_id: uuid.UUID,
+) -> StudyRoom:
+    room = await _get_active_room_or_404(session, room_id)
+    # Room and group access are checked now. Each item is also scoped to attendance
+    # in that particular LiveKit call, including access after the attendee leaves.
+    if not await can_view_room(session, room, user_id):
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Study room not found")
+    return room
+
+
+@router.get("/{room_id}/meeting/captures", response_model=list[MeetingCaptureResponse])
+async def list_meeting_captures(
+    room_id: uuid.UUID,
+    current_user: CurrentUser = Depends(get_current_user),
+    session: AsyncSession = Depends(get_db_session),
+):
+    await _require_archive_access(session, room_id, current_user.id)
+    if not settings.meeting_capture_available:
+        return []
+    captures = await meeting_capture_store.list_captures(room_id, current_user.id)
+    capture_ids = [capture["id"] for capture in captures]
+    recordings = await meeting_capture_store.list_recordings(capture_ids)
+    if settings.meeting_recording_available and any(
+        row["status"] in meeting_capture_store.ACTIVE_RECORDING_STATES for row in recordings
+    ):
+        await meeting_recording_service.refresh_recordings(room_id, recordings)
+        recordings = await meeting_capture_store.list_recordings(capture_ids)
+    by_capture: dict[uuid.UUID, list[MeetingRecordingResponse]] = {}
+    for recording in recordings:
+        by_capture.setdefault(recording["capture_id"], []).append(
+            MeetingRecordingResponse.model_validate(dict(recording))
+        )
+    return [
+        MeetingCaptureResponse(**capture, recordings=by_capture.get(capture["id"], []))
+        for capture in captures
+    ]
+
+
+@router.get("/{room_id}/meeting/captures/{capture_id}/transcript", response_class=PlainTextResponse)
+async def download_meeting_transcript(
+    room_id: uuid.UUID,
+    capture_id: uuid.UUID,
+    current_user: CurrentUser = Depends(get_current_user),
+    session: AsyncSession = Depends(get_db_session),
+):
+    room = await _require_archive_access(session, room_id, current_user.id)
+    if not settings.meeting_capture_available:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Không tìm thấy bản chép lời.")
+    result = await meeting_capture_store.read_transcript(room_id, capture_id, current_user.id)
+    if result is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Không tìm thấy bản chép lời.")
+    capture, lines = result
+    started = capture["started_at"]
+    opened = started.astimezone(ZoneInfo("Asia/Ho_Chi_Minh")).strftime("%d/%m/%Y %H:%M:%S (UTC+7)")
+    heading = ["BẢN CHÉP LỜI CUỘC HỌP", f"Phòng: {' '.join(room.name.split())}", f"Bắt đầu: {opened}", ""]
+    transcript = []
+    for line in lines:
+        elapsed = max(0, int((line["spoken_at"] - started).total_seconds()))
+        hours, rest = divmod(elapsed, 3600)
+        minutes, seconds = divmod(rest, 60)
+        timestamp = f"{hours:02d}:{minutes:02d}:{seconds:02d}"
+        speaker = " ".join(line["speaker_name"].split())
+        transcript.append(f"[{timestamp}] {speaker}: {line['text']}")
+    return PlainTextResponse(
+        "\n".join(heading + transcript) + "\n",
+        headers={
+            "Cache-Control": "no-store",
+            "Content-Disposition": f'attachment; filename="ban-chep-loi-{capture_id}.txt"',
+        },
+    )
+
+
+async def _require_recording_control(
+    session: AsyncSession, room_id: uuid.UUID, user_id: uuid.UUID, request: MeetingRecordingControl,
+) -> tuple[uuid.UUID, str]:
+    if not settings.meeting_recording_available:
+        raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, "Ghi hình chưa được cấu hình.")
+    room = await _get_active_room_or_404(session, room_id)
+    if not await can_join_room_meeting(session, room, user_id) or not await can_manage_room(session, room, user_id):
+        raise HTTPException(status.HTTP_403_FORBIDDEN, "Chỉ chủ phòng hoặc chủ nhóm đang trong cuộc gọi được ghi hình.")
+    if not await meeting_session_service.is_owner(room_id, user_id, request.client_session_id):
+        raise HTTPException(status.HTTP_409_CONFLICT, "Cuộc gọi đã chuyển sang thiết bị khác.")
+    try:
+        livekit_sid, participants = await livekit_service.meeting_presence(room_id)
+    except Exception as error:
+        logger.warning("Could not verify recording control presence (%s)", type(error).__name__)
+        raise HTTPException(status.HTTP_502_BAD_GATEWAY, "Không thể kiểm tra kết nối cuộc gọi.") from error
+    if livekit_sid is None or participants.get(user_id) != request.participant_sid:
+        raise HTTPException(status.HTTP_409_CONFLICT, "Phiên gọi này chưa kết nối hoặc đã thay đổi.")
+    capture_id = await meeting_capture_store.observe(room_id, livekit_sid, set(participants))
+    return capture_id, livekit_sid
+
+
+@router.post("/{room_id}/meeting/recordings", response_model=MeetingRecordingResponse)
+async def start_meeting_recording(
+    room_id: uuid.UUID,
+    request: MeetingRecordingControl,
+    current_user: CurrentUser = Depends(get_current_user),
+    session: AsyncSession = Depends(get_db_session),
+):
+    capture_id, livekit_sid = await _require_recording_control(session, room_id, current_user.id, request)
+    recordings = await meeting_capture_store.list_recordings([capture_id])
+    await meeting_recording_service.refresh_recordings(room_id, recordings)
+    try:
+        recording = await meeting_recording_service.start_recording(room_id, capture_id, livekit_sid)
+    except meeting_recording_service.RecordingConflict as error:
+        raise HTTPException(status.HTTP_409_CONFLICT, str(error)) from error
+    except Exception as error:
+        logger.warning("Could not start meeting recording (%s)", type(error).__name__)
+        raise HTTPException(status.HTTP_502_BAD_GATEWAY, "Không thể xác nhận đã bắt đầu ghi hình.") from error
+    return MeetingRecordingResponse.model_validate(dict(recording))
+
+
+@router.post("/{room_id}/meeting/recordings/{recording_id}/stop", response_model=MeetingRecordingResponse)
+async def stop_meeting_recording(
+    room_id: uuid.UUID,
+    recording_id: uuid.UUID,
+    request: MeetingRecordingControl,
+    current_user: CurrentUser = Depends(get_current_user),
+    session: AsyncSession = Depends(get_db_session),
+):
+    capture_id, _ = await _require_recording_control(session, room_id, current_user.id, request)
+    recording = await meeting_capture_store.get_recording(room_id, recording_id)
+    if not recording or recording["capture_id"] != capture_id:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Không tìm thấy bản ghi trong cuộc gọi hiện tại.")
+    try:
+        recording = await meeting_recording_service.stop_recording(room_id, recording)
+    except meeting_recording_service.RecordingConflict as error:
+        raise HTTPException(status.HTTP_409_CONFLICT, str(error)) from error
+    except Exception as error:
+        logger.warning("Could not stop meeting recording (%s)", type(error).__name__)
+        raise HTTPException(status.HTTP_502_BAD_GATEWAY, "Không thể xác nhận đã dừng ghi hình.") from error
+    return MeetingRecordingResponse.model_validate(dict(recording))
+
+
+@router.get("/{room_id}/meeting/recordings/{recording_id}/download", response_model=DownloadUrlResponse)
+async def download_meeting_recording(
+    room_id: uuid.UUID,
+    recording_id: uuid.UUID,
+    current_user: CurrentUser = Depends(get_current_user),
+    session: AsyncSession = Depends(get_db_session),
+):
+    await _require_archive_access(session, room_id, current_user.id)
+    if not settings.meeting_recording_available:
+        raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, "Kho bản ghi chưa được cấu hình.")
+    recording = await meeting_capture_store.get_recording(room_id, recording_id, current_user.id)
+    if recording is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Không tìm thấy bản ghi.")
+    if recording["status"] != "complete":
+        raise HTTPException(status.HTTP_409_CONFLICT, "Bản ghi chưa sẵn sàng để tải.")
+    return DownloadUrlResponse(url=meeting_recording_service.recording_download_url(recording_id), expires_in=300)

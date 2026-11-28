@@ -93,35 +93,41 @@ class LiveKitService:
     def _is_not_found(error: ServerError) -> bool:
         return error.code == ServerErrorCode.NOT_FOUND
 
-    async def connected_user_ids(self, room_id: uuid.UUID) -> set[uuid.UUID]:
-        """Read actual media presence from LiveKit, never a saved membership row.
+    async def _room_participants(self, lkapi: LiveKitAPI, room_name: str) -> dict[uuid.UUID, str]:
+        try:
+            response = await asyncio.wait_for(
+                lkapi.room.list_participants(ListParticipantsRequest(room=room_name)), timeout=6,
+            )
+        except ServerError as error:
+            if self._is_not_found(error):
+                return {}
+            raise
 
-        LiveKit may retain a reconnecting participant for a short grace period.
-        Only ACTIVE UUID identities issued by this app represent connected users.
-        Missing/expired rooms mean an empty roster; a transport/API failure must
-        propagate, not be silently reported as zero participants.
-        """
-        async with self._room_api() as lkapi:
-            try:
-                response = await asyncio.wait_for(
-                    lkapi.room.list_participants(
-                        ListParticipantsRequest(room=study_room_livekit_name(room_id))
-                    ), timeout=6
-                )
-            except ServerError as error:
-                if self._is_not_found(error):
-                    return set()
-                raise
-        connected = set()
+        participants = {}
         for participant in response.participants:
             if participant.state != ParticipantInfo.State.ACTIVE:
                 continue
             try:
-                connected.add(uuid.UUID(participant.identity))
+                user_id = uuid.UUID(participant.identity)
             except (TypeError, ValueError):
-                # Other LiveKit identities are not authenticated StudyTogether users.
+                # Capture and egress bots do not represent StudyTogether users.
                 continue
-        return connected
+            participants[user_id] = participant.sid
+        return participants
+
+    async def connected_user_ids(self, room_id: uuid.UUID) -> set[uuid.UUID]:
+        """Return active StudyTogether users from the actual LiveKit roster."""
+        async with self._room_api() as lkapi:
+            return set(await self._room_participants(lkapi, study_room_livekit_name(room_id)))
+
+    async def meeting_presence(self, room_id: uuid.UUID) -> tuple[str | None, dict[uuid.UUID, str]]:
+        room_name = study_room_livekit_name(room_id)
+        async with self._room_api() as lkapi:
+            rooms = await asyncio.wait_for(lkapi.room.list_rooms(ListRoomsRequest(names=[room_name])), timeout=6)
+            if not rooms.rooms:
+                return None, {}
+            participants = await self._room_participants(lkapi, room_name)
+        return rooms.rooms[0].sid, participants
 
     async def is_participant_connected(self, room_id: uuid.UUID, identity: uuid.UUID) -> bool:
         """Whether LiveKit currently holds ANY session for `identity` in this room,
@@ -143,20 +149,27 @@ class LiveKitService:
         return participant.state != ParticipantInfo.State.DISCONNECTED
 
     async def connected_counts(self, room_ids: list[uuid.UUID]) -> dict[uuid.UUID, int]:
-        """One LiveKit rooms RPC for the visible rooms, not N participant RPCs.
+        """Use the active participant roster so totals agree with the call UI."""
+        statuses = {room_id: 0 for room_id in room_ids}
+        if not statuses:
+            return statuses
 
-        This count is the media-room truth, as opposed to persisted
-        study_room_members membership which can outlive a crashed browser.
-        """
-        if not room_ids:
-            return {}
-        names = [study_room_livekit_name(room_id) for room_id in room_ids]
+        room_by_name = {study_room_livekit_name(room_id): room_id for room_id in statuses}
         async with self._room_api() as lkapi:
             response = await asyncio.wait_for(
-                lkapi.room.list_rooms(ListRoomsRequest(names=names)), timeout=6
+                lkapi.room.list_rooms(ListRoomsRequest(names=list(room_by_name))), timeout=6,
             )
-        by_name = {room.name: int(room.num_participants) for room in response.rooms}
-        return {room_id: by_name.get(study_room_livekit_name(room_id), 0) for room_id in room_ids}
+            active_names = [room.name for room in response.rooms if room.name in room_by_name]
+            concurrency = asyncio.Semaphore(6)
+
+            async def count(room_name: str) -> int:
+                async with concurrency:
+                    return len(await self._room_participants(lkapi, room_name))
+
+            counts = await asyncio.gather(*(count(name) for name in active_names))
+
+        statuses.update((room_by_name[name], count) for name, count in zip(active_names, counts))
+        return statuses
 
     async def remove_participant(self, room_id: uuid.UUID, identity: uuid.UUID) -> None:
         """Immediately disconnects `identity` from this room's live LiveKit session --

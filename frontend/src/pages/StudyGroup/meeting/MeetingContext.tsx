@@ -9,6 +9,7 @@ export interface MeetingContextValue {
   /** True once the LiveKit room connection itself is established (after a 'ready' token). */
   connected: boolean;
   captionsAvailable?: boolean;
+  recordingAvailable?: boolean;
   liveKitError: Error | null;
   /** True when another tab/device has explicitly taken the media session. */
   transferred: boolean;
