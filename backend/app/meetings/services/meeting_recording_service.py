@@ -3,6 +3,7 @@
 import asyncio
 import logging
 import uuid
+from contextlib import closing
 from datetime import datetime, timedelta, timezone
 
 import boto3
@@ -169,7 +170,7 @@ async def stop_recording(room_id: uuid.UUID, recording):
 
 
 def recording_download_url(recording_id: uuid.UUID) -> str:
-    with boto3.client(
+    client = boto3.client(
         "s3",
         region_name=settings.meeting_recording_s3_region,
         endpoint_url=settings.meeting_recording_s3_endpoint,
@@ -180,7 +181,8 @@ def recording_download_url(recording_id: uuid.UUID) -> str:
             signature_version="s3v4",
             s3={"addressing_style": "path" if settings.meeting_recording_s3_endpoint else "auto"},
         ),
-    ) as client:
+    )
+    with closing(client):
         return client.generate_presigned_url(
             "get_object",
             Params={"Bucket": settings.meeting_recording_s3_bucket, "Key": object_key(recording_id)},

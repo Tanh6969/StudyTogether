@@ -8,6 +8,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, status
 from fastapi.responses import PlainTextResponse, StreamingResponse
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
+from starlette.concurrency import run_in_threadpool
 
 from app.attachments.dto.attachment_dto import DownloadUrlResponse, UploadUrlRequest, UploadUrlResponse
 from app.attachments.services.attachment_service import (
@@ -1003,4 +1004,5 @@ async def download_meeting_recording(
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Không tìm thấy bản ghi.")
     if recording["status"] != "complete":
         raise HTTPException(status.HTTP_409_CONFLICT, "Bản ghi chưa sẵn sàng để tải.")
-    return DownloadUrlResponse(url=meeting_recording_service.recording_download_url(recording_id), expires_in=300)
+    url = await run_in_threadpool(meeting_recording_service.recording_download_url, recording_id)
+    return DownloadUrlResponse(url=url, expires_in=300)

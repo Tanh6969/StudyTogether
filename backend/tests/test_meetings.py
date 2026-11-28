@@ -2,6 +2,7 @@ import json
 import uuid
 from datetime import datetime, timezone
 from unittest.mock import AsyncMock
+from urllib.parse import parse_qs, urlsplit
 
 import pytest
 from livekit.api import TokenVerifier
@@ -561,4 +562,35 @@ async def test_attendee_can_download_transcript_after_call_ends(
     assert "[00:00:00] Hà: Không nộp trước ngày 12." in response.text
     transcript.assert_awaited_once_with(room.id, capture_id, as_fake_user.id)
     transcript.return_value = None
+    assert (await async_client.get(endpoint, headers=AUTH_HEADERS)).status_code == 404
+
+
+async def test_completed_recording_returns_a_signed_mp4_download(
+    async_client, monkeypatch, as_fake_user,
+):
+    room = _make_room()
+    recording_id = uuid.uuid4()
+    monkeypatch.setattr(settings, "meeting_recording_enabled", True)
+    monkeypatch.setattr(settings, "meeting_recording_s3_bucket", "private-recordings")
+    monkeypatch.setattr(settings, "meeting_recording_s3_access_key", "fixture-access")
+    monkeypatch.setattr(settings, "meeting_recording_s3_secret_key", "fixture-secret")
+    monkeypatch.setattr(study_room_router.service, "get_by_id", AsyncMock(return_value=room))
+    monkeypatch.setattr(study_room_router, "can_view_room", AsyncMock(return_value=True))
+    read_recording = AsyncMock(return_value={"status": "complete"})
+    monkeypatch.setattr(study_room_router.meeting_capture_store, "get_recording", read_recording)
+    endpoint = f"/study-rooms/{room.id}/meeting/recordings/{recording_id}/download"
+
+    response = await async_client.get(endpoint, headers=AUTH_HEADERS)
+    assert response.status_code == 200, response.text
+    read_recording.assert_awaited_once_with(room.id, recording_id, as_fake_user.id)
+    signed = urlsplit(response.json()["url"])
+    query = parse_qs(signed.query)
+    assert signed.path.endswith(f"/meeting-recordings/{recording_id}.mp4")
+    assert query["X-Amz-Expires"] == ["300"]
+    assert len(query["X-Amz-Signature"][0]) == 64
+    assert "fixture-secret" not in response.text
+
+    read_recording.return_value = {"status": "ending"}
+    assert (await async_client.get(endpoint, headers=AUTH_HEADERS)).status_code == 409
+    read_recording.return_value = None
     assert (await async_client.get(endpoint, headers=AUTH_HEADERS)).status_code == 404
